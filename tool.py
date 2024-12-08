@@ -1,8 +1,11 @@
+from datetime import datetime
+import json
 import logging
 import os, requests, time
 import pandas as pd
 from bs4 import BeautifulSoup
 from models import GetchuGame, NyaaData
+from openpyxl.styles import PatternFill
 
 # 配置日志记录器
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -32,20 +35,14 @@ def get_getchu_games(year, month):
         return []
     
     games = []
-    last_name = ''
     for row in game_rows:
         columns = row.find_all('td')
         if len(columns) >= 3:
             date = f"{year}-{month:02d}"
             name = columns[1].text.strip()
             company = columns[2].text.strip()
-            if company:
-                # 重命名变量以提高可读性
-                is_name_similar = is_similar_name(name, last_name)
-                if not is_name_similar:
-                    game = GetchuGame(date, name, company)
-                    games.append(game)
-                    last_name = name
+            games.append((date, name, company))
+    
     return games
 
 def get_all_getchu_games(start_year, end_year, start_month, end_month, file_path='getchu.xlsx'):
@@ -87,7 +84,7 @@ def get_nyaa_data(game_name):
     response.raise_for_status()
 
     soup = BeautifulSoup(response.text, 'html.parser')
-    rows = soup.find_all('tr', class_='success')
+    rows = soup.find_all('tr')
     
     nyaa_data_list = []
     for row in rows:
@@ -105,10 +102,19 @@ def get_nyaa_data(game_name):
             size = cells[3].get_text(strip=True)
             
             # 第5列 日期
-            date = cells[4].get_text(strip=True)
+            date_str = cells[4].get_text(strip=True)
+            try:
+                date_obj = datetime.strptime(date_str, '%Y-%m-%d %H:%M')
+                date_str_formatted = date_obj.strftime('%Y-%m-%d %H:%M')
+            except ValueError as e:
+                logging.warning("日期格式不匹配: %s, 错误信息: %s", date_str, e)
+                date_str_formatted = None
             
-            nyaa_data = NyaaData(date, size, name, link)
+            nyaa_data = NyaaData(date_str_formatted, size, name, link)
             nyaa_data_list.append(nyaa_data)
+    
+    # 按日期倒序排序
+    nyaa_data_list.sort(key=lambda x: x.date if x.date else datetime.min, reverse=True)
     
     return nyaa_data_list
 
@@ -122,31 +128,71 @@ def get_download_link(file_path):
     for sheet_name, sheet_df in df.items():
         logging.info("开始处理sheet: %s", sheet_name)
         
-        # 新增size和link列
-        sheet_df['size'] = ''
-        sheet_df['link'] = ''
+        # 获取当前sheet名的时间
+        try:
+            sheet_time_obj = datetime.strptime(sheet_name, '%Y-%m')
+        except ValueError:
+            logging.warning("Sheet名 %s 格式不正确，跳过处理", sheet_name)
+            continue
         
+        # 检查是否已存在size、link和comment列，如果不存在则添加
+        if 'size' not in sheet_df.columns:
+            sheet_df['size'] = ''
+        if 'link' not in sheet_df.columns:
+            sheet_df['link'] = ''
+        if 'comment' not in sheet_df.columns:
+            sheet_df['comment'] = ''
+        
+        rows_to_fill = []
         # 遍历每一行，以name列为关键字调用get_nyaa_data
         for index, row in sheet_df.iterrows():
+            # 如果 link 已有数据，则跳过当前行
+            if pd.notna(row['link']):
+                continue
             game_name = row['name']
             nyaa_data_list = get_nyaa_data(game_name)
             
-            # 优先选择包含girlcelly的结果
-            selected_data = next((data for data in nyaa_data_list if 'girlcelly' in data.name), None)
-            if not selected_data and nyaa_data_list:
-                selected_data = nyaa_data_list[0]
+            selected_data = None
+            if nyaa_data_list:
+                for data in nyaa_data_list:
+                    if 'girlcelly' in data.name:
+                        # 若数据名称中包含"girlcelly"，则立即选定此数据并中断循环
+                        selected_data = data
+                        break
+                else:
+                    # 若循环正常结束而未通过break中断，说明未找到包含"girlcelly"的数据
+                    selected_data = nyaa_data_list[0]
             
             if selected_data:
-                sheet_df.at[index, 'size'] = selected_data.size
-                sheet_df.at[index, 'link'] = selected_data.link
-                logging.info("已更新行 %d 的size和link", index + 1)  # +1是因为iterrows的行索引从0开始，而用户通常期望从1开始计数
+                try:
+                    selected_data_date = datetime.strptime(selected_data.date, '%Y-%m-%d %H:%M')
+                except (ValueError, TypeError):
+                    selected_data_date = None
+                
+                if selected_data_date and selected_data_date < sheet_time_obj:
+                    # 如果date小于sheet名时间，则跳过并将date计入comment列
+                    sheet_df.at[index, 'comment'] = selected_data.date
+                    # 记录需要设置背景色的行索引
+                    rows_to_fill.append(index)
+                else:
+                    # 否则，将size和link计入Excel
+                    sheet_df.at[index, 'size'] = selected_data.size
+                    sheet_df.at[index, 'link'] = selected_data.link
+                    logging.info("已更新行 %d 的size和link", index + 1)  # 行索引通常从0开始，但用户可能期望从1开始计数
             
-            # 每次调用get_nyaa_data后休眠2秒
+            # 每次调用get_nyaa_data后可能需要休眠（如果需要的话）
             time.sleep(2)
         
         # 将更新后的DataFrame写回Excel文件
         with pd.ExcelWriter(file_path, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
             sheet_df.to_excel(writer, sheet_name=sheet_name, index=False)
+            worksheet = writer.sheets[sheet_name]
+            fill = PatternFill(start_color='D9D9D9', end_color='D9D9D9', fill_type='solid')
+            for row_idx in rows_to_fill:
+                excel_row = row_idx + 2  # 加上标题行的偏移
+                for cell in worksheet.iter_rows(min_row=excel_row, max_row=excel_row, values_only=False):
+                    for c in cell:
+                        c.fill = fill
         
         logging.info("已完成处理sheet: %s", sheet_name)
     
