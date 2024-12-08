@@ -41,7 +41,9 @@ def get_getchu_games(year, month):
             date = f"{year}-{month:02d}"
             name = columns[1].text.strip()
             company = columns[2].text.strip()
-            games.append((date, name, company))
+            if company:
+                # 如果公司名不为空，则添加到游戏名单中
+                games.append(GetchuGame(date, name, company))
     
     return games
 
