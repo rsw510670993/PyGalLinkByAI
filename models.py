@@ -1,5 +1,6 @@
 class GetchuGame:
-    def __init__(self, date, name, company):
+    def __init__(self, index, date, name, company):
+        self.index = index
         self.date = date
         self.name = name
         self.company = company
