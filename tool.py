@@ -198,6 +198,14 @@ def get_download_link(file_path):
                 continue
             game_name = row['name']
             nyaa_data_list = get_nyaa_data(game_name)
+            yymm_format = sheet_time_obj.strftime('%y%m')
+            # 筛选出包含当前sheet名时间的数据
+            current_list = [data for data in nyaa_data_list if yymm_format in data.name]
+            # 按照包含当前sheet名时间的数据排序
+            current_list.sort(key=lambda x: yymm_format in x.name, reverse=True)
+            # 若current_list不为空，则将其赋值给nyaa_data_list
+            if current_list:
+                nyaa_data_list = current_list
             
             selected_data = None
             if nyaa_data_list:
