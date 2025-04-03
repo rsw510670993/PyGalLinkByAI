@@ -9,6 +9,10 @@ import requests
 from bs4 import BeautifulSoup
 from openpyxl.styles import PatternFill
 from models import GetchuGame, NyaaData
+import sqlite3
+
+import logging
+from logging import StreamHandler
 
 # 配置日志记录器
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -91,48 +95,52 @@ def get_getchu_games(year, month):
     processed_games = deduplicate_games(raw_games)
     return processed_games
 
-def get_all_getchu_games(start_year, end_year, start_month, end_month, file_path='getchu.xlsx'):
-
-    # 检查文件是否存在
-    mode = 'w' if not os.path.exists(file_path) else 'a'
-
-    # 根据模式设置 if_sheet_exists 参数
-    if_sheet_exists = 'replace' if mode == 'a' else None
-
-    # 创建一个Excel writer对象
-    with pd.ExcelWriter(file_path, engine='openpyxl', mode=mode, if_sheet_exists=if_sheet_exists) as writer:
-        for year in range(start_year, end_year + 1):
-            for month in range(start_month, end_month + 1):
-                # 获取当前月份的数据
-                games = get_getchu_games(year, month)
-                
-                if not games:
-                    continue  # 如果没有数据，则跳过当前月份
-                
-                # 将 GetchuGame 对象转换为字典列表
-                games_data = [
-                    {'date': game.date, 'name': game.name, 'company': game.company}
-                    for game in games
-                ]
-                
-                # 创建一个DataFrame
-                df = pd.DataFrame(games_data, columns=['date', 'name', 'company'])
-                
-                # 获取月份作为sheet名（格式化为YYYY-MM）
-                sheet_name = f"{year}-{month:02d}"
-                
-                # 将DataFrame写入Excel的不同sheet中
-                df.to_excel(writer, sheet_name=sheet_name, index=False)
+def get_all_getchu_games(start_year, end_year, start_month, end_month, db_path='getchu.db'):
+    logging.info(f'开始获取{start_year}年{start_month}月至{end_year}年{end_month}月的数据')
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS getchu_games (
+            date TEXT,
+            name TEXT,
+            company TEXT,
+            size TEXT,
+            link TEXT,
+            comment TEXT,
+            PRIMARY KEY (date, name)
+        )
+    ''')
+    for year in range(start_year, end_year + 1):
+        for month in range(start_month, end_month + 1):
+            logging.info(f'正在处理{year}年{month}月的数据')
+            games = get_getchu_games(year, month)
+            if not games:
+                logging.warning(f'{year}年{month}月没有获取到数据')
+                continue
+            for game in games:
+                cursor.execute('INSERT OR IGNORE INTO getchu_games (date, name, company) VALUES (?,?,?)', (game.date, game.name, game.company))
+                logging.debug(f'已插入游戏: {game.name}')
+            logging.info(f'完成{year}年{month}月的数据处理，共处理{len(games)}个游戏')
+    conn.commit()
+    conn.close()
 
 def get_nyaa_data(game_name):
-    response = requests.get(f'https://sukebei.nyaa.si/?f=0&c=1_3&q={game_name}')
-    response.raise_for_status()
+    try:
+        response = requests.get(f'https://sukebei.nyaa.si/?f=0&c=1_3&q={game_name}')
+        response.raise_for_status()
+    except (requests.exceptions.ConnectTimeout, requests.exceptions.MaxRetryError) as e:
+        logging.error(f'获取游戏 {game_name} 数据时连接超时或重试次数过多: {e}')
+        return []
     soup = BeautifulSoup(response.text, 'html.parser')
     rows = soup.find_all('tr')
     if not rows:
-        keyword = re.sub(r'[^\w\s]', '', game_name)
-        response = requests.get(f'https://sukebei.nyaa.si/?f=0&c=1_3&q={keyword}')
-        response.raise_for_status()
+        keyword = re.sub(r'[^ws]', '', game_name)
+        try:
+            response = requests.get(f'https://sukebei.nyaa.si/?f=0&c=1_3&q={keyword}')
+            response.raise_for_status()
+        except (requests.exceptions.ConnectTimeout, requests.exceptions.MaxRetryError) as e:
+            logging.error(f'使用关键词 {keyword} 获取游戏 {game_name} 数据时连接超时或重试次数过多: {e}')
+            return []
         soup = BeautifulSoup(response.text, 'html.parser')
         rows = soup.find_all('tr')
 
@@ -167,88 +175,72 @@ def get_nyaa_data(game_name):
     nyaa_data_list.sort(key=lambda x: x.date if x.date else datetime.min, reverse=True)
     return nyaa_data_list
 
-def get_download_link(file_path):
-    # 读取Excel文件
-    df = pd.read_excel(file_path, sheet_name=None)
-    
-    logging.info("开始处理Excel文件: %s", file_path)
-    
-    # 遍历每个sheet
-    for sheet_name, sheet_df in df.items():
-        logging.info("开始处理sheet: %s", sheet_name)
-        
-        # 获取当前sheet名的时间
-        try:
-            sheet_time_obj = datetime.strptime(sheet_name, '%Y-%m')
-        except ValueError:
-            logging.warning("Sheet名 %s 格式不正确，跳过处理", sheet_name)
-            continue
-        
-        # 确保所有需要的列都存在，并且数据类型为字符串
-        for col in ['size', 'link', 'comment']:
-            if col not in sheet_df.columns:
-                sheet_df[col] = ''
-            sheet_df[col] = sheet_df[col].astype(str)
-        
-        rows_to_fill = []
-        # 遍历每一行，以name列为关键字调用get_nyaa_data
-        for index, row in sheet_df.iterrows():
-            # 如果 link 已有数据，则跳过当前行
-            if row['link'] != '' and pd.notna(row['link']):
+def get_download_link():
+    logging.info('开始获取下载链接')
+    conn = sqlite3.connect('getchu.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM getchu_games')
+    games = cursor.fetchall()
+    for index, game in enumerate(games):
+        game_date = game[0]
+        game_name = game[1]
+        logging.info(f'开始获取游戏 {game_name} 的下载链接，当前进度: {index + 1}/{len(games)}')
+        nyaa_data_list = get_nyaa_data(game_name)
+        yymm_format = game_date.replace('-', '')[2:]
+        current_list = [data for data in nyaa_data_list if yymm_format in data.name]
+        current_list.sort(key=lambda x: yymm_format in x.name, reverse=True)
+        if current_list:
+            nyaa_data_list = current_list
+        selected_data = None
+        if nyaa_data_list:
+            for data in nyaa_data_list:
+                if 'girlcelly' in data.name:
+                    selected_data = data
+                    break
+            else:
+                selected_data = nyaa_data_list[0]
+        if selected_data:
+            try:
+                selected_data_date = datetime.strptime(selected_data.date, '%Y-%m-%d %H:%M')
+            except (ValueError, TypeError):
+                selected_data_date = None
+            try:
+                game_date = datetime.strptime(game_date, '%Y-%m')
+            except ValueError:
+                logging.warning(f"无效的日期格式: {game_date}")
                 continue
-            game_name = row['name']
-            nyaa_data_list = get_nyaa_data(game_name)
-            yymm_format = sheet_time_obj.strftime('%y%m')
-            # 筛选出包含当前sheet名时间的数据
-            current_list = [data for data in nyaa_data_list if yymm_format in data.name]
-            # 按照包含当前sheet名时间的数据排序
-            current_list.sort(key=lambda x: yymm_format in x.name, reverse=True)
-            # 若current_list不为空，则将其赋值给nyaa_data_list
-            if current_list:
-                nyaa_data_list = current_list
-            
-            selected_data = None
-            if nyaa_data_list:
-                for data in nyaa_data_list:
-                    if 'girlcelly' in data.name:
-                        # 若数据名称中包含"girlcelly"，则立即选定此数据并中断循环
-                        selected_data = data
-                        break
-                else:
-                    # 若循环正常结束而未通过break中断，说明未找到包含"girlcelly"的数据
-                    selected_data = nyaa_data_list[0]
-            
-            if selected_data:
-                try:
-                    selected_data_date = datetime.strptime(selected_data.date, '%Y-%m-%d %H:%M')
-                except (ValueError, TypeError):
-                    selected_data_date = None
-                
-                if selected_data_date and selected_data_date < sheet_time_obj:
-                    # 如果date小于sheet名时间，则将date计入comment列
-                    sheet_df.at[index, 'comment'] = str(selected_data.date)
-                    # 记录需要设置背景色的行索引
-                    rows_to_fill.append(index)
-                
-                # 否则，将size和link计入Excel
-                sheet_df.at[index, 'size'] = str(selected_data.size)
-                sheet_df.at[index, 'link'] = str(selected_data.link)
-                logging.debug("已更新行 %d 的size和link", index + 1)  # 行索引通常从0开始，但用户可能期望从1开始计数
-            
-            # 每次调用get_nyaa_data后可能需要休眠（如果需要的话）
-            time.sleep(2)
-        
-        # 将更新后的DataFrame写回Excel文件
-        with pd.ExcelWriter(file_path, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
-            sheet_df.to_excel(writer, sheet_name=sheet_name, index=False)
-            worksheet = writer.sheets[sheet_name]
-            fill = PatternFill(start_color='D9D9D9', end_color='D9D9D9', fill_type='solid')
-            for row_idx in rows_to_fill:
-                excel_row = row_idx + 2  # 加上标题行的偏移
-                for cell in worksheet.iter_rows(min_row=excel_row, max_row=excel_row, values_only=False):
-                    for c in cell:
-                        c.fill = fill
-        
-        logging.info("已完成处理sheet: %s", sheet_name)
-    
-    logging.info("已完成处理Excel文件: %s", file_path)
+            if selected_data_date and selected_data_date < game_date:
+                cursor.execute('UPDATE getchu_games SET comment = ? WHERE date = ? AND name = ?', (str(selected_data.date), game[0], game[1]))
+            cursor.execute('UPDATE getchu_games SET size = ?, link = ? WHERE date = ? AND name = ?', (str(selected_data.size), str(selected_data.link), game[0], game[1]))
+            conn.commit()
+            logging.info(f'已更新游戏 {game_name} 的下载链接和大小信息')
+        time.sleep(2)
+    conn.close()
+    logging.info("已完成从数据库获取数据并更新")
+
+# 配置日志记录器
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# 确保logger没有重复的handler
+logger.handlers = []
+
+# 创建一个文件处理器
+file_handler = logging.FileHandler('app.log', encoding='utf-8')
+file_handler.setLevel(logging.INFO)
+
+# 创建一个流处理器，用于输出到控制台
+stream_handler = logging.StreamHandler()
+stream_handler.setLevel(logging.INFO)
+
+# 创建一个格式化器并添加到处理器
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+file_handler.setFormatter(formatter)
+stream_handler.setFormatter(formatter)
+
+# 将处理器添加到logger
+logger.addHandler(file_handler)
+logger.addHandler(stream_handler)
+
+# 后续代码使用logger进行日志记录，例如：
+# logger.info('This is an info message')
