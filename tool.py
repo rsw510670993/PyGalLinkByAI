@@ -128,17 +128,17 @@ def get_nyaa_data(game_name):
     try:
         response = requests.get(f'https://sukebei.nyaa.si/?f=0&c=1_3&q={game_name}')
         response.raise_for_status()
-    except (requests.exceptions.ConnectTimeout, requests.exceptions.MaxRetryError) as e:
+    except (requests.exceptions.ConnectTimeout, requests.exceptions.RetryError) as e:
         logging.error(f'获取游戏 {game_name} 数据时连接超时或重试次数过多: {e}')
         return []
     soup = BeautifulSoup(response.text, 'html.parser')
     rows = soup.find_all('tr')
     if not rows:
-        keyword = re.sub(r'[^ws]', '', game_name)
+        keyword = re.sub(r'[^\w\s]', '', game_name)
         try:
             response = requests.get(f'https://sukebei.nyaa.si/?f=0&c=1_3&q={keyword}')
             response.raise_for_status()
-        except (requests.exceptions.ConnectTimeout, requests.exceptions.MaxRetryError) as e:
+        except (requests.exceptions.ConnectTimeout, requests.exceptions.RetryError) as e:
             logging.error(f'使用关键词 {keyword} 获取游戏 {game_name} 数据时连接超时或重试次数过多: {e}')
             return []
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -184,7 +184,6 @@ def get_download_link():
     for index, game in enumerate(games):
         game_date = game[0]
         game_name = game[1]
-        logging.info(f'开始获取游戏 {game_name} 的下载链接，当前进度: {index + 1}/{len(games)}')
         nyaa_data_list = get_nyaa_data(game_name)
         yymm_format = game_date.replace('-', '')[2:]
         current_list = [data for data in nyaa_data_list if yymm_format in data.name]
@@ -199,21 +198,21 @@ def get_download_link():
                     break
             else:
                 selected_data = nyaa_data_list[0]
-        if selected_data:
-            try:
-                selected_data_date = datetime.strptime(selected_data.date, '%Y-%m-%d %H:%M')
-            except (ValueError, TypeError):
-                selected_data_date = None
-            try:
-                game_date = datetime.strptime(game_date, '%Y-%m')
-            except ValueError:
-                logging.warning(f"无效的日期格式: {game_date}")
-                continue
-            if selected_data_date and selected_data_date < game_date:
-                cursor.execute('UPDATE getchu_games SET comment = ? WHERE date = ? AND name = ?', (str(selected_data.date), game[0], game[1]))
-            cursor.execute('UPDATE getchu_games SET size = ?, link = ? WHERE date = ? AND name = ?', (str(selected_data.size), str(selected_data.link), game[0], game[1]))
-            conn.commit()
-            logging.info(f'已更新游戏 {game_name} 的下载链接和大小信息')
+            if selected_data:
+                try:
+                    selected_data_date = datetime.strptime(selected_data.date, '%Y-%m-%d %H:%M')
+                except (ValueError, TypeError):
+                    selected_data_date = None
+                try:
+                    game_date = datetime.strptime(game_date, '%Y-%m')
+                except ValueError:
+                    logging.warning(f"无效的日期格式: {game_date}")
+                    continue
+                if selected_data_date and selected_data_date < game_date:
+                    cursor.execute('UPDATE getchu_games SET comment = ? WHERE date = ? AND name = ?', (str(selected_data.date), game[0], game[1]))
+                cursor.execute('UPDATE getchu_games SET size = ?, link = ? WHERE date = ? AND name = ?', (str(selected_data.size), str(selected_data.link), game[0], game[1]))
+                conn.commit()
+                logging.info(f'已更新游戏 {game_name} 的下载链接和大小信息，当前进度: {index + 1}/{len(games)}')
         time.sleep(2)
     conn.close()
     logging.info("已完成从数据库获取数据并更新")
