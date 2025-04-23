@@ -104,10 +104,36 @@ def data_page():
 
 @app.route('/start_download', methods=['POST'])
 def start_download():
-    data = request.json
-    year = int(data['year'])
-    # 这里添加实际的下载逻辑
-    return jsonify({'status': 'success', 'message': '下载链接获取已启动'})
+    try:
+        data = request.json
+        year = int(data['year'])
+        month = int(data['month']) if 'month' in data and data['month'] != '0' else None
+        
+        if month:
+            print(f"开始下载{year}年{month}月的游戏数据")
+        else:
+            print(f"开始下载{year}年的游戏数据")
+        
+        # 调用工具模块执行下载
+        download_result = tool.download_games_by_month(year, month) if month else all(tool.download_games_by_month(year, m) for m in range(1, 13))
+        
+        if download_result:
+            if month:
+                print(f"{year}年{month}月游戏数据下载完成")
+                return jsonify({'status': 'success', 'message': f'{year}年{month}月游戏数据下载完成'})
+            else:
+                print(f"{year}年游戏数据下载完成")
+                return jsonify({'status': 'success', 'message': f'{year}年游戏数据下载完成'})
+        else:
+            if month:
+                print(f"{year}年{month}月游戏数据下载失败")
+                return jsonify({'status': 'error', 'message': f'{year}年{month}月下载失败，请检查日志'})
+            else:
+                print(f"{year}年游戏数据下载失败")
+                return jsonify({'status': 'error', 'message': '下载失败，请检查日志'})
+    except Exception as e:
+        print(f"下载过程中发生错误: {str(e)}")
+        return jsonify({'status': 'error', 'message': f'下载错误: {str(e)}'})
 
 def run_spider(start_year, end_year):
     for year in range(start_year, end_year + 1):

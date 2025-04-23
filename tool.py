@@ -97,8 +97,8 @@ def deduplicate_games(raw_games):
         processed_games.append(game)
         processed_names.add(game.name)
     
-    # 返回前根据index再次排序
-    processed_games.sort(key=lambda x: x.index)
+    # 返回前根据日期和名称排序
+    processed_games.sort(key=lambda x: (x.date, x.name))
     return processed_games
 
 def get_getchu_games(year, month):
@@ -139,7 +139,7 @@ def get_all_getchu_games(start_year, end_year, start_month, end_month, db_path='
         conn.close()
         return success_count > 0
     except Exception as e:
-        logging.error(f'数据库操作失败: {str(e)}')
+        logging.error(f'get_all_getchu_games,数据库操作失败: {str(e)}')
         return False
 
 def get_nyaa_data(game_name):
@@ -192,6 +192,60 @@ def get_nyaa_data(game_name):
     # 按日期倒序排序
     nyaa_data_list.sort(key=lambda x: x.date if x.date else datetime.min, reverse=True)
     return nyaa_data_list
+
+def download_games_by_month(year, month):
+    """
+    按月从nyaa获取游戏下载链接
+    :param year: 要下载的年份
+    :param month: 要下载的月份
+    :return: 操作是否成功
+    """
+    try:
+        logging.info(f'开始获取{year}年{month}月的游戏下载链接')
+        
+        # 从数据库获取该月份的游戏数据
+        conn = sqlite3.connect('getchu.db')
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM getchu_games WHERE date LIKE ?', (f"{year}-{month:02d}",))
+        games = cursor.fetchall()
+        
+        if not games:
+            logging.warning(f'{year}年{month}月没有找到游戏数据')
+            return False
+            
+        # 为每个游戏获取nyaa下载链接
+        success_count = 0
+        for game in games:
+            game_date = game[0]
+            game_name = game[1]
+            nyaa_data_list = get_nyaa_data(game_name)
+            
+            if nyaa_data_list:
+                selected_data = None
+                for data in nyaa_data_list:
+                    if 'girlcelly' in data.name:
+                        selected_data = data
+                        break
+                else:
+                    selected_data = nyaa_data_list[0]
+                
+                if selected_data:
+                    cursor.execute('UPDATE getchu_games SET size = ?, link = ? WHERE date = ? AND name = ?', 
+                                 (selected_data.size, selected_data.link, game_date, game_name))
+                    success_count += 1
+                    logging.debug(f'已更新游戏 {game_name} 的下载链接')
+            time.sleep(2)
+        
+        conn.commit()
+        conn.close()
+        
+        logging.info(f'成功更新{year}年{month}月{success_count}个游戏的下载链接')
+        return success_count > 0
+        
+    except Exception as e:
+        logging.error(f'获取{year}年{month}月游戏下载链接时出错: {str(e)}')
+        return False
+
 
 def get_years_list():
     """直接从数据库查询所有不重复的年份列表"""
