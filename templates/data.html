@@ -8,6 +8,37 @@
 <body>
     <div class="container mt-4">
         <h1>已采集游戏数据</h1>
+        
+        <div class="row mb-3">
+            <div class="col-md-3">
+                <label for="year-filter" class="form-label">年份</label>
+                <select id="year-filter" class="form-select">
+                    <option value="">全部年份</option>
+                </select>
+            </div>
+            <div class="col-md-3">
+                <label for="month-filter" class="form-label">月份</label>
+                <select id="month-filter" class="form-select">
+                    <option value="">全部月份</option>
+                    <option value="1">1月</option>
+                    <option value="2">2月</option>
+                    <option value="3">3月</option>
+                    <option value="4">4月</option>
+                    <option value="5">5月</option>
+                    <option value="6">6月</option>
+                    <option value="7">7月</option>
+                    <option value="8">8月</option>
+                    <option value="9">9月</option>
+                    <option value="10">10月</option>
+                    <option value="11">11月</option>
+                    <option value="12">12月</option>
+                </select>
+            </div>
+            <div class="col-md-2 align-self-end">
+                <button id="apply-filter" class="btn btn-primary">筛选</button>
+            </div>
+        </div>
+        
         <div class="table-responsive">
             <table class="table table-striped table-hover table-fixed" id="gamesTable">
             <style>
@@ -62,7 +93,14 @@ function updateTable(data) {
 }
 
 function loadPage(page) {
-    fetch(`/games?page=${page}`)
+    const year = document.getElementById('year-filter').value;
+    const month = document.getElementById('month-filter').value;
+    
+    let url = `/games?page=${page}`;
+    if (year) url += `&year=${year}`;
+    if (month) url += `&month=${month}`;
+    
+    fetch(url)
         .then(response => response.json())
         .then(res => {
             updateTable(res.data);
@@ -77,16 +115,39 @@ function loadPage(page) {
         });
 }
 
+// 初始化年份下拉框
+function initYearFilter() {
+    fetch('/years')
+        .then(response => response.json())
+        .then(res => {
+            const yearFilter = document.getElementById('year-filter');
+            
+            res.years.forEach(year => {
+                const option = document.createElement('option');
+                option.value = year;
+                option.textContent = year;
+                yearFilter.appendChild(option);
+            });
+        });
+}
+
+// 应用筛选
+document.getElementById('apply-filter').addEventListener('click', () => {
+    loadPage(1);
+});
+
+// 页面加载时初始化
+window.addEventListener('DOMContentLoaded', () => {
+    initYearFilter();
+    loadPage(1);
+});
+
 document.getElementById('prev-page').addEventListener('click', () => {
     if (currentPage > 1) loadPage(currentPage - 1);
 });
 
 document.getElementById('next-page').addEventListener('click', () => {
     loadPage(currentPage + 1);
-});
-
-window.addEventListener('DOMContentLoaded', () => {
-    loadPage(1);
 });
 </script>
 </body>

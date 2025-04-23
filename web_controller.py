@@ -46,6 +46,15 @@ def stop_spider():
 def get_status():
     return jsonify(spider_status)
 
+@app.route('/years')
+def get_all_years():
+    # 直接获取年份列表
+    years = tool.get_years_list()
+    
+    return jsonify({
+        'years': years
+    })
+
 @app.route('/games')
 def get_games():
     # 从config.json读取分页配置，默认50
@@ -56,8 +65,19 @@ def get_games():
     # 获取分页参数
     page = request.args.get('page', default=1, type=int)
     
+    # 获取筛选参数
+    year = request.args.get('year', type=int)
+    month = request.args.get('month', type=int)
+    
     # 获取所有游戏数据
     all_games = tool.get_games_data()
+    
+    # 应用筛选条件
+    if year:
+        all_games = [g for g in all_games if g.year == year]
+    if month:
+        all_games = [g for g in all_games if g.month == month]
+        
     total = len(all_games)
     
     # 计算分页

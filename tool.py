@@ -193,6 +193,16 @@ def get_nyaa_data(game_name):
     nyaa_data_list.sort(key=lambda x: x.date if x.date else datetime.min, reverse=True)
     return nyaa_data_list
 
+def get_years_list():
+    """直接从数据库查询所有不重复的年份列表"""
+    conn = sqlite3.connect('getchu.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT DISTINCT substr(date, 1, 4) FROM getchu_games ORDER BY date DESC')
+    years = [int(row[0]) for row in cursor.fetchall()]
+    conn.close()
+    return years
+
+
 def get_download_link(year=None, month=None):
     logging.info('开始获取下载链接')
     conn = sqlite3.connect('getchu.db')
