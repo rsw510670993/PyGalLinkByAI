@@ -39,23 +39,55 @@
         </div>
 
     <script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.1/js/bootstrap.bundle.min.js"></script>
-    <script>
-        window.addEventListener('DOMContentLoaded', () => {
-            fetch('/games')
-                .then(response => response.json())
-                .then(data => {
-                    const tbody = document.querySelector('#gamesTable tbody');
-                    tbody.innerHTML = data.map(game => `
-                        <tr>
-                            <td>${game.year}</td>
-                            <td>${game.month}</td>
-                            <td>${game.name}</td>
-                            <td>${game.company}</td>
-                            <td>${game.download_url ? `<a href="${game.download_url}" class="btn btn-primary">下载</a>` : ''}</td>
-                        </tr>
-                    `).join('');
-                });
+    <div class="pagination mt-3 mb-3">
+    <button id="prev-page" class="btn btn-outline-primary">上一页</button>
+    <span id="page-info" class="mx-3">第1页</span>
+    <button id="next-page" class="btn btn-outline-primary">下一页</button>
+</div>
+
+<script>
+let currentPage = 1;
+
+function updateTable(data) {
+    const tbody = document.querySelector('#gamesTable tbody');
+    tbody.innerHTML = data.map(game => `
+        <tr>
+            <td>${game.year}</td>
+            <td>${game.month}</td>
+            <td>${game.name}</td>
+            <td>${game.company}</td>
+            <td>${game.download_url ? `<a href="${game.download_url}" class="btn btn-primary">下载</a>` : ''}</td>
+        </tr>
+    `).join('');
+}
+
+function loadPage(page) {
+    fetch(`/games?page=${page}`)
+        .then(response => response.json())
+        .then(res => {
+            updateTable(res.data);
+            
+            currentPage = res.current_page;
+            document.getElementById('page-info').textContent = 
+                `第${currentPage}页，共${Math.ceil(res.total / res.per_page)}页`;
+            
+            document.getElementById('prev-page').disabled = currentPage <= 1;
+            document.getElementById('next-page').disabled = 
+                currentPage >= Math.ceil(res.total / res.per_page);
         });
-    </script>
+}
+
+document.getElementById('prev-page').addEventListener('click', () => {
+    if (currentPage > 1) loadPage(currentPage - 1);
+});
+
+document.getElementById('next-page').addEventListener('click', () => {
+    loadPage(currentPage + 1);
+});
+
+window.addEventListener('DOMContentLoaded', () => {
+    loadPage(1);
+});
+</script>
 </body>
 </html>

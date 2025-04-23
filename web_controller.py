@@ -1,6 +1,6 @@
 from flask import Flask, render_template, request, jsonify
 import threading
-import os
+import json
 import tool
 
 app = Flask(__name__)
@@ -48,14 +48,35 @@ def get_status():
 
 @app.route('/games')
 def get_games():
-    games_data = tool.get_games_data()
-    return jsonify([{
-        'year': g.year,
-        'month': g.month,
-        'name': g.name,
-        'company': g.company,
-        'download_url': g.link
-    } for g in games_data])
+    # 从config.json读取分页配置，默认50
+    with open('config.json', 'r', encoding='utf-8') as f:
+        config = json.load(f)
+    per_page = config.get('per_page', 50)
+    
+    # 获取分页参数
+    page = request.args.get('page', default=1, type=int)
+    
+    # 获取所有游戏数据
+    all_games = tool.get_games_data()
+    total = len(all_games)
+    
+    # 计算分页
+    start = (page - 1) * per_page
+    end = start + per_page
+    games_data = all_games[start:end]
+    
+    return jsonify({
+        'data': [{
+            'year': g.year,
+            'month': g.month,
+            'name': g.name,
+            'company': g.company,
+            'download_url': g.link
+        } for g in games_data],
+        'current_page': page,
+        'per_page': per_page,
+        'total': total
+    })
 
 @app.route('/data')
 def data_page():
