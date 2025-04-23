@@ -1,0 +1,105 @@
+from flask import Flask, render_template, request, jsonify
+import threading
+import os
+import tool
+
+app = Flask(__name__)
+
+# 全局变量存储爬虫状态
+spider_status = {
+    'running': False,
+    'progress': 0,
+    'current_year': None,
+    'current_month': None,
+    'total_years': 0
+}
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/start_spider', methods=['POST'])
+def start_spider():
+    if spider_status['running']:
+        return jsonify({'status': 'error', 'message': '爬虫已在运行中'})
+    
+    data = request.json
+    start_year = int(data['start_year'])
+    end_year = int(data['end_year'])
+    
+    spider_status['running'] = True
+    spider_status['current_year'] = start_year
+    spider_status['total_years'] = end_year - start_year + 1
+    spider_status['progress'] = 0
+    
+    # 在新线程中启动爬虫
+    threading.Thread(target=run_spider, args=(start_year, end_year)).start()
+    
+    return jsonify({'status': 'success', 'message': '爬虫已启动'})
+
+@app.route('/stop_spider', methods=['POST'])
+def stop_spider():
+    spider_status['running'] = False
+    return jsonify({'status': 'success', 'message': '爬虫停止请求已发送'})
+
+@app.route('/get_status', methods=['GET'])
+def get_status():
+    return jsonify(spider_status)
+
+@app.route('/games')
+def get_games():
+    games_data = tool.get_games_data()
+    return jsonify([{
+        'year': g.year,
+        'month': g.month,
+        'name': g.name,
+        'company': g.company,
+        'download_url': g.link
+    } for g in games_data])
+
+@app.route('/data')
+def data_page():
+    return render_template('data.html')
+
+@app.route('/start_download', methods=['POST'])
+def start_download():
+    data = request.json
+    year = int(data['year'])
+    # 这里添加实际的下载逻辑
+    return jsonify({'status': 'success', 'message': '下载链接获取已启动'})
+
+def run_spider(start_year, end_year):
+    for year in range(start_year, end_year + 1):
+        if not spider_status['running']:
+            break
+            
+        spider_status['current_year'] = year
+        
+        # 处理1-12月数据
+        for month in range(1, 13):
+            if not spider_status['running']:
+                break
+                
+            spider_status['current_month'] = month
+            spider_status['progress'] = ((year - start_year) * 12 + (month - 1)) / (spider_status['total_years'] * 12) * 100
+            spider_status['current_month'] = month
+            
+            # 获取并处理游戏数据
+            games = tool.get_raw_getchu_games(year, month)
+            
+            # 将数据保存到数据库
+            success = tool.get_all_getchu_games(year, year, month, month)
+            if success:  # 确保数据库操作完成
+                spider_status['progress'] = ((year - start_year) * 12 + (month - 1)) / (spider_status['total_years'] * 12) * 100
+                spider_status['current_game'] = f"已完成{year}年{month}月数据入库"
+            
+            # 处理每个游戏
+            for i, game in enumerate(games):
+                if not spider_status['running']:
+                    break
+                spider_status['current_game'] = f"正在处理{year}年{month}月游戏: {game.name} ({i+1}/{len(games)})"
+    
+    spider_status['running'] = False
+
+if __name__ == '__main__':
+    app.run(debug=True)

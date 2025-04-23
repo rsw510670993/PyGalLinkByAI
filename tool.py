@@ -30,13 +30,24 @@ def get_raw_getchu_games(year, month):
     # 构造目标URL
     url = f'https://www.getchu.com/all/price.html?genre=pc_soft&year={year}&month={month}'
     # 发送GET请求并检查响应状态
-    response = requests.get(url, cookies=cookies)
-    response.raise_for_status()
+    try:
+        response = requests.get(url, cookies=cookies)
+        response.raise_for_status()
+    except Exception as e:
+        logging.error(f'获取{year}年{month}月数据时出错: {str(e)}')
+        return []
     
     # 使用BeautifulSoup解析HTML内容
     soup = BeautifulSoup(response.text, 'html.parser')
+    if not soup:
+        logging.error(f'解析{year}年{month}月HTML内容失败')
+        return []
+        
     # 查找所有背景色为白色的表格行
     game_rows = soup.find_all('tr', bgcolor='#ffffff')
+    if not game_rows:
+        logging.warning(f'{year}年{month}月没有找到游戏数据')
+        return []
     
     raw_games = []
     for row in game_rows:
@@ -49,7 +60,7 @@ def get_raw_getchu_games(year, month):
             
             # 确保公司和名称都不为空 并 跳过包含skip列表中字符串的记录
             if company and name and not any(skip_str in name for skip_str in skip_list):
-                raw_games.append(GetchuGame(len(raw_games)+1, date, name, company))
+                raw_games.append(GetchuGame(date, name, company, None, None, None))
     
     return raw_games
 
@@ -97,32 +108,39 @@ def get_getchu_games(year, month):
 
 def get_all_getchu_games(start_year, end_year, start_month, end_month, db_path='getchu.db'):
     logging.info(f'开始获取{start_year}年{start_month}月至{end_year}年{end_month}月的数据')
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS getchu_games (
-            date TEXT,
-            name TEXT,
-            company TEXT,
-            size TEXT,
-            link TEXT,
-            comment TEXT,
-            PRIMARY KEY (date, name)
-        )
-    ''')
-    for year in range(start_year, end_year + 1):
-        for month in range(start_month, end_month + 1):
-            logging.info(f'正在处理{year}年{month}月的数据')
-            games = get_getchu_games(year, month)
-            if not games:
-                logging.warning(f'{year}年{month}月没有获取到数据')
-                continue
-            for game in games:
-                cursor.execute('INSERT OR IGNORE INTO getchu_games (date, name, company) VALUES (?,?,?)', (game.date, game.name, game.company))
-                logging.debug(f'已插入游戏: {game.name}')
-            logging.info(f'完成{year}年{month}月的数据处理，共处理{len(games)}个游戏')
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS getchu_games (
+                date TEXT,
+                name TEXT,
+                company TEXT,
+                size TEXT,
+                link TEXT,
+                comment TEXT,
+                PRIMARY KEY (date, name)
+            )
+        ''')
+        success_count = 0
+        for year in range(start_year, end_year + 1):
+            for month in range(start_month, end_month + 1):
+                logging.info(f'正在处理{year}年{month}月的数据')
+                games = get_getchu_games(year, month)
+                if not games:
+                    logging.warning(f'{year}年{month}月没有获取到数据')
+                    continue
+                for game in games:
+                    cursor.execute('INSERT OR IGNORE INTO getchu_games (date, name, company) VALUES (?,?,?)', (game.date, game.name, game.company))
+                    logging.debug(f'已插入游戏: {game.name}')
+                success_count += len(games)
+                logging.info(f'完成{year}年{month}月的数据处理，共处理{len(games)}个游戏')
+        conn.commit()
+        conn.close()
+        return success_count > 0
+    except Exception as e:
+        logging.error(f'数据库操作失败: {str(e)}')
+        return False
 
 def get_nyaa_data(game_name):
     try:
@@ -175,11 +193,16 @@ def get_nyaa_data(game_name):
     nyaa_data_list.sort(key=lambda x: x.date if x.date else datetime.min, reverse=True)
     return nyaa_data_list
 
-def get_download_link():
+def get_download_link(year=None, month=None):
     logging.info('开始获取下载链接')
     conn = sqlite3.connect('getchu.db')
     cursor = conn.cursor()
-    cursor.execute('SELECT * FROM getchu_games')
+    
+    if year and month:
+        cursor.execute('SELECT * FROM getchu_games WHERE date = ?', f"{year}-{month:02d}")
+    else:
+        cursor.execute('SELECT * FROM getchu_games')
+        
     games = cursor.fetchall()
     for index, game in enumerate(games):
         game_date = game[0]
@@ -215,7 +238,35 @@ def get_download_link():
                 logging.info(f'已更新游戏 {game_name} 的下载链接和大小信息，当前进度: {index + 1}/{len(games)}')
         time.sleep(2)
     conn.close()
-    logging.info("已完成从数据库获取数据并更新")
+    
+    if year and month:
+        logging.info(f"已完成{year}年{month}月的下载链接获取")
+    else:
+        logging.info("已完成所有下载链接获取")
+
+def get_games_data():
+    conn = sqlite3.connect('getchu.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT 
+            substr(date, 1, 4) as year,
+            substr(date, 6, 2) as month,
+            name,
+            company,
+            link as download_url
+        FROM getchu_games
+        ORDER BY year DESC, month DESC
+    ''')
+    games = [GetchuGame(
+            f"{row[0]}-{row[1]}",  # date
+            row[2],  # name
+            row[3],  # company
+            None,     # size
+            row[4],   # link
+            None      # comment
+        ) for row in cursor.fetchall()]
+    conn.close()
+    return games
 
 # 配置日志记录器
 logger = logging.getLogger(__name__)

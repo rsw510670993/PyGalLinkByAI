@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>游戏数据展示</title>
+    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.1/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container mt-4">
+        <h1>已采集游戏数据</h1>
+        <div class="table-responsive">
+            <table class="table table-striped table-hover table-fixed" id="gamesTable">
+            <style>
+            .table-fixed {
+                table-layout: fixed;
+            }
+            
+            .game-name-cell {
+                width: 300px;
+                min-width: 250px;
+                max-width: 350px;
+                white-space: normal;
+                word-wrap: break-word;
+            }
+            </style>
+            <thead class="table-dark">
+                <tr>
+                <th style="width: 80px">年份</th>
+                <th style="width: 80px">月份</th>
+                <th class="game-name-cell">游戏名称</th>
+                <th style="width: 150px">公司</th>
+                <th style="width: 120px">操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                <!-- 数据通过JavaScript动态加载 -->
+            </tbody>
+            </table>
+        </div>
+
+    <script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.1/js/bootstrap.bundle.min.js"></script>
+    <script>
+        window.addEventListener('DOMContentLoaded', () => {
+            fetch('/games')
+                .then(response => response.json())
+                .then(data => {
+                    const tbody = document.querySelector('#gamesTable tbody');
+                    tbody.innerHTML = data.map(game => `
+                        <tr>
+                            <td>${game.year}</td>
+                            <td>${game.month}</td>
+                            <td>${game.name}</td>
+                            <td>${game.company}</td>
+                            <td>${game.download_url ? `<a href="${game.download_url}" class="btn btn-primary">下载</a>` : ''}</td>
+                        </tr>
+                    `).join('');
+                });
+        });
+    </script>
+</body>
+</html>

@@ -1,9 +1,12 @@
 class GetchuGame:
-    def __init__(self, index, date, name, company):
-        self.index = index
+    def __init__(self, date, name, company, size, link, comment):
         self.date = date
+        self.year, self.month = map(int, date.split('-'))
         self.name = name
         self.company = company
+        self.size = size
+        self.link = link
+        self.comment = comment
 
     def __str__(self):
         return f"GetchuGame(date={self.date}, name='{self.name}', company='{self.company}')"

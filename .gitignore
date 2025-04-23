@@ -163,3 +163,5 @@ cython_debug/
 .vscode/
 *.xlsx
 uninstall.py
+.trae/
+getchu.db
