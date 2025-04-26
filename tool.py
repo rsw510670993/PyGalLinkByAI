@@ -1,18 +1,14 @@
 import json
 import logging
-import os
 import re
 import time
 from datetime import datetime
-import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-from openpyxl.styles import PatternFill
 from models import GetchuGame, NyaaData
 import sqlite3
 
 import logging
-from logging import StreamHandler
 
 # 配置日志记录器
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -60,7 +56,7 @@ def get_raw_getchu_games(year, month):
             
             # 确保公司和名称都不为空 并 跳过包含skip列表中字符串的记录
             if company and name and not any(skip_str in name for skip_str in skip_list):
-                raw_games.append(GetchuGame(date, name, company, None, None, None))
+                raw_games.append(GetchuGame(date, name, company))
     
     return raw_games
 
@@ -142,9 +138,9 @@ def get_all_getchu_games(start_year, end_year, start_month, end_month, db_path='
         logging.error(f'get_all_getchu_games,数据库操作失败: {str(e)}')
         return False
 
-def get_nyaa_data(game_name):
+def get_nyaa_data(game_name, company):
     try:
-        response = requests.get(f'https://sukebei.nyaa.si/?f=0&c=1_3&q={game_name}')
+        response = requests.get(f'https://sukebei.nyaa.si/?f=0&c=1_3&q={game_name}+{company}')
         response.raise_for_status()
     except (requests.exceptions.ConnectTimeout, requests.exceptions.RetryError) as e:
         logging.error(f'获取游戏 {game_name} 数据时连接超时或重试次数过多: {e}')
@@ -154,7 +150,7 @@ def get_nyaa_data(game_name):
     if not rows:
         keyword = re.sub(r'[^\w\s]', '', game_name)
         try:
-            response = requests.get(f'https://sukebei.nyaa.si/?f=0&c=1_3&q={keyword}')
+            response = requests.get(f'https://sukebei.nyaa.si/?f=0&c=1_3&q={keyword}+{company}')
             response.raise_for_status()
         except (requests.exceptions.ConnectTimeout, requests.exceptions.RetryError) as e:
             logging.error(f'使用关键词 {keyword} 获取游戏 {game_name} 数据时连接超时或重试次数过多: {e}')
@@ -167,7 +163,8 @@ def get_nyaa_data(game_name):
         cells = row.find_all('td')
         if len(cells) >= 5:
             # 第2列 游戏名
-            name_element = cells[1].select_one('a[href*="view"]')
+            link_views = cells[1].select('a[href*="view"]')
+            name_element = link_views[-1] if len(link_views) > 0 else None  # 如果有多个链接，取第一个作为游戏名，否则使用单元格内容作为游戏名
             name = name_element.attrs['title'] if name_element else cells[1].get_text(strip=True)
             
             # 第3列 下载链接
@@ -218,20 +215,24 @@ def download_games_by_month(year, month):
         for game in games:
             game_date = game[0]
             game_name = game[1]
-            nyaa_data_list = get_nyaa_data(game_name)
+            company = game[2]
+            nyaa_data_list = get_nyaa_data(game_name, company)
             
             if nyaa_data_list:
-                selected_data = None
-                for data in nyaa_data_list:
-                    if 'girlcelly' in data.name:
-                        selected_data = data
-                        break
-                else:
-                    selected_data = nyaa_data_list[0]
+                # 使用next函数优化查找逻辑
+                selected_data = next(
+                    (d for d in nyaa_data_list 
+                     if 'girlcelly' in d.name and f"{str(year)[-2:]}{month:02d}" in d.name),
+                    next(
+                        (d for d in nyaa_data_list 
+                         if f"{str(year)[-2:]}{month:02d}" in d.name),
+                        nyaa_data_list[0] if nyaa_data_list else None
+                    )
+                )
                 
                 if selected_data:
-                    cursor.execute('UPDATE getchu_games SET size = ?, link = ? WHERE date = ? AND name = ?', 
-                                 (selected_data.size, selected_data.link, game_date, game_name))
+                    cursor.execute('UPDATE getchu_games SET size = ?, link = ?, nyaa_name = ? WHERE date = ? AND name = ?', 
+                                 (selected_data.size, selected_data.link, selected_data.name, game_date, game_name))
                     success_count += 1
                     logging.debug(f'已更新游戏 {game_name} 的下载链接')
             time.sleep(2)
@@ -327,7 +328,6 @@ def get_games_data():
             row[3],  # company
             None,     # size
             row[4],   # link
-            None      # comment
         ) for row in cursor.fetchall()]
     conn.close()
     return games

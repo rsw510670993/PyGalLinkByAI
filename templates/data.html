@@ -34,8 +34,9 @@
                     <option value="12">12月</option>
                 </select>
             </div>
-            <div class="col-md-2 align-self-end">
-                <button id="apply-filter" class="btn btn-primary">筛选</button>
+            <div class="col-md-3 align-self-end">
+                <button id="apply-filter" class="btn btn-primary me-2">筛选</button>
+                <button id="get-all-links" class="btn btn-success">全部下载链接</button>
             </div>
         </div>
         
@@ -74,6 +75,9 @@
     <button id="prev-page" class="btn btn-outline-primary">上一页</button>
     <span id="page-info" class="mx-3">第1页</span>
     <button id="next-page" class="btn btn-outline-primary">下一页</button>
+</div>
+<div class="mt-3 mb-3">
+    <textarea id="download-links-output" class="form-control" rows="10" style="display:none;"></textarea>
 </div>
 
 <script>
@@ -149,6 +153,24 @@ document.getElementById('prev-page').addEventListener('click', () => {
 document.getElementById('next-page').addEventListener('click', () => {
     loadPage(currentPage + 1);
 });
+
+// 获取所有下载链接
+function getAllDownloadLinks() {
+    const downloadLinks = Array.from(document.querySelectorAll('#gamesTable a.btn-primary'))
+        .map(link => link.href)
+        .join('\n');
+    
+    const outputBox = document.getElementById('download-links-output');
+    if (downloadLinks) {
+        outputBox.value = downloadLinks;
+        outputBox.style.display = 'block';
+    } else {
+        outputBox.value = '没有找到可下载的链接';
+        outputBox.style.display = 'block';
+    }
+}
+
+document.getElementById('get-all-links').addEventListener('click', getAllDownloadLinks);
 </script>
 </body>
 </html>
