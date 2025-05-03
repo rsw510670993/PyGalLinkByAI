@@ -13,6 +13,11 @@ import logging
 # 配置日志记录器
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+def clear_link(nyaa_data):
+    # 清除链接信息，将 link 属性置为 None
+    nyaa_data.link = None
+    return nyaa_data
+
 def get_raw_getchu_games(year, month):
     # 读取config.json文件，获取配置信息
     with open('config.json', 'r', encoding='utf-8') as f:
@@ -139,6 +144,8 @@ def get_all_getchu_games(start_year, end_year, start_month, end_month, db_path='
         return False
 
 def get_nyaa_data(game_name, company):
+    # 去除干扰检索条件的特殊字符
+    game_name = re.sub(r'[-]', '', game_name)
     try:
         response = requests.get(f'https://sukebei.nyaa.si/?f=0&c=1_3&q={game_name}+{company}')
         response.raise_for_status()
@@ -149,6 +156,7 @@ def get_nyaa_data(game_name, company):
     rows = soup.find_all('tr')
     if not rows:
         keyword = re.sub(r'[^\w\s]', '', game_name)
+        logging.warning(f'使用关键词 {keyword} 获取游戏 {game_name} 数据')
         try:
             response = requests.get(f'https://sukebei.nyaa.si/?f=0&c=1_3&q={keyword}+{company}')
             response.raise_for_status()
@@ -220,24 +228,43 @@ def download_games_by_month(year, month):
             
             if nyaa_data_list:
                 # 使用next函数优化查找逻辑
-                selected_data = next(
-                    (d for d in nyaa_data_list 
-                     if 'girlcelly' in d.name and f"{str(year)[-2:]}{month:02d}" in d.name),
-                    next(
-                        (d for d in nyaa_data_list 
-                         if f"{str(year)[-2:]}{month:02d}" in d.name),
-                        nyaa_data_list[0] if nyaa_data_list else None
-                    )
-                )
+                selected_data = None
+                # 优先查找包含girlcelly和年月的数据
+                for data in nyaa_data_list:
+                    if 'girlcelly' in data.name and f"{str(year)[-2:]}{month:02d}" in data.name:
+                        selected_data = data
+                        break
+
+                if selected_data is None:
+                    for data in nyaa_data_list:
+                        if '2D.G.F.' in data.name and f"{str(year)[-2:]}{month:02d}" in data.name:
+                            selected_data = data
+                            break
+                
+                # 如果没有找到，则查找仅包含年月的数据
+                if selected_data is None:
+                    for data in nyaa_data_list:
+                        if f"{str(year)[-2:]}{month:02d}" in data.name:
+                            selected_data = data
+                            break
+                
+                # 如果仍然没有找到，则使用第一条数据
+                if selected_data is None and nyaa_data_list:
+                    selected_data = clear_link(nyaa_data_list[0])
+                    logging.warning(f'未找到包含{str(year)[-2:]}{month:02d}的下载链接，记录第一条数据: {selected_data.name}')
                 
                 if selected_data:
                     cursor.execute('UPDATE getchu_games SET size = ?, link = ?, nyaa_name = ? WHERE date = ? AND name = ?', 
                                  (selected_data.size, selected_data.link, selected_data.name, game_date, game_name))
                     success_count += 1
                     logging.debug(f'已更新游戏 {game_name} 的下载链接')
+                else:
+                    cursor.execute('''UPDATE getchu_games SET size = NULL, link = NULL, nyaa_name = NULL, comment = NULL
+                                WHERE date = ? AND name = ?''', (game_date, game_name))
+                    logging.debug(f'已清除游戏 {game_name} 的下载链接')        
+            conn.commit()
             time.sleep(2)
-        
-        conn.commit()
+
         conn.close()
         
         logging.info(f'成功更新{year}年{month}月{success_count}个游戏的下载链接')

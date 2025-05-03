@@ -58,9 +58,9 @@
             <thead class="table-dark">
                 <tr>
                 <th style="width: 80px">年份</th>
-                <th style="width: 80px">月份</th>
                 <th class="game-name-cell">游戏名称</th>
                 <th style="width: 150px">公司</th>
+                <th style="width: 80px">選択</th>
                 <th style="width: 120px">操作</th>
                 </tr>
             </thead>
@@ -84,16 +84,46 @@
 let currentPage = 1;
 
 function updateTable(data) {
+
     const tbody = document.querySelector('#gamesTable tbody');
-    tbody.innerHTML = data.map(game => `
+    
+    // 检测重复的下载链接
+    const urlCounts = {};
+    data.forEach(game => {
+        if (game.download_url) {
+            urlCounts[game.download_url] = (urlCounts[game.download_url] || 0) + 1;
+        }
+    });
+    
+    tbody.innerHTML = data.map(game => {
+        let btnClass = 'btn-primary';
+        if (game.download_url && urlCounts[game.download_url] > 1) {
+            btnClass = 'btn-danger';
+        }
+        return `
         <tr>
-            <td>${game.year}</td>
-            <td>${game.month}</td>
+            <td>${game.year}/${game.month}</td>
             <td>${game.name}</td>
             <td>${game.company}</td>
-            <td>${game.download_url ? `<a href="${game.download_url}" class="btn btn-primary">下载</a>` : ''}</td>
+            <td>
+                <input type="checkbox" 
+                    class="game-checkbox" 
+                    ${game.download_url ? 'checked' : ''} 
+                    onchange="this.closest('tr').querySelector('.download-btn').style.display = this.checked ? '' : 'none'">
+            </td>
+            <td>
+                ${game.download_url ? 
+                    `<a href="${game.download_url}" 
+                        class="btn ${btnClass} ${game.download_url ? 'download-btn' : ''}" 
+                        style="display:${game.download_url ? '' : 'none'}">
+                        下载
+                    </a>` 
+                    : ''
+                }
+            </td>
         </tr>
-    `).join('');
+        `;
+    }).join('');
 }
 
 function loadPage(page) {
@@ -156,7 +186,7 @@ document.getElementById('next-page').addEventListener('click', () => {
 
 // 获取所有下载链接
 function getAllDownloadLinks() {
-    const downloadLinks = Array.from(document.querySelectorAll('#gamesTable a.btn-primary'))
+    const downloadLinks = Array.from(document.querySelectorAll('#gamesTable a.download-btn'))
         .map(link => link.href)
         .join('\n');
     
