@@ -191,12 +191,29 @@ function getAllDownloadLinks() {
         .join('\n');
     
     const outputBox = document.getElementById('download-links-output');
+    
     if (downloadLinks) {
-        outputBox.value = downloadLinks;
-        outputBox.style.display = 'block';
+        // 尝试使用剪贴板API
+        if (navigator.clipboard) {
+            navigator.clipboard.writeText(downloadLinks)
+                .then(() => {
+                    alert('下载链接已复制到剪贴板!');
+                    outputBox.style.display = 'none';
+                })
+                .catch(err => {
+                    console.error('无法复制到剪贴板:', err);
+                    outputBox.value = downloadLinks;
+                    outputBox.style.display = 'block';
+                    alert('自动复制失败，链接已显示在下方文本框中');
+                });
+        } else {
+            // 浏览器不支持剪贴板API
+            outputBox.value = downloadLinks;
+            outputBox.style.display = 'block';
+            alert('您的浏览器不支持自动复制，链接已显示在下方文本框中');
+        }
     } else {
-        outputBox.value = '没有找到可下载的链接';
-        outputBox.style.display = 'block';
+        alert('没有找到可下载的链接');
     }
 }
 
