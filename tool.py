@@ -230,25 +230,19 @@ def download_games_by_month(year, month):
                 selected_data = None
                 # 优先查找包含girlcelly和年月的数据
                 current_month = f"{str(year)[-2:]}{month:02d}"
-                # 一部分游戏发售日期比getchu数据提前一个月
-                last_month = f"{str(year-1)[-2:]}12" if month == 1 else f"{str(year)[-2:]}{(month-1):02d}"
-                for data in nyaa_data_list:
-                    if 'girlcelly' in data.name and (current_month in data.name or last_month in data.name):
-                        selected_data = data
-                        break
-
-                if selected_data is None:
-                    for data in nyaa_data_list:
-                        if '2D.G.F.' in data.name and (current_month in data.name or last_month in data.name):
-                            selected_data = data
-                            break
-                
-                # 如果没有找到，则查找仅包含年月的数据
-                if selected_data is None:
-                    for data in nyaa_data_list:
-                        if current_month in data.name or last_month in data.name:
-                            selected_data = data
-                            break
+                selected_data = next(
+                    (d for d in nyaa_data_list 
+                     if 'girlcelly' in d.name and current_month in d.name),
+                    next(
+                        (d for d in nyaa_data_list 
+                         if '2D.G.F.' in d.name and current_month in d.name),
+                        next(
+                            (d for d in nyaa_data_list 
+                                if current_month in d.name),
+                            None
+                        )
+                    )
+                )
                 
                 # 如果仍然没有找到，则使用第一条数据
                 if selected_data is None and nyaa_data_list:
@@ -263,10 +257,9 @@ def download_games_by_month(year, month):
                 else:
                     cursor.execute('''UPDATE getchu_games SET size = NULL, link = NULL, nyaa_name = NULL, comment = NULL
                                 WHERE date = ? AND name = ?''', (game_date, game_name))
-                    logging.debug(f'已清除游戏 {game_name} 的下载链接')        
-            conn.commit()
+                    logging.debug(f'已清除游戏 {game_name} 的下载链接')
             time.sleep(2)
-
+        conn.commit()
         conn.close()
         
         logging.info(f'成功更新{year}年{month}月{success_count}个游戏的下载链接')
