@@ -5,9 +5,8 @@ import logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # 测试游戏名称
-test_game = "美少女万華鏡 -罪と罰の少女-"
-test_company = "ωstar"
-#test_game = "楓ふうあ"
+test_game = "銀色、遥か"
+test_company = "tone work’s	"
 
 # 调用函数并打印结果
 print(f"测试游戏: [{test_company}]{test_game}")

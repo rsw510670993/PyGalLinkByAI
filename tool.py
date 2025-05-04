@@ -156,7 +156,6 @@ def get_nyaa_data(game_name, company):
     rows = soup.find_all('tr')
     if not rows:
         keyword = re.sub(r'[^\w\s]', '', game_name)
-        logging.warning(f'使用关键词 {keyword} 获取游戏 {game_name} 数据')
         try:
             response = requests.get(f'https://sukebei.nyaa.si/?f=0&c=1_3&q={keyword}+{company}')
             response.raise_for_status()
@@ -230,21 +229,24 @@ def download_games_by_month(year, month):
                 # 使用next函数优化查找逻辑
                 selected_data = None
                 # 优先查找包含girlcelly和年月的数据
+                current_month = f"{str(year)[-2:]}{month:02d}"
+                # 一部分游戏发售日期比getchu数据提前一个月
+                last_month = f"{str(year-1)[-2:]}12" if month == 1 else f"{str(year)[-2:]}{(month-1):02d}"
                 for data in nyaa_data_list:
-                    if 'girlcelly' in data.name and f"{str(year)[-2:]}{month:02d}" in data.name:
+                    if 'girlcelly' in data.name and (current_month in data.name or last_month in data.name):
                         selected_data = data
                         break
 
                 if selected_data is None:
                     for data in nyaa_data_list:
-                        if '2D.G.F.' in data.name and f"{str(year)[-2:]}{month:02d}" in data.name:
+                        if '2D.G.F.' in data.name and (current_month in data.name or last_month in data.name):
                             selected_data = data
                             break
                 
                 # 如果没有找到，则查找仅包含年月的数据
                 if selected_data is None:
                     for data in nyaa_data_list:
-                        if f"{str(year)[-2:]}{month:02d}" in data.name:
+                        if current_month in data.name or last_month in data.name:
                             selected_data = data
                             break
                 
