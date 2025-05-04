@@ -186,7 +186,7 @@ document.getElementById('next-page').addEventListener('click', () => {
 
 // 获取所有下载链接
 function getAllDownloadLinks() {
-    const downloadLinks = Array.from(document.querySelectorAll('#gamesTable a.download-btn'))
+    const downloadLinks = Array.from(document.querySelectorAll('#gamesTable a.download-btn:not([style*="display: none"])'))
         .map(link => link.href)
         .join('\n');
     
