@@ -19,7 +19,13 @@
         <div class="row mb-3">
             <div class="col-md-6" style="position: relative;">
                 <label for="month-picker" class="form-label">选择月份</label>
-                <input type="text" class="form-control" id="month-picker" placeholder="选择月份">
+                <div class="input-group">
+                    <button id="prev-year" class="btn btn-outline-secondary" type="button">去年</button>
+                    <button id="prev-month" class="btn btn-outline-secondary" type="button">上月</button>
+                    <input type="text" class="form-control" id="month-picker" placeholder="选择月份">
+                    <button id="next-month" class="btn btn-outline-secondary" type="button">下月</button>
+                    <button id="next-year" class="btn btn-outline-secondary" type="button">明年</button>
+                </div>
             </div>
             <div class="col-md-3 align-self-end">
                 <button id="apply-filter" class="btn btn-primary me-2">筛选</button>
@@ -155,6 +161,45 @@ function initMonthPicker() {
         autoclose: true,
         todayHighlight: true,
         clearBtn: true
+    }).on('changeDate', function() {
+        loadPage(1);
+    });
+    
+    // 时间导航按钮事件
+    document.getElementById('prev-year').addEventListener('click', () => {
+        const date = $('#month-picker').datepicker('getDate');
+        if (date) {
+            date.setFullYear(date.getFullYear() - 1);
+            $('#month-picker').datepicker('setDate', date);
+            loadPage(1);
+        }
+    });
+    
+    document.getElementById('prev-month').addEventListener('click', () => {
+        const date = $('#month-picker').datepicker('getDate');
+        if (date) {
+            date.setMonth(date.getMonth() - 1);
+            $('#month-picker').datepicker('setDate', date);
+            loadPage(1);
+        }
+    });
+    
+    document.getElementById('next-month').addEventListener('click', () => {
+        const date = $('#month-picker').datepicker('getDate');
+        if (date) {
+            date.setMonth(date.getMonth() + 1);
+            $('#month-picker').datepicker('setDate', date);
+            loadPage(1);
+        }
+    });
+    
+    document.getElementById('next-year').addEventListener('click', () => {
+        const date = $('#month-picker').datepicker('getDate');
+        if (date) {
+            date.setFullYear(date.getFullYear() + 1);
+            $('#month-picker').datepicker('setDate', date);
+            loadPage(1);
+        }
     });
 }
 
