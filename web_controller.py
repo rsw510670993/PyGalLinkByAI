@@ -91,7 +91,9 @@ def get_games():
             'month': g.month,
             'name': g.name,
             'company': g.company,
-            'download_url': g.link
+            'download_url': g.link,
+            'nyaa_name': g.nyaa_name,
+            'comment': g.comment
         } for g in games_data],
         'current_page': page,
         'per_page': per_page,

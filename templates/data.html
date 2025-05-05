@@ -5,34 +5,21 @@
     <title>游戏数据展示</title>
     <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.1/css/bootstrap.min.css" rel="stylesheet">
 </head>
-<body>
-    <div class="container mt-4">
-        <h1>已采集游戏数据</h1>
-        
-        <div class="row mb-3">
-            <div class="col-md-3">
-                <label for="year-filter" class="form-label">年份</label>
-                <select id="year-filter" class="form-select">
-                    <option value="">全部年份</option>
-                </select>
+<body style="padding-top: 45px;">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark fixed-top">
+        <div class="container">
+            <a class="navbar-brand" href="#">已采集游戏数据</a>
+            <div class="navbar-nav">
+                <a class="nav-link" href="/">首页</a>
+                <a class="nav-link active" href="/data">数据展示</a>
             </div>
-            <div class="col-md-3">
-                <label for="month-filter" class="form-label">月份</label>
-                <select id="month-filter" class="form-select">
-                    <option value="">全部月份</option>
-                    <option value="1">1月</option>
-                    <option value="2">2月</option>
-                    <option value="3">3月</option>
-                    <option value="4">4月</option>
-                    <option value="5">5月</option>
-                    <option value="6">6月</option>
-                    <option value="7">7月</option>
-                    <option value="8">8月</option>
-                    <option value="9">9月</option>
-                    <option value="10">10月</option>
-                    <option value="11">11月</option>
-                    <option value="12">12月</option>
-                </select>
+        </div>
+    </nav>
+    <div class="container mt-4">
+        <div class="row mb-3">
+            <div class="col-md-6" style="position: relative;">
+                <label for="month-picker" class="form-label">选择月份</label>
+                <input type="text" class="form-control" id="month-picker" placeholder="选择月份">
             </div>
             <div class="col-md-3 align-self-end">
                 <button id="apply-filter" class="btn btn-primary me-2">筛选</button>
@@ -54,6 +41,10 @@
                 white-space: normal;
                 word-wrap: break-word;
             }
+
+            .datepicker-dropdown {
+                margin-top: 30px;
+            }
             </style>
             <thead class="table-dark">
                 <tr>
@@ -70,6 +61,10 @@
             </table>
         </div>
 
+    <script src="https://cdn.bootcdn.net/ajax/libs/jquery/3.6.4/jquery.min.js"></script>
+    <script src="https://cdn.bootcdn.net/ajax/libs/bootstrap-datepicker/1.9.0/js/bootstrap-datepicker.min.js"></script>
+    <script src="https://cdn.bootcdn.net/ajax/libs/bootstrap-datepicker/1.9.0/locales/bootstrap-datepicker.zh-CN.min.js"></script>
+    <link href="https://cdn.bootcdn.net/ajax/libs/bootstrap-datepicker/1.9.0/css/bootstrap-datepicker.min.css" rel="stylesheet">
     <script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.1/js/bootstrap.bundle.min.js"></script>
     <div class="pagination mt-3 mb-3">
     <button id="prev-page" class="btn btn-outline-primary">上一页</button>
@@ -103,13 +98,13 @@ function updateTable(data) {
         return `
         <tr>
             <td>${game.year}/${game.month}</td>
-            <td>${game.name}</td>
+            <td>${game.name}${game.nyaa_name ? `<div class="text-muted small" style="display:${game.download_url ? 'none' : ''}">${game.nyaa_name}</div>` : ''}</td>
             <td>${game.company}</td>
             <td>
                 <input type="checkbox" 
                     class="game-checkbox" 
                     ${game.download_url ? 'checked' : ''} 
-                    onchange="this.closest('tr').querySelector('.download-btn').style.display = this.checked ? '' : 'none'">
+                    onchange="handleCheckboxChange(this)">
             </td>
             <td>
                 ${game.download_url ? 
@@ -127,12 +122,13 @@ function updateTable(data) {
 }
 
 function loadPage(page) {
-    const year = document.getElementById('year-filter').value;
-    const month = document.getElementById('month-filter').value;
+    const monthValue = document.getElementById('month-picker').value;
     
     let url = `/games?page=${page}`;
-    if (year) url += `&year=${year}`;
-    if (month) url += `&month=${month}`;
+    if (monthValue) {
+        const [year, month] = monthValue.split('-');
+        url += `&year=${year}&month=${month}`;
+    }
     
     fetch(url)
         .then(response => response.json())
@@ -149,20 +145,17 @@ function loadPage(page) {
         });
 }
 
-// 初始化年份下拉框
-function initYearFilter() {
-    fetch('/years')
-        .then(response => response.json())
-        .then(res => {
-            const yearFilter = document.getElementById('year-filter');
-            
-            res.years.forEach(year => {
-                const option = document.createElement('option');
-                option.value = year;
-                option.textContent = year;
-                yearFilter.appendChild(option);
-            });
-        });
+// 初始化月份选择器
+function initMonthPicker() {
+    $('#month-picker').datepicker({
+        language: 'zh-CN',
+        orientation: 'auto',
+        format: 'yyyy-mm',
+        minViewMode: 'months',
+        autoclose: true,
+        todayHighlight: true,
+        clearBtn: true
+    });
 }
 
 // 应用筛选
@@ -172,7 +165,7 @@ document.getElementById('apply-filter').addEventListener('click', () => {
 
 // 页面加载时初始化
 window.addEventListener('DOMContentLoaded', () => {
-    initYearFilter();
+    initMonthPicker();
     loadPage(1);
 });
 
@@ -215,6 +208,13 @@ function getAllDownloadLinks() {
     } else {
         alert('没有找到可下载的链接');
     }
+}
+
+function handleCheckboxChange(checkbox) {
+    const tr = checkbox.closest('tr');
+    tr.querySelector('.download-btn').style.display = checkbox.checked ? '' : 'none';
+    const nyaaDiv = tr.querySelector('.text-muted');
+    if(nyaaDiv) nyaaDiv.style.display = checkbox.checked ? 'none' : '';
 }
 
 document.getElementById('get-all-links').addEventListener('click', getAllDownloadLinks);

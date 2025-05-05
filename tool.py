@@ -340,7 +340,9 @@ def get_games_data():
             substr(date, 6, 2) as month,
             name,
             company,
-            link as download_url
+            link as download_url,
+            nyaa_name,
+            comment
         FROM getchu_games
         ORDER BY year DESC, month DESC
     ''')
@@ -350,6 +352,8 @@ def get_games_data():
             row[3],  # company
             None,     # size
             row[4],   # link
+            row[5],   # nyaa_name
+            row[6]    # comment
         ) for row in cursor.fetchall()]
     conn.close()
     return games
