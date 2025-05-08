@@ -107,10 +107,12 @@ function updateTable(data) {
             <td>${game.name}${game.nyaa_name ? `<div class="text-muted small" style="display:${game.download_url ? 'none' : ''}">${game.nyaa_name}</div>` : ''}</td>
             <td>${game.company}</td>
             <td>
-                <input type="checkbox" 
-                    class="game-checkbox" 
-                    ${game.download_url ? 'checked' : ''} 
-                    onchange="handleCheckboxChange(this)">
+                ${(game.download_url) ? 
+                    `<input type="checkbox" 
+                        class="game-checkbox" 
+                        ${game.download_url ? 'checked' : ''} 
+                        onchange="handleCheckboxChange(this)">`
+                    : ''}
             </td>
             <td>
                 ${game.download_url ? 
