@@ -156,8 +156,9 @@ def get_nyaa_data(game_name, company):
     rows = soup.find_all('tr')
     if not rows:
         keyword = re.sub(r'[^\w\s]', '', game_name)
+        keyword2 = re.sub(r'[-]', ' ', company)
         try:
-            response = requests.get(f'https://sukebei.nyaa.si/?f=0&c=1_3&q={keyword}+{company}')
+            response = requests.get(f'https://sukebei.nyaa.si/?f=0&c=1_3&q={keyword}+{keyword2}')
             response.raise_for_status()
         except (requests.exceptions.ConnectTimeout, requests.exceptions.RetryError) as e:
             logging.error(f'使用关键词 {keyword} 获取游戏 {game_name} 数据时连接超时或重试次数过多: {e}')
