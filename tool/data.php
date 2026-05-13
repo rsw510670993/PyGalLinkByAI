@@ -11,7 +11,7 @@
             <a class="navbar-brand" href="#">已采集游戏数据</a>
             <div class="navbar-nav">
                 <a class="nav-link" href="/index.php">首页</a>
-                <a class="nav-link active" href="/data.php">数据展示</a>
+                <a class="nav-link active" href="/tool/data.php">数据展示</a>
             </div>
         </div>
     </nav>
@@ -130,7 +130,7 @@ function updateTable(data) {
 function loadPage(page) {
     const monthValue = document.getElementById('month-picker').value;
 
-    let url = `/api.php?action=games&page=${page}`;
+    let url = `/tool/api.php?action=games&page=${page}`;
     if (monthValue) {
         const [year, month] = monthValue.split('-');
         url += `&year=${year}&month=${month}`;

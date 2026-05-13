@@ -62,7 +62,7 @@
             <a class="navbar-brand" href="#">游戏链接采集</a>
             <div class="navbar-nav">
                 <a class="nav-link active" href="/index.php">首页</a>
-                <a class="nav-link" href="/data.php">数据展示</a>
+                <a class="nav-link" href="/tool/data.php">数据展示</a>
             </div>
         </div>
     </nav>
@@ -138,7 +138,7 @@
             const month = document.getElementById('download_month').value;
 
             try {
-                const response = await fetch('/api.php?action=start_download', {
+                const response = await fetch('/tool/api.php?action=start_download', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
@@ -167,7 +167,7 @@
 
         downloadStopBtn.addEventListener('click', async () => {
             try {
-                const response = await fetch('/api.php?action=stop_download', { method: 'POST' });
+                const response = await fetch('/tool/api.php?action=stop_download', { method: 'POST' });
                 const data = await response.json();
                 if (data.status === 'success') {
                     downloadStopBtn.disabled = true;
@@ -185,7 +185,7 @@
             const endYear = document.getElementById('end_year').value;
 
             try {
-                const response = await fetch('/api.php?action=start_spider', {
+                const response = await fetch('/tool/api.php?action=start_spider', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
@@ -219,7 +219,7 @@
 
         stopBtn.addEventListener('click', async () => {
             try {
-                const response = await fetch('/api.php?action=stop_spider', { method: 'POST' });
+                const response = await fetch('/tool/api.php?action=stop_spider', { method: 'POST' });
                 const data = await response.json();
                 if (data.status === 'success') {
                     stopBtn.disabled = true;
@@ -234,7 +234,7 @@
 
         async function updateStatus() {
             try {
-                const response = await fetch('/api.php?action=get_status');
+                const response = await fetch('/tool/api.php?action=get_status');
                 const data = await response.json();
 
                 if (!data.running) {
@@ -272,7 +272,7 @@
 
         async function updateDownloadStatus() {
             try {
-                const response = await fetch('/api.php?action=download_status');
+                const response = await fetch('/tool/api.php?action=download_status');
                 const data = await response.json();
                 if (!data.running) {
                     clearInterval(downloadIntervalId);

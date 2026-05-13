@@ -13,13 +13,13 @@
 
 ## 安装步骤
 1. 克隆项目仓库
-2. 安装依赖：`pip install -r requirements.txt`
-3. 配置`config.json`文件
-4. 配置 Web 服务器站点根目录指向 `public/`（nginx+php-fpm）
-5. 访问站点打开 Web 界面（首页：`/index.php`，数据页：`/data.php`）
+2. 初回部署（Ubuntu 24.04）：`bash scripts/first_deploy_ubuntu24.sh`
+3. 配置`tool/config.json`文件
+4. 配置 Web 服务器站点根目录指向仓库根目录（nginx+php-fpm）
+5. 访问站点打开 Web 界面（首页：`/index.php`，数据页：`/tool/data.php`）
 
 ## 配置说明
-编辑`config.json`文件：
+编辑`tool/config.json`文件：
 - `skip`: 跳过包含这些关键词的游戏
 - `delete`: 从游戏名中删除这些关键词
 - `special`: 特殊处理的关键词
@@ -34,11 +34,28 @@
 3. 点击"获取下载链接"按钮
 4. 查看游戏列表和对应的下载链接
 
+## Nginx安全建议
+
+如果 nginx root 指向仓库根目录，建议拒绝访问以下路径：
+
+- `/.venv/`
+- `/getchu.db`
+- `/status/`
+- `/logs/`
+- `/tool/*.py`
+- `/tool/config.json`
+- `/tool/requirements.txt`
+
 ## 项目结构
-- `tool.py`: 核心爬虫和数据处理逻辑
-- `cli.py`: PHP 调用的 Python 统一入口（输出 JSON）
-- `spider_worker.py`: 爬虫后台任务（写入状态文件）
-- `download_worker.py`: 下载链接后台任务（写入状态文件）
-- `runtime.py`: 运行时配置/状态文件工具
-- `public/`: PHP 页面与接口（站点根目录）
-- `config.json`: 配置文件
+- `index.php`: 首页（根目录）
+- `tool/`: PHP 页面与接口 + Python 代码（同时也是 Python 包）
+- `tool/api.php`: PHP API 入口
+- `tool/data.php`: 数据展示页
+- `tool/cli.py`: PHP 调用的 Python 统一入口（输出 JSON）
+- `tool/core.py`: 核心爬虫和数据处理逻辑
+- `tool/spider_worker.py`: 爬虫后台任务（写入状态文件）
+- `tool/download_worker.py`: 下载链接后台任务（写入状态文件）
+- `tool/runtime.py`: 运行时配置/状态文件工具
+- `tool/config.json`: 配置文件
+- `tool/requirements.txt`: Python 顶层依赖
+- `scripts/first_deploy_ubuntu24.sh`: 初回部署脚本（删除既存 db/.venv 并重建）

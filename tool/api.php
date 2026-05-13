@@ -21,9 +21,13 @@ function as_int($value, $default = null) {
 
 function run_cli($args) {
     $root = realpath(__DIR__ . '/..');
-    $cli = $root . '/cli.py';
+    $cli = __DIR__ . '/cli.py';
+
     $python = getenv('PYTHON_BIN');
-    if (!$python) $python = 'python3';
+    if (!$python) {
+        $venv_python = $root . '/.venv/bin/python';
+        $python = is_file($venv_python) ? $venv_python : 'python3';
+    }
 
     $cmd = escapeshellcmd($python) . ' ' . escapeshellarg($cli);
     foreach ($args as $a) {

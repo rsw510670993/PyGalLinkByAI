@@ -2,9 +2,12 @@ import argparse
 import logging
 import os
 import signal
+import sys
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
 import tool
-from runtime import now_ts, runtime_paths, write_json_atomic
+from tool.runtime import now_ts, runtime_paths, write_json_atomic
 
 
 _stop_requested = False
@@ -78,4 +81,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

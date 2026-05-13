@@ -5,7 +5,25 @@ import tempfile
 import time
 
 
-def read_config(config_path="config.json"):
+def _tool_dir():
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def repo_root():
+    return os.path.abspath(os.path.join(_tool_dir(), os.pardir))
+
+
+def _abs_from_root(path):
+    if not path:
+        return path
+    if os.path.isabs(path):
+        return path
+    return os.path.abspath(os.path.join(repo_root(), path))
+
+
+def read_config(config_path=None):
+    if config_path is None:
+        config_path = os.path.join(_tool_dir(), "config.json")
     try:
         with open(config_path, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -13,11 +31,12 @@ def read_config(config_path="config.json"):
         return {}
 
 
-def runtime_paths(config_path="config.json"):
+def runtime_paths(config_path=None):
     config = read_config(config_path)
-    db_path = config.get("db_path", "getchu.db")
-    status_dir = config.get("status_dir", "status")
-    log_path = config.get("log_path", os.path.join("logs", "app.log"))
+    db_path = _abs_from_root(config.get("db_path", "getchu.db"))
+    status_dir = _abs_from_root(config.get("status_dir", "status"))
+    log_path = _abs_from_root(config.get("log_path", os.path.join("logs", "app.log")))
+
     return {
         "config": config,
         "db_path": db_path,
@@ -74,3 +93,4 @@ def pid_is_running(pid):
 
 def terminate_pid(pid, sig=signal.SIGTERM):
     os.kill(pid, sig)
+

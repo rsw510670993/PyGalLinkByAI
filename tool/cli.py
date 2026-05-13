@@ -5,8 +5,10 @@ import signal
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
+
 import tool
-from runtime import pid_is_running, read_json, runtime_paths, terminate_pid, write_json_atomic
+from tool.runtime import pid_is_running, read_json, runtime_paths, terminate_pid, write_json_atomic
 
 
 def _print(obj):
@@ -265,4 +267,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

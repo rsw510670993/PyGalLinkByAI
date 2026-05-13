@@ -11,9 +11,10 @@ class GetchuGame:
 
     def __str__(self):
         return f"GetchuGame(date={self.date}, name='{self.name}', company='{self.company}')"
-    
+
     def __repr__(self):
         return self.__str__()
+
 
 class NyaaData:
     def __init__(self, date, size, name, link):
@@ -24,6 +25,7 @@ class NyaaData:
 
     def __str__(self):
         return f"NyaaData(date={self.date}, size={self.size}, name='{self.name}')"
-    
+
     def __repr__(self):
         return self.__str__()
+
