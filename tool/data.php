@@ -6,12 +6,13 @@
     <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.1/css/bootstrap.min.css" rel="stylesheet">
 </head>
 <body style="padding-top: 45px;">
+<?php $base = rtrim(dirname(dirname($_SERVER['SCRIPT_NAME'])), '/'); ?>
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark fixed-top">
         <div class="container">
             <a class="navbar-brand" href="#">已采集游戏数据</a>
             <div class="navbar-nav">
-                <a class="nav-link" href="/index.php">首页</a>
-                <a class="nav-link active" href="/tool/data.php">数据展示</a>
+                <a class="nav-link" href="<?= $base ?>/index.php">首页</a>
+                <a class="nav-link active" href="<?= $base ?>/tool/data.php">数据展示</a>
             </div>
         </div>
     </nav>
@@ -81,6 +82,7 @@
 </div>
 
 <script>
+const basePath = <?= json_encode($base, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?>;
 let currentPage = 1;
 
 function updateTable(data) {
@@ -130,7 +132,7 @@ function updateTable(data) {
 function loadPage(page) {
     const monthValue = document.getElementById('month-picker').value;
 
-    let url = `/tool/api.php?action=games&page=${page}`;
+    let url = `${basePath}/tool/api.php?action=games&page=${page}`;
     if (monthValue) {
         const [year, month] = monthValue.split('-');
         url += `&year=${year}&month=${month}`;
@@ -259,4 +261,3 @@ document.getElementById('get-all-links').addEventListener('click', getAllDownloa
 </script>
 </body>
 </html>
-
