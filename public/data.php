@@ -10,8 +10,8 @@
         <div class="container">
             <a class="navbar-brand" href="#">已采集游戏数据</a>
             <div class="navbar-nav">
-                <a class="nav-link" href="/">首页</a>
-                <a class="nav-link active" href="/data">数据展示</a>
+                <a class="nav-link" href="/index.php">首页</a>
+                <a class="nav-link active" href="/data.php">数据展示</a>
             </div>
         </div>
     </nav>
@@ -32,14 +32,14 @@
                 <button id="get-all-links" class="btn btn-success">全部下载链接</button>
             </div>
         </div>
-        
+
         <div class="table-responsive">
             <table class="table table-striped table-hover table-fixed" id="gamesTable">
             <style>
             .table-fixed {
                 table-layout: fixed;
             }
-            
+
             .game-name-cell {
                 width: 300px;
                 min-width: 250px;
@@ -62,7 +62,6 @@
                 </tr>
             </thead>
             <tbody>
-                <!-- 数据通过JavaScript动态加载 -->
             </tbody>
             </table>
         </div>
@@ -87,15 +86,14 @@ let currentPage = 1;
 function updateTable(data) {
 
     const tbody = document.querySelector('#gamesTable tbody');
-    
-    // 检测重复的下载链接
+
     const urlCounts = {};
     data.forEach(game => {
         if (game.download_url) {
             urlCounts[game.download_url] = (urlCounts[game.download_url] || 0) + 1;
         }
     });
-    
+
     tbody.innerHTML = data.map(game => {
         let btnClass = 'btn-primary';
         if (game.download_url && urlCounts[game.download_url] > 1) {
@@ -107,20 +105,20 @@ function updateTable(data) {
             <td>${game.name}${game.nyaa_name ? `<div class="text-muted small" style="display:${game.download_url ? 'none' : ''}">${game.nyaa_name}</div>` : ''}</td>
             <td>${game.company}</td>
             <td>
-                ${(game.download_url) ? 
-                    `<input type="checkbox" 
-                        class="game-checkbox" 
-                        ${game.download_url ? 'checked' : ''} 
+                ${(game.download_url) ?
+                    `<input type="checkbox"
+                        class="game-checkbox"
+                        ${game.download_url ? 'checked' : ''}
                         onchange="handleCheckboxChange(this)">`
                     : ''}
             </td>
             <td>
-                ${game.download_url ? 
-                    `<a href="${game.download_url}" 
-                        class="btn ${btnClass} ${game.download_url ? 'download-btn' : ''}" 
+                ${game.download_url ?
+                    `<a href="${game.download_url}"
+                        class="btn ${btnClass} ${game.download_url ? 'download-btn' : ''}"
                         style="display:${game.download_url ? '' : 'none'}">
                         下载
-                    </a>` 
+                    </a>`
                     : ''
                 }
             </td>
@@ -131,29 +129,28 @@ function updateTable(data) {
 
 function loadPage(page) {
     const monthValue = document.getElementById('month-picker').value;
-    
-    let url = `/games?page=${page}`;
+
+    let url = `/api.php?action=games&page=${page}`;
     if (monthValue) {
         const [year, month] = monthValue.split('-');
         url += `&year=${year}&month=${month}`;
     }
-    
+
     fetch(url)
         .then(response => response.json())
         .then(res => {
             updateTable(res.data);
-            
+
             currentPage = res.current_page;
-            document.getElementById('page-info').textContent = 
+            document.getElementById('page-info').textContent =
                 `第${currentPage}页，共${Math.ceil(res.total / res.per_page)}页`;
-            
+
             document.getElementById('prev-page').disabled = currentPage <= 1;
-            document.getElementById('next-page').disabled = 
+            document.getElementById('next-page').disabled =
                 currentPage >= Math.ceil(res.total / res.per_page);
         });
 }
 
-// 初始化月份选择器
 function initMonthPicker() {
     $('#month-picker').datepicker({
         language: 'zh-CN',
@@ -166,8 +163,7 @@ function initMonthPicker() {
     }).on('changeDate', function() {
         loadPage(1);
     });
-    
-    // 时间导航按钮事件
+
     document.getElementById('prev-year').addEventListener('click', () => {
         const date = $('#month-picker').datepicker('getDate');
         if (date) {
@@ -176,7 +172,7 @@ function initMonthPicker() {
             loadPage(1);
         }
     });
-    
+
     document.getElementById('prev-month').addEventListener('click', () => {
         const date = $('#month-picker').datepicker('getDate');
         if (date) {
@@ -185,7 +181,7 @@ function initMonthPicker() {
             loadPage(1);
         }
     });
-    
+
     document.getElementById('next-month').addEventListener('click', () => {
         const date = $('#month-picker').datepicker('getDate');
         if (date) {
@@ -194,7 +190,7 @@ function initMonthPicker() {
             loadPage(1);
         }
     });
-    
+
     document.getElementById('next-year').addEventListener('click', () => {
         const date = $('#month-picker').datepicker('getDate');
         if (date) {
@@ -205,12 +201,10 @@ function initMonthPicker() {
     });
 }
 
-// 应用筛选
 document.getElementById('apply-filter').addEventListener('click', () => {
     loadPage(1);
 });
 
-// 页面加载时初始化
 window.addEventListener('DOMContentLoaded', () => {
     initMonthPicker();
     loadPage(1);
@@ -224,16 +218,14 @@ document.getElementById('next-page').addEventListener('click', () => {
     loadPage(currentPage + 1);
 });
 
-// 获取所有下载链接
 function getAllDownloadLinks() {
     const downloadLinks = Array.from(document.querySelectorAll('#gamesTable a.download-btn:not([style*="display: none"])'))
         .map(link => link.href)
         .join('\n');
-    
+
     const outputBox = document.getElementById('download-links-output');
-    
+
     if (downloadLinks) {
-        // 尝试使用剪贴板API
         if (navigator.clipboard) {
             navigator.clipboard.writeText(downloadLinks)
                 .then(() => {
@@ -247,7 +239,6 @@ function getAllDownloadLinks() {
                     alert('自动复制失败，链接已显示在下方文本框中');
                 });
         } else {
-            // 浏览器不支持剪贴板API
             outputBox.value = downloadLinks;
             outputBox.style.display = 'block';
             alert('您的浏览器不支持自动复制，链接已显示在下方文本框中');
@@ -268,3 +259,4 @@ document.getElementById('get-all-links').addEventListener('click', getAllDownloa
 </script>
 </body>
 </html>
+

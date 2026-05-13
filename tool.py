@@ -107,22 +107,40 @@ def get_getchu_games(year, month):
     processed_games = deduplicate_games(raw_games)
     return processed_games
 
+def get_db_path(default='getchu.db'):
+    try:
+        with open('config.json', 'r', encoding='utf-8') as f:
+            config = json.load(f)
+        return config.get('db_path', default)
+    except Exception:
+        return default
+
+def ensure_getchu_schema(conn):
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS getchu_games (
+            date TEXT,
+            name TEXT,
+            company TEXT,
+            size TEXT,
+            link TEXT,
+            nyaa_name TEXT,
+            comment TEXT,
+            PRIMARY KEY (date, name)
+        )
+    ''')
+    cursor.execute("PRAGMA table_info(getchu_games)")
+    cols = {row[1] for row in cursor.fetchall()}
+    if "nyaa_name" not in cols:
+        cursor.execute("ALTER TABLE getchu_games ADD COLUMN nyaa_name TEXT")
+    conn.commit()
+
 def get_all_getchu_games(start_year, end_year, start_month, end_month, db_path='getchu.db'):
     logging.info(f'开始获取{start_year}年{start_month}月至{end_year}年{end_month}月的数据')
     try:
         conn = sqlite3.connect(db_path)
+        ensure_getchu_schema(conn)
         cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS getchu_games (
-                date TEXT,
-                name TEXT,
-                company TEXT,
-                size TEXT,
-                link TEXT,
-                comment TEXT,
-                PRIMARY KEY (date, name)
-            )
-        ''')
         success_count = 0
         for year in range(start_year, end_year + 1):
             for month in range(start_month, end_month + 1):
@@ -209,7 +227,8 @@ def download_games_by_month(year, month):
         logging.info(f'开始获取{year}年{month}月的游戏下载链接')
         
         # 从数据库获取该月份的游戏数据
-        conn = sqlite3.connect('getchu.db')
+        conn = sqlite3.connect(get_db_path())
+        ensure_getchu_schema(conn)
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM getchu_games WHERE date LIKE ?', (f"{year}-{month:02d}",))
         games = cursor.fetchall()
@@ -273,7 +292,8 @@ def download_games_by_month(year, month):
 
 def get_years_list():
     """直接从数据库查询所有不重复的年份列表"""
-    conn = sqlite3.connect('getchu.db')
+    conn = sqlite3.connect(get_db_path())
+    ensure_getchu_schema(conn)
     cursor = conn.cursor()
     cursor.execute('SELECT DISTINCT substr(date, 1, 4) FROM getchu_games ORDER BY date DESC')
     years = [int(row[0]) for row in cursor.fetchall()]
@@ -283,7 +303,8 @@ def get_years_list():
 
 def get_download_link(year=None, month=None):
     logging.info('开始获取下载链接')
-    conn = sqlite3.connect('getchu.db')
+    conn = sqlite3.connect(get_db_path())
+    ensure_getchu_schema(conn)
     cursor = conn.cursor()
     
     if year and month:
@@ -333,7 +354,8 @@ def get_download_link(year=None, month=None):
         logging.info("已完成所有下载链接获取")
 
 def get_games_data():
-    conn = sqlite3.connect('getchu.db')
+    conn = sqlite3.connect(get_db_path())
+    ensure_getchu_schema(conn)
     cursor = conn.cursor()
     cursor.execute('''
         SELECT 

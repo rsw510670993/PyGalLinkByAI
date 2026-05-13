@@ -61,33 +61,33 @@
         <div class="container">
             <a class="navbar-brand" href="#">游戏链接采集</a>
             <div class="navbar-nav">
-                <a class="nav-link active" href="/">首页</a>
-                <a class="nav-link" href="/data">数据展示</a>
+                <a class="nav-link active" href="/index.php">首页</a>
+                <a class="nav-link" href="/data.php">数据展示</a>
             </div>
         </div>
     </nav>
     <div class="container">
         <h1>爬虫控制面板</h1>
-    
+
     <div class="control-panel">
         <h2>控制区域</h2>
         <div>
             <label for="start_year">起始年份:</label>
             <input type="number" id="start_year" min="1980" max="3000" value="2018">
-            
+
             <label for="end_year">结束年份:</label>
             <input type="number" id="end_year" min="1980" max="3000" value="2020">
         </div>
-        
+
         <div style="margin-top: 20px;">
             <button id="start_btn">开始爬取</button>
             <button id="stop_btn" class="stop" disabled>停止爬取</button>
         </div>
-        
+
         <div style="margin-top: 20px;">
             <label for="download_year">下载年份:</label>
             <input type="number" id="download_year" min="1980" max="3000" value="2020">
-            
+
             <label for="download_month" style="margin-left: 10px;">月份:</label>
             <select id="download_month">
                 <option value="0">全部月份</option>
@@ -104,11 +104,12 @@
                 <option value="11">11月</option>
                 <option value="12">12月</option>
             </select>
-            
+
             <button id="download_btn">获取下载链接</button>
+            <button id="download_stop_btn" class="stop" disabled>停止下载</button>
         </div>
     </div>
-    
+
     <div class="status-panel">
         <h2>状态信息</h2>
         <div id="status_text">爬虫未运行</div>
@@ -116,24 +117,28 @@
         <div class="progress-bar">
             <div class="progress" id="progress_bar"></div>
         </div>
+        <div id="download_status_text" style="margin-top: 10px;"></div>
     </div>
 
     <script>
         const startBtn = document.getElementById('start_btn');
         const stopBtn = document.getElementById('stop_btn');
         const downloadBtn = document.getElementById('download_btn');
+        const downloadStopBtn = document.getElementById('download_stop_btn');
         const statusText = document.getElementById('status_text');
         const progressText = document.getElementById('progress_text');
         const progressBar = document.getElementById('progress_bar');
-        
+        const downloadStatusText = document.getElementById('download_status_text');
+
         let intervalId = null;
-        
+        let downloadIntervalId = null;
+
         downloadBtn.addEventListener('click', async () => {
             const year = document.getElementById('download_year').value;
             const month = document.getElementById('download_month').value;
-            
+
             try {
-                const response = await fetch('/start_download', {
+                const response = await fetch('/api.php?action=start_download', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
@@ -143,10 +148,14 @@
                         month: month
                     })
                 });
-                
+
                 const data = await response.json();
                 if (data.status === 'success') {
-                    alert('下载链接获取已完成');
+                    downloadBtn.disabled = true;
+                    downloadStopBtn.disabled = false;
+                    downloadStatusText.textContent = '下载任务已启动...';
+                    if (downloadIntervalId) clearInterval(downloadIntervalId);
+                    downloadIntervalId = setInterval(updateDownloadStatus, 1500);
                 } else {
                     alert(data.message);
                 }
@@ -155,13 +164,28 @@
                 alert('请求失败');
             }
         });
-        
+
+        downloadStopBtn.addEventListener('click', async () => {
+            try {
+                const response = await fetch('/api.php?action=stop_download', { method: 'POST' });
+                const data = await response.json();
+                if (data.status === 'success') {
+                    downloadStopBtn.disabled = true;
+                    downloadStatusText.textContent = '正在停止下载任务...';
+                } else {
+                    alert(data.message);
+                }
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        });
+
         startBtn.addEventListener('click', async () => {
             const startYear = document.getElementById('start_year').value;
             const endYear = document.getElementById('end_year').value;
-            
+
             try {
-                const response = await fetch('/start_spider', {
+                const response = await fetch('/api.php?action=start_spider', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
@@ -171,7 +195,7 @@
                         end_year: endYear
                     })
                 });
-                
+
                 const data = await response.json();
                 if (data.status === 'success') {
                     startBtn.disabled = true;
@@ -181,8 +205,7 @@
                     monthDisplay.id = 'month-display';
                     monthDisplay.style.marginTop = '10px';
                     document.querySelector('.status-panel').appendChild(monthDisplay);
-                    
-                    // 开始轮询状态
+
                     if (intervalId) clearInterval(intervalId);
                     intervalId = setInterval(updateStatus, 1000);
                 } else {
@@ -193,50 +216,46 @@
                 alert('请求失败');
             }
         });
-        
+
         stopBtn.addEventListener('click', async () => {
             try {
-                const response = await fetch('/stop_spider', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    }
-                });
-                
+                const response = await fetch('/api.php?action=stop_spider', { method: 'POST' });
                 const data = await response.json();
                 if (data.status === 'success') {
                     stopBtn.disabled = true;
                     statusText.textContent = '正在停止爬虫...';
+                } else {
+                    alert(data.message);
                 }
             } catch (error) {
                 console.error('Error:', error);
             }
         });
-        
+
         async function updateStatus() {
             try {
-                const response = await fetch('/get_status');
+                const response = await fetch('/api.php?action=get_status');
                 const data = await response.json();
-                
+
                 if (!data.running) {
                     clearInterval(intervalId);
                     startBtn.disabled = false;
                     stopBtn.disabled = true;
                     statusText.textContent = '爬虫已停止';
-                    progressText.textContent = `进度: 100%`;
-                    progressBar.style.width = `100%`;
+                    progressText.textContent = `进度: ${Math.round(data.progress || 0)}%`;
+                    progressBar.style.width = `${data.progress || 0}%`;
                     return;
                 }
-                
+
                 statusText.textContent = `正在处理 ${data.current_year} 年数据`;
-                progressText.textContent = `进度: ${Math.round(data.progress)}%`;
-                progressBar.style.width = `${data.progress}%`;
-                
+                progressText.textContent = `进度: ${Math.round(data.progress || 0)}%`;
+                progressBar.style.width = `${data.progress || 0}%`;
+
                 if (data.current_month) {
-                    document.getElementById('month-display').textContent = 
+                    document.getElementById('month-display').textContent =
                         `当前处理月份: ${data.current_year}年${data.current_month}月`;
                 }
-                
+
                 if (data.current_game) {
                     const gameDisplay = document.getElementById('game-display') || document.createElement('div');
                     gameDisplay.id = 'game-display';
@@ -250,6 +269,38 @@
                 console.error('Error:', error);
             }
         }
+
+        async function updateDownloadStatus() {
+            try {
+                const response = await fetch('/api.php?action=download_status');
+                const data = await response.json();
+                if (!data.running) {
+                    clearInterval(downloadIntervalId);
+                    downloadBtn.disabled = false;
+                    downloadStopBtn.disabled = true;
+                    if (data.message === 'success') {
+                        downloadStatusText.textContent = '下载任务已完成';
+                        alert('下载链接获取已完成');
+                    } else if (data.stopped_reason) {
+                        downloadStatusText.textContent = '下载任务已停止';
+                    } else {
+                        downloadStatusText.textContent = '下载任务失败';
+                        alert('下载任务失败，请检查日志');
+                    }
+                    return;
+                }
+
+                downloadStatusText.textContent = `下载任务运行中... (完成 ${data.finished_months || 0}/${data.total_months || 0})`;
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        }
+
+        window.addEventListener('DOMContentLoaded', async () => {
+            await updateStatus();
+            await updateDownloadStatus();
+        });
     </script>
 </body>
 </html>
+
