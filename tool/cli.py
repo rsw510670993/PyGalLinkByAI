@@ -124,6 +124,12 @@ def cmd_spider_start(args):
     if start_year > end_year:
         start_year, end_year = end_year, start_year
 
+    os.makedirs(paths["status_dir"], exist_ok=True)
+    os.makedirs(os.path.dirname(paths["log_path"]) or ".", exist_ok=True)
+
+    spider_launch_log = os.path.join(os.path.dirname(paths["log_path"]) or ".", "spider_launch.log")
+    launch_fp = open(spider_launch_log, "ab", buffering=0)
+
     p = subprocess.Popen(
         [
             sys.executable,
@@ -134,8 +140,8 @@ def cmd_spider_start(args):
             str(end_year),
         ],
         cwd=_base_dir(),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=launch_fp,
+        stderr=launch_fp,
         start_new_session=True,
     )
     started = False
@@ -203,6 +209,12 @@ def cmd_download_start(args):
     year = int(args.year)
     month = int(args.month) if args.month is not None else 0
 
+    os.makedirs(paths["status_dir"], exist_ok=True)
+    os.makedirs(os.path.dirname(paths["log_path"]) or ".", exist_ok=True)
+
+    download_launch_log = os.path.join(os.path.dirname(paths["log_path"]) or ".", "download_launch.log")
+    launch_fp = open(download_launch_log, "ab", buffering=0)
+
     p = subprocess.Popen(
         [
             sys.executable,
@@ -213,8 +225,8 @@ def cmd_download_start(args):
             str(month),
         ],
         cwd=_base_dir(),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=launch_fp,
+        stderr=launch_fp,
         start_new_session=True,
     )
     started = False

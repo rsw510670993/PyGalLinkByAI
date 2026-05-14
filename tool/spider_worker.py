@@ -4,6 +4,7 @@ import os
 import signal
 import sqlite3
 import sys
+import traceback
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
@@ -59,62 +60,70 @@ def main():
     }
     write_json_atomic(paths["spider_status_path"], status)
 
-    total_months = (end_year - start_year + 1) * 12
-    done_months = 0
-
-    conn = sqlite3.connect(paths["db_path"])
     try:
-        tool.ensure_getchu_schema(conn)
-        cursor = conn.cursor()
+        total_months = (end_year - start_year + 1) * 12
+        done_months = 0
 
-        for year in range(start_year, end_year + 1):
-            if _stop_requested:
-                status["stopped_reason"] = "signal"
-                break
+        conn = sqlite3.connect(paths["db_path"])
+        try:
+            tool.ensure_getchu_schema(conn)
+            cursor = conn.cursor()
 
-            status["current_year"] = year
-            for month in range(1, 13):
+            for year in range(start_year, end_year + 1):
                 if _stop_requested:
                     status["stopped_reason"] = "signal"
                     break
 
-                status["current_month"] = month
-                status["current_game"] = None
-                status["updated_at"] = now_ts()
-                write_json_atomic(paths["spider_status_path"], status)
-
-                games = tool.get_getchu_games(year, month)
-
-                for idx, game in enumerate(games):
+                status["current_year"] = year
+                for month in range(1, 13):
                     if _stop_requested:
                         status["stopped_reason"] = "signal"
                         break
 
-                    cursor.execute(
-                        "INSERT OR IGNORE INTO getchu_games (date, name, company) VALUES (?,?,?)",
-                        (game.date, game.name, game.company),
-                    )
+                    status["current_month"] = month
+                    status["current_game"] = None
+                    status["updated_at"] = now_ts()
+                    write_json_atomic(paths["spider_status_path"], status)
 
-                    if idx % 10 == 0 or idx == len(games) - 1:
-                        status["current_game"] = f"{game.name} ({idx + 1}/{len(games)})"
-                        status["updated_at"] = now_ts()
-                        write_json_atomic(paths["spider_status_path"], status)
+                    games = tool.get_getchu_games(year, month)
 
-                conn.commit()
+                    for idx, game in enumerate(games):
+                        if _stop_requested:
+                            status["stopped_reason"] = "signal"
+                            break
 
-                done_months += 1
-                status["progress"] = round(done_months / total_months * 100, 2)
-                status["updated_at"] = now_ts()
-                write_json_atomic(paths["spider_status_path"], status)
+                        cursor.execute(
+                            "INSERT OR IGNORE INTO getchu_games (date, name, company) VALUES (?,?,?)",
+                            (game.date, game.name, game.company),
+                        )
 
-            if _stop_requested:
-                break
+                        if idx % 10 == 0 or idx == len(games) - 1:
+                            status["current_game"] = f"{game.name} ({idx + 1}/{len(games)})"
+                            status["updated_at"] = now_ts()
+                            write_json_atomic(paths["spider_status_path"], status)
 
+                    conn.commit()
+
+                    done_months += 1
+                    status["progress"] = round(done_months / total_months * 100, 2)
+                    status["updated_at"] = now_ts()
+                    write_json_atomic(paths["spider_status_path"], status)
+
+                if _stop_requested:
+                    break
+        finally:
+            conn.close()
+    except Exception:
         status["running"] = False
+        status["stopped_reason"] = "error"
+        status["error"] = traceback.format_exc()
         status["updated_at"] = now_ts()
         write_json_atomic(paths["spider_status_path"], status)
-    finally:
-        conn.close()
+        raise
+
+    status["running"] = False
+    status["updated_at"] = now_ts()
+    write_json_atomic(paths["spider_status_path"], status)
 
 
 if __name__ == "__main__":

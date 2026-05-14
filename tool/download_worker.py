@@ -3,6 +3,7 @@ import logging
 import os
 import signal
 import sys
+import traceback
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
@@ -54,29 +55,38 @@ def main():
     }
     write_json_atomic(paths["download_status_path"], status)
 
-    success_all = True
-    for m in months:
-        if _stop_requested:
-            status["stopped_reason"] = "signal"
-            success_all = False
-            break
+    try:
+        success_all = True
+        for m in months:
+            if _stop_requested:
+                status["stopped_reason"] = "signal"
+                success_all = False
+                break
 
-        status["current_month"] = m
+            status["current_month"] = m
+            status["updated_at"] = now_ts()
+            write_json_atomic(paths["download_status_path"], status)
+
+            ok = tool.download_games_by_month(int(args.year), m)
+            success_all = success_all and bool(ok)
+
+            status["finished_months"] += 1
+            status["message"] = "success" if ok else "failed"
+            status["updated_at"] = now_ts()
+            write_json_atomic(paths["download_status_path"], status)
+
+        status["running"] = False
+        status["message"] = "success" if success_all else (status["stopped_reason"] or "failed")
         status["updated_at"] = now_ts()
         write_json_atomic(paths["download_status_path"], status)
-
-        ok = tool.download_games_by_month(int(args.year), m)
-        success_all = success_all and bool(ok)
-
-        status["finished_months"] += 1
-        status["message"] = "success" if ok else "failed"
+    except Exception:
+        status["running"] = False
+        status["stopped_reason"] = "error"
+        status["message"] = "failed"
+        status["error"] = traceback.format_exc()
         status["updated_at"] = now_ts()
         write_json_atomic(paths["download_status_path"], status)
-
-    status["running"] = False
-    status["message"] = "success" if success_all else (status["stopped_reason"] or "failed")
-    status["updated_at"] = now_ts()
-    write_json_atomic(paths["download_status_path"], status)
+        raise
 
 
 if __name__ == "__main__":
