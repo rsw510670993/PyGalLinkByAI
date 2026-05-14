@@ -4,6 +4,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
@@ -137,6 +138,28 @@ def cmd_spider_start(args):
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
+    started = False
+    for _ in range(10):
+        time.sleep(0.2)
+        status = read_json(paths["spider_status_path"], _spider_status_default())
+        if status.get("pid") == p.pid:
+            started = True
+            break
+
+    if not started:
+        try:
+            if pid_is_running(int(p.pid)):
+                terminate_pid(int(p.pid), signal.SIGTERM)
+        except Exception:
+            pass
+        _print(
+            {
+                "status": "error",
+                "message": "爬虫启动失败，请检查写权限（status/logs/getchu.db）与Python依赖是否已安装",
+            }
+        )
+        return
+
     _print({"status": "success", "message": "爬虫已启动", "pid": p.pid})
 
 
@@ -194,6 +217,28 @@ def cmd_download_start(args):
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
+    started = False
+    for _ in range(10):
+        time.sleep(0.2)
+        status = read_json(paths["download_status_path"], _download_status_default())
+        if status.get("pid") == p.pid:
+            started = True
+            break
+
+    if not started:
+        try:
+            if pid_is_running(int(p.pid)):
+                terminate_pid(int(p.pid), signal.SIGTERM)
+        except Exception:
+            pass
+        _print(
+            {
+                "status": "error",
+                "message": "下载任务启动失败，请检查写权限（status/logs/getchu.db）与Python依赖是否已安装",
+            }
+        )
+        return
+
     _print({"status": "success", "message": "下载任务已启动", "pid": p.pid})
 
 
