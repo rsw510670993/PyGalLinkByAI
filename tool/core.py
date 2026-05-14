@@ -20,6 +20,16 @@ def clear_link(nyaa_data):
     return nyaa_data
 
 
+def normalize_name(name, delete_list):
+    if not name:
+        return ""
+    for del_str in delete_list:
+        if del_str and del_str in name:
+            name = name.replace(del_str, " ")
+    name = re.sub(r"\s+", " ", name).strip()
+    return name
+
+
 def get_raw_getchu_games(year, month):
     config = read_config()
     skip_list = config.get("skip", [])
@@ -68,14 +78,15 @@ def deduplicate_games(raw_games):
     raw_games.sort(key=lambda x: (x.company, len(x.name)))
 
     processed_games = []
-    processed_names = set()
+    processed_keys = set()
 
     for game in raw_games:
-        stripped_name = game.name.rsplit(" ", 1)[0]
-        if game.name in processed_names or stripped_name in processed_names:
+        key = normalize_name(game.name, combined_list)
+        stripped_key = key.rsplit(" ", 1)[0] if " " in key else key
+        if key in processed_keys or stripped_key in processed_keys:
             continue
         processed_games.append(game)
-        processed_names.add(game.name)
+        processed_keys.add(key)
 
     processed_games.sort(key=lambda x: (x.date, x.name))
     return processed_games
