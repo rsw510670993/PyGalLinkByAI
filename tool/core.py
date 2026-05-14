@@ -58,8 +58,7 @@ def get_raw_getchu_games(year, month):
 
 def deduplicate_games(raw_games):
     config = read_config()
-    delete_list, special_list = config.get("delete", []), config.get("special", [])
-    combined_list = sorted(delete_list + special_list, key=len, reverse=True)
+    combined_list = sorted(config.get("delete", []), key=len, reverse=True)
 
     for game in raw_games:
         for del_str in combined_list:
@@ -360,4 +359,3 @@ def get_games_data():
     ]
     conn.close()
     return games
-
