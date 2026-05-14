@@ -243,6 +243,12 @@
                     clearInterval(intervalId);
                     startBtn.disabled = false;
                     stopBtn.disabled = true;
+                    if (!data.pid && !data.started_at) {
+                        statusText.textContent = '爬虫未运行';
+                        progressText.textContent = '';
+                        progressBar.style.width = `0%`;
+                        return;
+                    }
                     statusText.textContent = '爬虫已停止';
                     progressText.textContent = `进度: ${Math.round(data.progress || 0)}%`;
                     progressBar.style.width = `${data.progress || 0}%`;
@@ -280,14 +286,20 @@
                     clearInterval(downloadIntervalId);
                     downloadBtn.disabled = false;
                     downloadStopBtn.disabled = true;
+                    if (!data.pid && !data.started_at && !data.message && !data.stopped_reason && !(data.total_months > 0)) {
+                        downloadStatusText.textContent = '';
+                        return;
+                    }
                     if (data.message === 'success') {
                         downloadStatusText.textContent = '下载任务已完成';
                         alert('下载链接获取已完成');
                     } else if (data.stopped_reason) {
                         downloadStatusText.textContent = '下载任务已停止';
-                    } else {
+                    } else if (data.message === 'failed') {
                         downloadStatusText.textContent = '下载任务失败';
                         alert('下载任务失败，请检查日志');
+                    } else {
+                        downloadStatusText.textContent = '';
                     }
                     return;
                 }
