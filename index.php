@@ -209,7 +209,7 @@
                     document.querySelector('.status-panel').appendChild(monthDisplay);
 
                     if (intervalId) clearInterval(intervalId);
-                    intervalId = setInterval(updateStatus, 1000);
+                    intervalId = setInterval(updateStatus, 3000);
                 } else {
                     alert(data.message);
                 }
