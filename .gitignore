@@ -166,3 +166,5 @@ uninstall.py
 .trae/
 getchu.db
 .python-version
+status/
+logs/
