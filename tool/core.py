@@ -215,9 +215,9 @@ def download_games_by_month(year, month):
         cursor.execute("SELECT COUNT(*) FROM getchu_games WHERE date LIKE ?", (f"{year}-{month:02d}",))
         total_count = int(cursor.fetchone()[0] or 0)
         if total_count <= 0:
-            logger.warning("%s年%s月没有找到游戏数据", year, month)
+            logger.info("%s年%s月没有游戏数据，跳过", year, month)
             conn.close()
-            return False
+            return True
 
         cursor.execute(
             "SELECT * FROM getchu_games WHERE date LIKE ? AND (link IS NULL OR link = '')",
@@ -274,7 +274,7 @@ def download_games_by_month(year, month):
         conn.close()
 
         logger.info("成功更新%s年%s月%s个游戏的下载链接", year, month, success_count)
-        return success_count > 0
+        return True
     except Exception as e:
         logger.error("获取%s年%s月游戏下载链接时出错: %s", year, month, str(e))
         return False
