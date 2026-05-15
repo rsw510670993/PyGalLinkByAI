@@ -56,6 +56,14 @@ def cmd_years(args):
     years = tool.get_years_list()
     _print({"years": years})
 
+def cmd_latest_month(args):
+    games = tool.get_games_data()
+    if not games:
+        _print({"year": None, "month": None})
+        return
+    g = games[0]
+    _print({"year": int(g.year), "month": int(g.month)})
+
 
 def cmd_games(args):
     paths = runtime_paths()
@@ -278,6 +286,9 @@ def build_parser():
 
     p_years = sub.add_parser("years")
     p_years.set_defaults(func=cmd_years)
+
+    p_latest = sub.add_parser("latest_month")
+    p_latest.set_defaults(func=cmd_latest_month)
 
     p_games = sub.add_parser("games")
     p_games.add_argument("--page", type=int, default=1)

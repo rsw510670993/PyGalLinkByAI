@@ -83,6 +83,8 @@
                         </div>
                     </div>
                     <div class="col-12 col-lg-5 d-flex gap-2 justify-content-lg-end">
+                        <button id="select-all" class="btn btn-outline-secondary" type="button">全选</button>
+                        <button id="select-none" class="btn btn-outline-secondary" type="button">全不选</button>
                         <button id="get-all-links" class="btn btn-success" type="button">全部下载链接</button>
                     </div>
                     <div class="col-12">
@@ -126,6 +128,7 @@
     <script>
 const basePath = <?= json_encode($base, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?>;
 let currentPage = 1;
+let suppressDateChangeLoad = false;
 
 function updateTable(data) {
 
@@ -222,6 +225,7 @@ function initMonthPicker() {
         todayHighlight: true,
         clearBtn: true
     }).on('changeDate', function() {
+        if (suppressDateChangeLoad) return;
         loadPage(1);
     });
 
@@ -264,7 +268,21 @@ function initMonthPicker() {
 
 window.addEventListener('DOMContentLoaded', () => {
     initMonthPicker();
-    loadPage(1);
+    fetch(`${basePath}/tool/api.php?action=latest_month`)
+        .then(r => r.json())
+        .then((res) => {
+            const y = res && res.year ? parseInt(res.year, 10) : null;
+            const m = res && res.month ? parseInt(res.month, 10) : null;
+            if (y && m) {
+                suppressDateChangeLoad = true;
+                $('#month-picker').datepicker('setDate', new Date(y, m - 1, 1));
+                suppressDateChangeLoad = false;
+            }
+            loadPage(1);
+        })
+        .catch(() => {
+            loadPage(1);
+        });
 });
 
 document.getElementById('prev-page').addEventListener('click', () => {
@@ -276,9 +294,16 @@ document.getElementById('next-page').addEventListener('click', () => {
 });
 
 function getAllDownloadLinks() {
-    const downloadLinks = Array.from(document.querySelectorAll('#gamesTable a.download-btn'))
-        .filter(link => link.offsetParent !== null)
-        .map(link => link.href)
+    const downloadLinks = Array.from(document.querySelectorAll('#gamesTable tbody tr'))
+        .filter((tr) => {
+            const cb = tr.querySelector('input.game-checkbox');
+            return cb && cb.checked;
+        })
+        .map((tr) => {
+            const a = tr.querySelector('a.download-btn');
+            return a ? a.href : '';
+        })
+        .filter(Boolean)
         .join('\n');
 
     const outputBox = document.getElementById('download-links-output');
@@ -308,13 +333,21 @@ function getAllDownloadLinks() {
 
 function handleCheckboxChange(checkbox) {
     const tr = checkbox.closest('tr');
-    const group = tr.querySelector('.actions-group');
-    if (group) group.style.display = checkbox.checked ? '' : 'none';
     const nyaaDiv = tr.querySelector('.text-muted');
     if(nyaaDiv) nyaaDiv.style.display = checkbox.checked ? 'none' : '';
 }
 
 document.getElementById('get-all-links').addEventListener('click', getAllDownloadLinks);
+
+function setAllCheckboxes(checked) {
+    Array.from(document.querySelectorAll('#gamesTable tbody input.game-checkbox')).forEach((cb) => {
+        cb.checked = checked;
+        handleCheckboxChange(cb);
+    });
+}
+
+document.getElementById('select-all').addEventListener('click', () => setAllCheckboxes(true));
+document.getElementById('select-none').addEventListener('click', () => setAllCheckboxes(false));
 
 document.querySelector('#gamesTable tbody').addEventListener('click', (e) => {
     const btn = e.target.closest('.magnet-check-btn');

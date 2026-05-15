@@ -61,6 +61,11 @@ if ($action === 'years') {
     json_response($data);
 }
 
+if ($action === 'latest_month') {
+    [$code, $data] = run_cli(['latest_month']);
+    json_response($data);
+}
+
 if ($action === 'games') {
     $page = as_int($_GET['page'] ?? 1, 1);
     $year = as_int($_GET['year'] ?? null, null);
@@ -119,4 +124,3 @@ if ($action === 'stop_download') {
 }
 
 json_response(['status' => 'error', 'message' => 'unknown action']);
-

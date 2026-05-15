@@ -212,12 +212,23 @@ def download_games_by_month(year, month):
         conn = sqlite3.connect(get_db_path())
         ensure_getchu_schema(conn)
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM getchu_games WHERE date LIKE ?", (f"{year}-{month:02d}",))
+        cursor.execute("SELECT COUNT(*) FROM getchu_games WHERE date LIKE ?", (f"{year}-{month:02d}",))
+        total_count = int(cursor.fetchone()[0] or 0)
+        if total_count <= 0:
+            logger.warning("%s年%s月没有找到游戏数据", year, month)
+            conn.close()
+            return False
+
+        cursor.execute(
+            "SELECT * FROM getchu_games WHERE date LIKE ? AND (link IS NULL OR link = '')",
+            (f"{year}-{month:02d}",),
+        )
         games = cursor.fetchall()
 
         if not games:
-            logger.warning("%s年%s月没有找到游戏数据", year, month)
-            return False
+            logger.info("%s年%s月所有游戏都已有下载链接，跳过", year, month)
+            conn.close()
+            return True
 
         success_count = 0
         for game in games:
