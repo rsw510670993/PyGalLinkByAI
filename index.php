@@ -126,6 +126,40 @@
 
         let intervalId = null;
         let downloadIntervalId = null;
+        let downloadNotifiedRunIdMem = null;
+
+        function getDownloadRunId(data) {
+            const startedAt = data && data.started_at ? String(data.started_at) : '';
+            const pid = data && data.pid ? String(data.pid) : '';
+            const year = data && data.year ? String(data.year) : '';
+            const month = data && data.month ? String(data.month) : '';
+            return [startedAt, pid, year, month].join(':');
+        }
+
+        function isDownloadNotified(runId) {
+            if (!runId) return false;
+            if (downloadNotifiedRunIdMem === runId) return true;
+            try {
+                return localStorage.getItem('download_notified_run_id') === runId;
+            } catch (e) {
+                return false;
+            }
+        }
+
+        function markDownloadNotified(runId) {
+            if (!runId) return;
+            downloadNotifiedRunIdMem = runId;
+            try {
+                localStorage.setItem('download_notified_run_id', runId);
+            } catch (e) {}
+        }
+
+        function resetDownloadNotified() {
+            downloadNotifiedRunIdMem = null;
+            try {
+                localStorage.removeItem('download_notified_run_id');
+            } catch (e) {}
+        }
 
         downloadBtn.addEventListener('click', async () => {
             const year = document.getElementById('download_year').value;
@@ -145,6 +179,7 @@
 
                 const data = await response.json();
                 if (data.status === 'success') {
+                    resetDownloadNotified();
                     downloadBtn.disabled = true;
                     downloadStopBtn.disabled = false;
                     downloadStatusText.textContent = '下载任务已启动...';
@@ -200,7 +235,7 @@
                     gameDisplay.textContent = '';
 
                     if (intervalId) clearInterval(intervalId);
-                    intervalId = setInterval(updateStatus, 3000);
+                    intervalId = setInterval(updateStatus, 15000);
                 } else {
                     alert(data.message);
                 }
@@ -295,12 +330,20 @@
                     }
                     if (data.message === 'success') {
                         downloadStatusText.textContent = '下载任务已完成';
-                        alert('下载链接获取已完成');
+                        const runId = getDownloadRunId(data);
+                        if (!isDownloadNotified(runId)) {
+                            alert('下载链接获取已完成');
+                            markDownloadNotified(runId);
+                        }
                     } else if (data.stopped_reason) {
                         downloadStatusText.textContent = '下载任务已停止';
                     } else if (data.message === 'failed') {
                         downloadStatusText.textContent = '下载任务失败';
-                        alert('下载任务失败，请检查日志');
+                        const runId = getDownloadRunId(data);
+                        if (!isDownloadNotified(runId)) {
+                            alert('下载任务失败，请检查日志');
+                            markDownloadNotified(runId);
+                        }
                     } else {
                         downloadStatusText.textContent = '';
                     }
