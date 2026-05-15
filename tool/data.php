@@ -14,6 +14,20 @@
             word-wrap: break-word;
         }
 
+        .select-col {
+            width: 96px;
+            max-width: 96px;
+        }
+
+        .actions-col {
+            width: 260px;
+            max-width: 260px;
+        }
+
+        .actions-col .btn-group {
+            max-width: 100%;
+        }
+
         .datepicker-dropdown {
             margin-top: 30px;
         }
@@ -45,8 +59,8 @@
                         </div>
                     </div>
                     <div class="col-12 col-lg-5 d-flex gap-2 justify-content-lg-end">
-                        <button id="apply-filter" class="btn btn-primary">筛选</button>
-                        <button id="get-all-links" class="btn btn-success">全部下载链接</button>
+                        <button id="apply-filter" class="btn btn-primary" type="button">筛选</button>
+                        <button id="get-all-links" class="btn btn-success" type="button">全部下载链接</button>
                     </div>
                     <div class="col-12">
                         <textarea id="download-links-output" class="form-control" rows="6" style="display:none;"></textarea>
@@ -67,16 +81,16 @@
                             <th style="width: 96px">年月</th>
                             <th class="game-name-cell">游戏名称</th>
                             <th style="width: 180px">公司</th>
-                            <th style="width: 80px">选择</th>
-                            <th style="width: 220px">操作</th>
+                            <th class="select-col">选择</th>
+                            <th class="actions-col">操作</th>
                         </tr>
                     </thead>
                     <tbody></tbody>
                 </table>
             </div>
             <div class="card-footer d-flex justify-content-between align-items-center">
-                <button id="prev-page" class="btn btn-outline-primary btn-sm">上一页</button>
-                <button id="next-page" class="btn btn-outline-primary btn-sm">下一页</button>
+                <button id="prev-page" class="btn btn-outline-primary btn-sm" type="button">上一页</button>
+                <button id="next-page" class="btn btn-outline-primary btn-sm" type="button">下一页</button>
             </div>
         </div>
     </div>
@@ -111,17 +125,19 @@ function updateTable(data) {
             <td>${game.year}/${game.month}</td>
             <td class="game-name-cell">${game.name}${game.nyaa_name ? `<div class="text-muted small" style="display:${game.download_url ? 'none' : ''}">${game.nyaa_name}</div>` : ''}</td>
             <td>${game.company}</td>
-            <td>
+            <td class="select-col">
                 ${(game.download_url) ?
-                    `<input type="checkbox"
-                        class="game-checkbox"
-                        ${game.download_url ? 'checked' : ''}
-                        onchange="handleCheckboxChange(this)">`
+                    `<div class="form-check form-switch m-0 d-flex justify-content-center">
+                        <input type="checkbox"
+                            class="form-check-input game-checkbox"
+                            ${game.download_url ? 'checked' : ''}
+                            onchange="handleCheckboxChange(this)">
+                    </div>`
                     : ''}
             </td>
-            <td>
+            <td class="actions-col">
                 ${game.download_url ?
-                    `<div class="btn-group" role="group" style="display:${game.download_url ? '' : 'none'}">
+                    `<div class="btn-group actions-group" role="group" style="display:${game.download_url ? '' : 'none'}">
                         <a href="${game.download_url}" class="btn ${btnClass} download-btn btn-sm">下载</a>
                         <button type="button" class="btn btn-outline-secondary btn-sm magnet-check-btn"
                             data-magnet="${encodeURIComponent(game.download_url)}"
@@ -136,13 +152,25 @@ function updateTable(data) {
     }).join('');
 }
 
+function parseMonthValue(value) {
+    const raw = (value || '').trim();
+    if (!raw) return null;
+    const m = raw.match(/^(\d{4})-(\d{1,2})$/);
+    if (!m) return null;
+    return { year: m[1], month: String(parseInt(m[2], 10)) };
+}
+
 function loadPage(page) {
     const monthValue = document.getElementById('month-picker').value;
 
     let url = `${basePath}/tool/api.php?action=games&page=${page}`;
     if (monthValue) {
-        const [year, month] = monthValue.split('-');
-        url += `&year=${year}&month=${month}`;
+        const parsed = parseMonthValue(monthValue);
+        if (!parsed) {
+            alert('月份格式不正确，请使用 YYYY-MM');
+            return;
+        }
+        url += `&year=${parsed.year}&month=${parsed.month}`;
     }
 
     fetch(url)
@@ -157,6 +185,9 @@ function loadPage(page) {
             document.getElementById('prev-page').disabled = currentPage <= 1;
             document.getElementById('next-page').disabled =
                 currentPage >= Math.ceil(res.total / res.per_page);
+        })
+        .catch(() => {
+            alert('筛选失败，请检查接口是否可访问');
         });
 }
 
@@ -228,7 +259,8 @@ document.getElementById('next-page').addEventListener('click', () => {
 });
 
 function getAllDownloadLinks() {
-    const downloadLinks = Array.from(document.querySelectorAll('#gamesTable a.download-btn:not([style*="display: none"])'))
+    const downloadLinks = Array.from(document.querySelectorAll('#gamesTable a.download-btn'))
+        .filter(link => link.offsetParent !== null)
         .map(link => link.href)
         .join('\n');
 
@@ -259,7 +291,8 @@ function getAllDownloadLinks() {
 
 function handleCheckboxChange(checkbox) {
     const tr = checkbox.closest('tr');
-    tr.querySelector('.download-btn').style.display = checkbox.checked ? '' : 'none';
+    const group = tr.querySelector('.actions-group');
+    if (group) group.style.display = checkbox.checked ? '' : 'none';
     const nyaaDiv = tr.querySelector('.text-muted');
     if(nyaaDiv) nyaaDiv.style.display = checkbox.checked ? 'none' : '';
 }
