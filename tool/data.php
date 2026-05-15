@@ -83,8 +83,7 @@
                         </div>
                     </div>
                     <div class="col-12 col-lg-5 d-flex gap-2 justify-content-lg-end">
-                        <button id="select-all" class="btn btn-outline-secondary" type="button">全选</button>
-                        <button id="select-none" class="btn btn-outline-secondary" type="button">全不选</button>
+                        <button id="toggle-select" class="btn btn-outline-secondary" type="button">全选</button>
                         <button id="get-all-links" class="btn btn-success" type="button">全部下载链接</button>
                     </div>
                     <div class="col-12">
@@ -184,6 +183,14 @@ function parseMonthValue(value) {
     return { year: m[1], month: String(parseInt(m[2], 10)) };
 }
 
+function showEmptyMessage(message) {
+    const tbody = document.querySelector('#gamesTable tbody');
+    tbody.innerHTML = `<tr><td colspan="5" class="text-center text-muted py-4">${message}</td></tr>`;
+    document.getElementById('page-info').textContent = '';
+    document.getElementById('prev-page').disabled = true;
+    document.getElementById('next-page').disabled = true;
+}
+
 function loadPage(page) {
     const monthValue = document.getElementById('month-picker').value;
 
@@ -200,7 +207,18 @@ function loadPage(page) {
     fetch(url)
         .then(response => response.json())
         .then(res => {
+            if (res.status === 'error') {
+                showEmptyMessage('数据加载失败：' + (res.message || '未知错误'));
+                return;
+            }
+
+            if (res.total === 0) {
+                showEmptyMessage('暂无符合条件的数据');
+                return;
+            }
+
             updateTable(res.data);
+            updateToggleButtonText();
 
             currentPage = res.current_page;
             document.getElementById('page-info').textContent =
@@ -211,7 +229,7 @@ function loadPage(page) {
                 currentPage >= Math.ceil(res.total / res.per_page);
         })
         .catch(() => {
-            alert('筛选失败，请检查接口是否可访问');
+            showEmptyMessage('筛选失败，请检查接口是否可访问');
         });
 }
 
@@ -331,10 +349,18 @@ function getAllDownloadLinks() {
     }
 }
 
+function updateToggleButtonText() {
+    const btn = document.getElementById('toggle-select');
+    const checkboxes = document.querySelectorAll('#gamesTable tbody input.game-checkbox');
+    const anyChecked = Array.from(checkboxes).some(cb => cb.checked);
+    btn.textContent = anyChecked ? '全不选' : '全选';
+}
+
 function handleCheckboxChange(checkbox) {
     const tr = checkbox.closest('tr');
     const nyaaDiv = tr.querySelector('.text-muted');
     if(nyaaDiv) nyaaDiv.style.display = checkbox.checked ? 'none' : '';
+    updateToggleButtonText();
 }
 
 document.getElementById('get-all-links').addEventListener('click', getAllDownloadLinks);
@@ -342,12 +368,17 @@ document.getElementById('get-all-links').addEventListener('click', getAllDownloa
 function setAllCheckboxes(checked) {
     Array.from(document.querySelectorAll('#gamesTable tbody input.game-checkbox')).forEach((cb) => {
         cb.checked = checked;
-        handleCheckboxChange(cb);
+        const tr = cb.closest('tr');
+        const nyaaDiv = tr.querySelector('.text-muted');
+        if(nyaaDiv) nyaaDiv.style.display = checked ? 'none' : '';
     });
+    updateToggleButtonText();
 }
 
-document.getElementById('select-all').addEventListener('click', () => setAllCheckboxes(true));
-document.getElementById('select-none').addEventListener('click', () => setAllCheckboxes(false));
+document.getElementById('toggle-select').addEventListener('click', () => {
+    const btn = document.getElementById('toggle-select');
+    setAllCheckboxes(btn.textContent === '全选');
+});
 
 document.querySelector('#gamesTable tbody').addEventListener('click', (e) => {
     const btn = e.target.closest('.magnet-check-btn');
