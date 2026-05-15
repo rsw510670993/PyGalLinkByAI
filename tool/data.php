@@ -83,7 +83,6 @@
                         </div>
                     </div>
                     <div class="col-12 col-lg-5 d-flex gap-2 justify-content-lg-end">
-                        <button id="apply-filter" class="btn btn-primary" type="button">筛选</button>
                         <button id="get-all-links" class="btn btn-success" type="button">全部下载链接</button>
                     </div>
                     <div class="col-12">
@@ -262,10 +261,6 @@ function initMonthPicker() {
         }
     });
 }
-
-document.getElementById('apply-filter').addEventListener('click', () => {
-    loadPage(1);
-});
 
 window.addEventListener('DOMContentLoaded', () => {
     initMonthPicker();
