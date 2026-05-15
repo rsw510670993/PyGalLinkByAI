@@ -6,6 +6,10 @@
     <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.1/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.bootcdn.net/ajax/libs/bootstrap-datepicker/1.9.0/css/bootstrap-datepicker.min.css" rel="stylesheet">
     <style>
+        #gamesTable {
+            table-layout: fixed;
+        }
+
         .game-name-cell {
             width: 320px;
             min-width: 260px;
@@ -14,14 +18,34 @@
             word-wrap: break-word;
         }
 
-        .select-col {
+        .check-col {
+            width: 64px;
+            max-width: 64px;
+        }
+
+        .check-col input[type="checkbox"] {
+            margin: 0;
+            vertical-align: middle;
+        }
+
+        .ym-col {
             width: 96px;
             max-width: 96px;
+            white-space: nowrap;
+        }
+
+        .company-col {
+            width: 180px;
+            max-width: 180px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
         .actions-col {
-            width: 260px;
-            max-width: 260px;
+            width: 240px;
+            max-width: 240px;
+            white-space: nowrap;
         }
 
         .actions-col .btn-group {
@@ -78,10 +102,10 @@
                 <table class="table table-striped table-hover align-middle mb-0" id="gamesTable">
                     <thead class="table-dark">
                         <tr>
-                            <th style="width: 96px">年月</th>
+                            <th class="check-col text-center">选择</th>
+                            <th class="ym-col">年月</th>
                             <th class="game-name-cell">游戏名称</th>
-                            <th style="width: 180px">公司</th>
-                            <th class="select-col">选择</th>
+                            <th class="company-col">公司</th>
                             <th class="actions-col">操作</th>
                         </tr>
                     </thead>
@@ -122,19 +146,17 @@ function updateTable(data) {
         }
         return `
         <tr>
-            <td>${game.year}/${game.month}</td>
-            <td class="game-name-cell">${game.name}${game.nyaa_name ? `<div class="text-muted small" style="display:${game.download_url ? 'none' : ''}">${game.nyaa_name}</div>` : ''}</td>
-            <td>${game.company}</td>
-            <td class="select-col">
+            <td class="check-col text-center">
                 ${(game.download_url) ?
-                    `<div class="form-check form-switch m-0 d-flex justify-content-center">
-                        <input type="checkbox"
-                            class="form-check-input game-checkbox"
-                            ${game.download_url ? 'checked' : ''}
-                            onchange="handleCheckboxChange(this)">
-                    </div>`
+                    `<input type="checkbox"
+                        class="game-checkbox"
+                        ${game.download_url ? 'checked' : ''}
+                        onchange="handleCheckboxChange(this)">`
                     : ''}
             </td>
+            <td class="ym-col">${game.year}/${game.month}</td>
+            <td class="game-name-cell">${game.name}${game.nyaa_name ? `<div class="text-muted small" style="display:${game.download_url ? 'none' : ''}">${game.nyaa_name}</div>` : ''}</td>
+            <td class="company-col">${game.company}</td>
             <td class="actions-col">
                 ${game.download_url ?
                     `<div class="btn-group actions-group" role="group" style="display:${game.download_url ? '' : 'none'}">
