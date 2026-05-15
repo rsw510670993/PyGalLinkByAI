@@ -212,23 +212,64 @@ def download_games_by_month(year, month):
         conn = sqlite3.connect(get_db_path())
         ensure_getchu_schema(conn)
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM getchu_games WHERE date LIKE ?", (f"{year}-{month:02d}",))
-        total_count = int(cursor.fetchone()[0] or 0)
+        date_prefix = f"{year}-{month:02d}"
+        cursor.execute(
+            """
+            WITH month_rows AS (
+                SELECT * FROM getchu_games WHERE date LIKE :date_prefix
+            ),
+            meta AS (
+                SELECT
+                    COUNT(*) AS total_count,
+                    SUM(CASE WHEN link IS NULL OR link = '' THEN 1 ELSE 0 END) AS missing_count
+                FROM month_rows
+            ),
+            missing AS (
+                SELECT * FROM month_rows WHERE link IS NULL OR link = ''
+            )
+            SELECT
+                'meta' AS kind,
+                meta.total_count,
+                meta.missing_count,
+                NULL AS date,
+                NULL AS name,
+                NULL AS company,
+                NULL AS size,
+                NULL AS link,
+                NULL AS nyaa_name,
+                NULL AS comment
+            FROM meta
+            UNION ALL
+            SELECT
+                'row' AS kind,
+                NULL,
+                NULL,
+                date,
+                name,
+                company,
+                size,
+                link,
+                nyaa_name,
+                comment
+            FROM missing
+            """,
+            {"date_prefix": date_prefix},
+        )
+        rows = cursor.fetchall()
+        meta = rows[0] if rows else None
+        total_count = int((meta[1] if meta else 0) or 0)
+        missing_count = int((meta[2] if meta else 0) or 0)
+
         if total_count <= 0:
             logger.warning("%s年%s月没有找到游戏数据", year, month)
             conn.close()
             return False
-
-        cursor.execute(
-            "SELECT * FROM getchu_games WHERE date LIKE ? AND (link IS NULL OR link = '')",
-            (f"{year}-{month:02d}",),
-        )
-        games = cursor.fetchall()
-
-        if not games:
+        if missing_count <= 0:
             logger.info("%s年%s月所有游戏都已有下载链接，跳过", year, month)
             conn.close()
             return True
+
+        games = [r[3:] for r in rows[1:] if r and r[0] == "row"]
 
         success_count = 0
         for game in games:
