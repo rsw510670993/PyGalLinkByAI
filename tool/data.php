@@ -4,8 +4,22 @@
     <meta charset="UTF-8">
     <title>游戏数据展示</title>
     <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.1/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.bootcdn.net/ajax/libs/bootstrap-datepicker/1.9.0/css/bootstrap-datepicker.min.css" rel="stylesheet">
+    <style>
+        .game-name-cell {
+            width: 320px;
+            min-width: 260px;
+            max-width: 420px;
+            white-space: normal;
+            word-wrap: break-word;
+        }
+
+        .datepicker-dropdown {
+            margin-top: 30px;
+        }
+    </style>
 </head>
-<body style="padding-top: 45px;">
+<body style="padding-top: 56px;">
 <?php $base = rtrim(dirname(dirname($_SERVER['SCRIPT_NAME'])), '/'); ?>
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark fixed-top">
         <div class="container">
@@ -17,71 +31,62 @@
         </div>
     </nav>
     <div class="container mt-4">
-        <div class="row mb-3">
-            <div class="col-md-6" style="position: relative;">
-                <label for="month-picker" class="form-label">选择月份</label>
-                <div class="input-group">
-                    <button id="prev-year" class="btn btn-outline-secondary" type="button">去年</button>
-                    <button id="prev-month" class="btn btn-outline-secondary" type="button">上月</button>
-                    <input type="text" class="form-control" id="month-picker" placeholder="选择月份">
-                    <button id="next-month" class="btn btn-outline-secondary" type="button">下月</button>
-                    <button id="next-year" class="btn btn-outline-secondary" type="button">明年</button>
+        <div class="card mb-3">
+            <div class="card-body">
+                <div class="row g-2 align-items-end">
+                    <div class="col-12 col-lg-7" style="position: relative;">
+                        <label for="month-picker" class="form-label mb-1">选择月份</label>
+                        <div class="input-group">
+                            <button id="prev-year" class="btn btn-outline-secondary" type="button">去年</button>
+                            <button id="prev-month" class="btn btn-outline-secondary" type="button">上月</button>
+                            <input type="text" class="form-control" id="month-picker" placeholder="选择月份">
+                            <button id="next-month" class="btn btn-outline-secondary" type="button">下月</button>
+                            <button id="next-year" class="btn btn-outline-secondary" type="button">明年</button>
+                        </div>
+                    </div>
+                    <div class="col-12 col-lg-5 d-flex gap-2 justify-content-lg-end">
+                        <button id="apply-filter" class="btn btn-primary">筛选</button>
+                        <button id="get-all-links" class="btn btn-success">全部下载链接</button>
+                    </div>
+                    <div class="col-12">
+                        <textarea id="download-links-output" class="form-control" rows="6" style="display:none;"></textarea>
+                    </div>
                 </div>
             </div>
-            <div class="col-md-3 align-self-end">
-                <button id="apply-filter" class="btn btn-primary me-2">筛选</button>
-                <button id="get-all-links" class="btn btn-success">全部下载链接</button>
+        </div>
+
+        <div class="card">
+            <div class="card-header d-flex align-items-center justify-content-between">
+                <div class="fw-semibold">游戏列表</div>
+                <div id="page-info" class="text-muted small">第1页</div>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-striped table-hover align-middle mb-0" id="gamesTable">
+                    <thead class="table-dark">
+                        <tr>
+                            <th style="width: 96px">年月</th>
+                            <th class="game-name-cell">游戏名称</th>
+                            <th style="width: 180px">公司</th>
+                            <th style="width: 80px">选择</th>
+                            <th style="width: 220px">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+            <div class="card-footer d-flex justify-content-between align-items-center">
+                <button id="prev-page" class="btn btn-outline-primary btn-sm">上一页</button>
+                <button id="next-page" class="btn btn-outline-primary btn-sm">下一页</button>
             </div>
         </div>
-
-        <div class="table-responsive">
-            <table class="table table-striped table-hover table-fixed" id="gamesTable">
-            <style>
-            .table-fixed {
-                table-layout: fixed;
-            }
-
-            .game-name-cell {
-                width: 300px;
-                min-width: 250px;
-                max-width: 350px;
-                white-space: normal;
-                word-wrap: break-word;
-            }
-
-            .datepicker-dropdown {
-                margin-top: 30px;
-            }
-            </style>
-            <thead class="table-dark">
-                <tr>
-                <th style="width: 80px">年份</th>
-                <th class="game-name-cell">游戏名称</th>
-                <th style="width: 150px">公司</th>
-                <th style="width: 80px">選択</th>
-                <th style="width: 120px">操作</th>
-                </tr>
-            </thead>
-            <tbody>
-            </tbody>
-            </table>
-        </div>
+    </div>
 
     <script src="https://cdn.bootcdn.net/ajax/libs/jquery/3.6.4/jquery.min.js"></script>
     <script src="https://cdn.bootcdn.net/ajax/libs/bootstrap-datepicker/1.9.0/js/bootstrap-datepicker.min.js"></script>
     <script src="https://cdn.bootcdn.net/ajax/libs/bootstrap-datepicker/1.9.0/locales/bootstrap-datepicker.zh-CN.min.js"></script>
-    <link href="https://cdn.bootcdn.net/ajax/libs/bootstrap-datepicker/1.9.0/css/bootstrap-datepicker.min.css" rel="stylesheet">
     <script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.1/js/bootstrap.bundle.min.js"></script>
-    <div class="pagination mt-3 mb-3">
-    <button id="prev-page" class="btn btn-outline-primary">上一页</button>
-    <span id="page-info" class="mx-3">第1页</span>
-    <button id="next-page" class="btn btn-outline-primary">下一页</button>
-</div>
-<div class="mt-3 mb-3">
-    <textarea id="download-links-output" class="form-control" rows="10" style="display:none;"></textarea>
-</div>
 
-<script>
+    <script>
 const basePath = <?= json_encode($base, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?>;
 let currentPage = 1;
 
@@ -104,7 +109,7 @@ function updateTable(data) {
         return `
         <tr>
             <td>${game.year}/${game.month}</td>
-            <td>${game.name}${game.nyaa_name ? `<div class="text-muted small" style="display:${game.download_url ? 'none' : ''}">${game.nyaa_name}</div>` : ''}</td>
+            <td class="game-name-cell">${game.name}${game.nyaa_name ? `<div class="text-muted small" style="display:${game.download_url ? 'none' : ''}">${game.nyaa_name}</div>` : ''}</td>
             <td>${game.company}</td>
             <td>
                 ${(game.download_url) ?
@@ -116,11 +121,13 @@ function updateTable(data) {
             </td>
             <td>
                 ${game.download_url ?
-                    `<a href="${game.download_url}"
-                        class="btn ${btnClass} ${game.download_url ? 'download-btn' : ''}"
-                        style="display:${game.download_url ? '' : 'none'}">
-                        下载
-                    </a>`
+                    `<div class="btn-group" role="group" style="display:${game.download_url ? '' : 'none'}">
+                        <a href="${game.download_url}" class="btn ${btnClass} download-btn btn-sm">下载</a>
+                        <button type="button" class="btn btn-outline-secondary btn-sm magnet-check-btn"
+                            data-magnet="${encodeURIComponent(game.download_url)}"
+                            data-name="${encodeURIComponent(game.name)}"
+                            data-company="${encodeURIComponent(game.company)}">校验</button>
+                    </div>`
                     : ''
                 }
             </td>
@@ -258,6 +265,36 @@ function handleCheckboxChange(checkbox) {
 }
 
 document.getElementById('get-all-links').addEventListener('click', getAllDownloadLinks);
+
+document.querySelector('#gamesTable tbody').addEventListener('click', (e) => {
+    const btn = e.target.closest('.magnet-check-btn');
+    if (!btn) return;
+    const magnet = decodeURIComponent(btn.dataset.magnet || '');
+    const name = decodeURIComponent(btn.dataset.name || '');
+    const company = decodeURIComponent(btn.dataset.company || '');
+    openMagnetCheck(magnet, name, company);
+});
+
+function openMagnetCheck(magnet, name, company) {
+    if (!magnet) return;
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = `${basePath}/tool/magnet_check.php`;
+    form.target = '_blank';
+
+    const fields = { magnet, name, company };
+    Object.keys(fields).forEach((k) => {
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = k;
+        input.value = fields[k];
+        form.appendChild(input);
+    });
+
+    document.body.appendChild(form);
+    form.submit();
+    form.remove();
+}
 </script>
 </body>
 </html>
