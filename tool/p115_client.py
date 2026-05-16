@@ -93,9 +93,14 @@ def qr_login_step3(uid, app="alipaymini"):
         body = resp.json()
         body_data = body.get("data") or body
         cookie = body_data.get("cookie") or ""
+
+        if isinstance(cookie, dict):
+            cookie = "; ".join(f"{k}={v}" for k, v in cookie.items() if v)
+
         if not cookie:
             cookie = resp.headers.get("Set-Cookie", "")
-        if cookie:
+
+        if cookie and isinstance(cookie, str):
             path = cookies_path()
             parent = os.path.dirname(path)
             if parent:
@@ -103,6 +108,7 @@ def qr_login_step3(uid, app="alipaymini"):
             with open(path, "w", encoding="utf-8") as f:
                 f.write(cookie)
             return {"success": True, "message": "登录成功"}
+
         return {"success": False, "message": "获取 cookie 失败", "raw": str(body)[:200]}
     except Exception as e:
         return {"success": False, "message": str(e)}
