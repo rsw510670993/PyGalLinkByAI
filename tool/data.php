@@ -85,10 +85,7 @@
                     </div>
                     <div class="col-12 col-lg-5 d-flex gap-2 justify-content-lg-end">
                         <button id="toggle-select" class="btn btn-outline-secondary" type="button">全选</button>
-                        <button id="get-all-links" class="btn btn-success" type="button">全部下载链接</button>
-                    </div>
-                    <div class="col-12">
-                        <textarea id="download-links-output" class="form-control" rows="6" style="display:none;"></textarea>
+                        <button id="batch-115-download" class="btn btn-success" type="button">批量115云下载</button>
                     </div>
                 </div>
             </div>
@@ -314,44 +311,6 @@ document.getElementById('next-page').addEventListener('click', () => {
     loadPage(currentPage + 1);
 });
 
-function getAllDownloadLinks() {
-    const downloadLinks = Array.from(document.querySelectorAll('#gamesTable tbody tr'))
-        .filter((tr) => {
-            const cb = tr.querySelector('input.game-checkbox');
-            return cb && cb.checked;
-        })
-        .map((tr) => {
-            const a = tr.querySelector('a.download-btn');
-            return a ? a.href : '';
-        })
-        .filter(Boolean)
-        .join('\n');
-
-    const outputBox = document.getElementById('download-links-output');
-
-    if (downloadLinks) {
-        if (navigator.clipboard) {
-            navigator.clipboard.writeText(downloadLinks)
-                .then(() => {
-                    alert('下载链接已复制到剪贴板!');
-                    outputBox.style.display = 'none';
-                })
-                .catch(err => {
-                    console.error('无法复制到剪贴板:', err);
-                    outputBox.value = downloadLinks;
-                    outputBox.style.display = 'block';
-                    alert('自动复制失败，链接已显示在下方文本框中');
-                });
-        } else {
-            outputBox.value = downloadLinks;
-            outputBox.style.display = 'block';
-            alert('您的浏览器不支持自动复制，链接已显示在下方文本框中');
-        }
-    } else {
-        alert('没有找到可下载的链接');
-    }
-}
-
 function updateToggleButtonText() {
     const btn = document.getElementById('toggle-select');
     const checkboxes = document.querySelectorAll('#gamesTable tbody input.game-checkbox');
@@ -366,7 +325,80 @@ function handleCheckboxChange(checkbox) {
     updateToggleButtonText();
 }
 
-document.getElementById('get-all-links').addEventListener('click', getAllDownloadLinks);
+function batch115Download() {
+    const rows = Array.from(document.querySelectorAll('#gamesTable tbody tr'))
+        .filter((tr) => {
+            const cb = tr.querySelector('input.game-checkbox');
+            return cb && cb.checked;
+        });
+
+    if (rows.length === 0) {
+        alert('请先勾选需要下载的游戏');
+        return;
+    }
+
+    const btn = document.getElementById('batch-115-download');
+    btn.disabled = true;
+    btn.textContent = '提交中...';
+
+    let success = 0;
+    let fail = 0;
+    const results = [];
+
+    function submitNext(index) {
+        if (index >= rows.length) {
+            btn.disabled = false;
+            btn.textContent = '批量115云下载';
+            const msg = `提交完成：成功 ${success} 条，失败 ${fail} 条`;
+            if (fail > 0) {
+                alert(msg + '\n\n失败详情：\n' + results.filter(r => !r.ok).map(r => '  - ' + r.name + ': ' + r.reason).join('\n'));
+            } else {
+                alert(msg);
+            }
+            return;
+        }
+
+        const tr = rows[index];
+        const ymText = tr.querySelector('.ym-col')?.textContent || '';
+        const year = ymText.split('/')[0] || '';
+        const name = tr.querySelector('.game-name-cell')?.textContent?.trim() || '';
+        const a = tr.querySelector('a.download-btn');
+        const magnet = a ? a.href : '';
+
+        if (!magnet || !year) {
+            fail++;
+            results.push({ ok: false, name, reason: !magnet ? '无磁链' : '无年份' });
+            submitNext(index + 1);
+            return;
+        }
+
+        const savePath = `/GAL/GAL-${year}`;
+
+        fetch(`${basePath}/tool/api.php?action=115_submit`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ magnet, dir: savePath }),
+        })
+        .then(r => r.json())
+        .then(res => {
+            if (res.success) {
+                success++;
+                results.push({ ok: true, name });
+            } else {
+                fail++;
+                results.push({ ok: false, name, reason: res.message || '未知错误' });
+            }
+            submitNext(index + 1);
+        })
+        .catch(err => {
+            fail++;
+            results.push({ ok: false, name, reason: err.message });
+            submitNext(index + 1);
+        });
+    }
+
+    submitNext(0);
+}
 
 function setAllCheckboxes(checked) {
     Array.from(document.querySelectorAll('#gamesTable tbody input.game-checkbox')).forEach((cb) => {
@@ -382,6 +414,8 @@ document.getElementById('toggle-select').addEventListener('click', () => {
     const btn = document.getElementById('toggle-select');
     setAllCheckboxes(btn.textContent === '全选');
 });
+
+document.getElementById('batch-115-download').addEventListener('click', batch115Download);
 
 document.querySelector('#gamesTable tbody').addEventListener('click', (e) => {
     const btn = e.target.closest('.magnet-check-btn');

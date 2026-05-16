@@ -94,7 +94,7 @@ def get_login_status():
                 body = {}
             data = body.get("data") if isinstance(body, dict) else None
             if isinstance(data, dict):
-                user = data.get("user_name") or data.get("nickname") or ""
+                user = data.get("user_name") or data.get("nickname") or data.get("username") or data.get("name") or ""
         except Exception:
             user = ""
 
