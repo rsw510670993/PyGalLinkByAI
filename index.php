@@ -185,7 +185,7 @@
                     downloadStopBtn.disabled = false;
                     downloadStatusText.textContent = '下载任务已启动...';
                     if (downloadIntervalId) clearInterval(downloadIntervalId);
-                    downloadIntervalId = setInterval(updateDownloadStatus, 1500);
+                    downloadIntervalId = setInterval(updateDownloadStatus, 3000);
                 } else {
                     alert(data.message);
                 }
@@ -236,7 +236,7 @@
                     gameDisplay.textContent = '';
 
                     if (intervalId) clearInterval(intervalId);
-                    intervalId = setInterval(updateStatus, 15000);
+                    intervalId = setInterval(updateStatus, 3000);
                 } else {
                     alert(data.message);
                 }

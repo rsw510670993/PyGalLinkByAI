@@ -92,6 +92,19 @@
             </div>
         </div>
 
+        <div class="card mb-3" id="check-progress-card" style="display:none;">
+            <div class="card-body">
+                <div class="d-flex justify-content-between small text-muted mb-1">
+                    <span id="check-progress-text">准备中...</span>
+                    <span id="check-progress-count"></span>
+                </div>
+                <div class="progress" style="height: 18px;">
+                    <div class="progress-bar progress-bar-striped progress-bar-animated bg-info" id="check-progress-bar"
+                        role="progressbar" style="width: 0%;" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
+                </div>
+            </div>
+        </div>
+
         <div class="card">
             <div class="card-header d-flex align-items-center justify-content-between">
                 <div class="fw-semibold">游戏列表</div>
@@ -420,29 +433,87 @@ document.getElementById('toggle-select').addEventListener('click', () => {
 
 document.getElementById('batch-115-download').addEventListener('click', batch115Download);
 
+let checkAllIntervalId = null;
+
 document.getElementById('batch-115-check').addEventListener('click', function() {
     const btn = this;
     if (!confirm('将对所有未标记的游戏进行115云下载校验，该操作可能需要较长时间，是否继续？')) return;
+
     btn.disabled = true;
-    btn.textContent = '校验中...';
-    fetch(`${basePath}/tool/api.php?action=115_check_all`, { method: 'POST' })
+    btn.textContent = '启动中...';
+
+    if (checkAllIntervalId) {
+        clearInterval(checkAllIntervalId);
+        checkAllIntervalId = null;
+    }
+
+    fetch(`${basePath}/tool/api.php?action=115_check_all_start`, { method: 'POST' })
         .then(r => r.json())
         .then(res => {
-            let msg = `校验完成\n\n总记录: ${res.total}\n已检查: ${res.checked}\n发现已下载: ${res.found_downloaded}`;
-            if (res.errors && res.errors.length > 0) {
-                msg += '\n\n错误（前10条）:\n' + res.errors.join('\n');
+            if (res.status === 'error') {
+                alert('启动校验失败: ' + res.message);
+                btn.disabled = false;
+                btn.textContent = '批量校验已下载';
+                return;
             }
-            alert(msg);
-            loadPage(currentPage);
+
+            document.getElementById('check-progress-card').style.display = '';
+            document.getElementById('check-progress-text').textContent = '校验中...';
+            document.getElementById('check-progress-bar').style.width = '0%';
+            document.getElementById('check-progress-bar').setAttribute('aria-valuenow', '0');
+            document.getElementById('check-progress-count').textContent = '';
+
+            checkAllIntervalId = setInterval(pollCheckAllStatus, 3000);
         })
         .catch(err => {
-            alert('批量校验失败: ' + err.message);
-        })
-        .finally(() => {
+            alert('启动校验失败: ' + err.message);
             btn.disabled = false;
             btn.textContent = '批量校验已下载';
         });
 });
+
+function pollCheckAllStatus() {
+    fetch(`${basePath}/tool/api.php?action=115_check_all_status`)
+        .then(r => r.json())
+        .then(status => {
+            if (status.running) {
+                const progress = status.total > 0 ? Math.round(status.checked / status.total * 100) : 0;
+                document.getElementById('check-progress-text').textContent =
+                    `校验中... (已检查 ${status.checked}/${status.total})`;
+                document.getElementById('check-progress-bar').style.width = `${progress}%`;
+                document.getElementById('check-progress-bar').setAttribute('aria-valuenow', `${progress}`);
+                document.getElementById('check-progress-count').textContent =
+                    `发现 ${status.found_downloaded} 条已下载`;
+            } else {
+                clearInterval(checkAllIntervalId);
+                checkAllIntervalId = null;
+
+                document.getElementById('check-progress-card').style.display = 'none';
+
+                const btn = document.getElementById('batch-115-check');
+                btn.disabled = false;
+                btn.textContent = '批量校验已下载';
+
+                let msg = `校验完成\n\n总记录: ${status.total}\n已检查: ${status.checked}\n发现已下载: ${status.found_downloaded}`;
+                if (status.errors && status.errors.length > 0) {
+                    msg += '\n\n错误（前10条）:\n' + status.errors.join('\n');
+                }
+                alert(msg);
+                loadPage(currentPage);
+            }
+        })
+        .catch(err => {
+            clearInterval(checkAllIntervalId);
+            checkAllIntervalId = null;
+
+            document.getElementById('check-progress-card').style.display = 'none';
+
+            const btn = document.getElementById('batch-115-check');
+            btn.disabled = false;
+            btn.textContent = '批量校验已下载';
+            alert('获取校验状态失败: ' + err.message);
+        });
+}
 
 document.querySelector('#gamesTable tbody').addEventListener('click', (e) => {
     const btn = e.target.closest('.magnet-check-btn');

@@ -44,6 +44,7 @@ def runtime_paths(config_path=None):
         "log_path": log_path,
         "spider_status_path": os.path.join(status_dir, "spider_status.json"),
         "download_status_path": os.path.join(status_dir, "download_status.json"),
+        "check_all_status_path": os.path.join(status_dir, "check_all_status.json"),
     }
 
 

@@ -350,10 +350,79 @@ def cmd_115_submit(args):
         _print({"status": "error", "message": f"115模块加载失败: {e}"})
 
 
-def cmd_115_check_all(args):
+def _check_all_status_default():
+    return {
+        "running": False,
+        "pid": None,
+        "total": 0,
+        "checked": 0,
+        "found_downloaded": 0,
+        "errors": [],
+        "started_at": None,
+        "updated_at": None,
+    }
+
+
+def cmd_115_check_all_start(args):
+    paths = runtime_paths()
+    status = read_json(paths["check_all_status_path"], _check_all_status_default())
+    pid = status.get("pid")
+    if status.get("running") and pid and pid_is_running(int(pid)):
+        _print({"status": "error", "message": "校验任务已在运行中"})
+        return
+
+    if not os.path.isdir(paths["status_dir"]):
+        os.makedirs(paths["status_dir"], exist_ok=True)
+
+    p = subprocess.Popen(
+        [
+            sys.executable,
+            os.path.join(_base_dir(), "cli.py"),
+            "115", "check_all", "worker",
+        ],
+        cwd=_base_dir(),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    time.sleep(0.5)
+    if pid_is_running(p.pid):
+        _print({"status": "success", "message": "校验任务已启动", "pid": p.pid})
+    else:
+        _print({"status": "error", "message": "校验任务启动失败"})
+
+
+def cmd_115_check_all_status(args):
+    paths = runtime_paths()
+    status = read_json(paths["check_all_status_path"], _check_all_status_default())
+    pid = status.get("pid")
+    if status.get("running") and pid and not pid_is_running(int(pid)):
+        status["running"] = False
+        write_json_atomic(paths["check_all_status_path"], status)
+    _print(status)
+
+
+def cmd_115_check_all_worker(args):
     import sqlite3
     import tool.core
     from tool.p115_client import check_magnet_exists
+
+    paths = runtime_paths()
+    status_path = paths["check_all_status_path"]
+
+    status = {
+        "running": True,
+        "pid": os.getpid(),
+        "total": 0,
+        "checked": 0,
+        "found_downloaded": 0,
+        "errors": [],
+        "started_at": now_ts(),
+        "updated_at": now_ts(),
+    }
+    write_json_atomic(status_path, status)
+
     conn = sqlite3.connect(tool.core.get_db_path())
     tool.core.ensure_getchu_schema(conn)
     cursor = conn.cursor()
@@ -363,27 +432,31 @@ def cmd_115_check_all(args):
     rows = cursor.fetchall()
     conn.close()
 
-    total = len(rows)
-    checked = 0
-    found = 0
-    errors = []
+    status["total"] = len(rows)
+    write_json_atomic(status_path, status)
 
     for date, name, link in rows:
         try:
             result = check_magnet_exists(link, "")
-            checked += 1
+            status["checked"] += 1
             if result.get("exists"):
                 tool.core.set_downloaded_status(date, name, 1, result.get("infohash_hex"))
-                found += 1
+                status["found_downloaded"] += 1
         except Exception as e:
-            errors.append(f"{date}/{name}: {e}")
+            status["errors"].append(f"{date}/{name}: {e}")
+
+        status["updated_at"] = now_ts()
+        write_json_atomic(status_path, status)
+
+    status["running"] = False
+    write_json_atomic(status_path, status)
 
     _print({
         "success": True,
-        "total": total,
-        "checked": checked,
-        "found_downloaded": found,
-        "errors": errors[:10],
+        "total": status["total"],
+        "checked": status["checked"],
+        "found_downloaded": status["found_downloaded"],
+        "errors": status["errors"][:10],
     })
 
 
@@ -465,7 +538,16 @@ def build_parser():
     p_115_submit.set_defaults(func=cmd_115_submit)
 
     p_115_check_all = _115_sub.add_parser("check_all")
-    p_115_check_all.set_defaults(func=cmd_115_check_all)
+    check_all_sub = p_115_check_all.add_subparsers(dest="check_all_action", required=True)
+
+    p_115_check_all_start = check_all_sub.add_parser("start")
+    p_115_check_all_start.set_defaults(func=cmd_115_check_all_start)
+
+    p_115_check_all_status = check_all_sub.add_parser("status")
+    p_115_check_all_status.set_defaults(func=cmd_115_check_all_status)
+
+    p_115_check_all_worker = check_all_sub.add_parser("worker")
+    p_115_check_all_worker.set_defaults(func=cmd_115_check_all_worker)
 
     return parser
 
