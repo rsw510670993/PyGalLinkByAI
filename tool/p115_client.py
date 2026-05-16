@@ -4,9 +4,8 @@ import os
 import re
 import sys
 from pathlib import Path
-from urllib.request import urlopen
 
-from p115client import P115Client, check_response, tool
+from p115client import P115Client, check_response
 
 
 def _tool_dir():
@@ -52,24 +51,29 @@ def get_login_status():
 
 
 def qr_login_step1():
-    token = tool.get_qrcode_token()
-    uid = token["uid"]
-
-    img_data = urlopen(f"https://qrcodeapi.115.com/api/1.0/mac/1.0/qrcode?uid={uid}").read()
-    img_b64 = base64.b64encode(img_data).decode("ascii")
-
+    import requests
+    resp = requests.get("https://qrcodeapi.115.com/api/1.0/web/1.0/token/")
+    data = resp.json()
+    data = data.get("data") or data
+    uid = data["uid"]
+    qrcode_url = f"https://qrcodeapi.115.com/api/1.0/mac/1.0/qrcode?uid={uid}"
+    img_resp = requests.get(qrcode_url)
+    img_b64 = base64.b64encode(img_resp.content).decode("ascii")
     return {
         "uid": uid,
-        "time": token["time"],
-        "sign": token["sign"],
+        "time": data["time"],
+        "sign": data["sign"],
         "qrcode_base64": img_b64,
     }
 
 
 def qr_login_step2(uid, time, sign):
-    payload = {"uid": uid, "time": time, "sign": sign}
-    status = tool.get_qrcode_status(payload)
-    code = status.get("status")
+    import requests
+    url = "https://qrcodeapi.115.com/get/status/"
+    resp = requests.get(url, params={"uid": uid, "time": time, "sign": sign})
+    status = resp.json()
+    data = status.get("data") or status
+    code = data.get("status")
     if code == 2:
         return {"status": 2, "message": "已登录"}
     elif code == 1:
@@ -81,15 +85,16 @@ def qr_login_step2(uid, time, sign):
 
 
 def qr_login_step3(uid, app="alipaymini"):
+    import requests
     try:
-        result = tool.post_qrcode_result(uid, app)
-        data = result.get("data") or result
-        cookie = data.get("cookie")
+        url = f"https://passportapi.115.com/app/1.0/{app}/1.0/login/qrcode/"
+        payload = {"app": app, "account": uid}
+        resp = requests.post(url, data=payload)
+        body = resp.json()
+        body_data = body.get("data") or body
+        cookie = body_data.get("cookie") or ""
         if not cookie:
-            for v in data.values():
-                if isinstance(v, str) and "UID=" in v:
-                    cookie = v
-                    break
+            cookie = resp.headers.get("Set-Cookie", "")
         if cookie:
             path = cookies_path()
             parent = os.path.dirname(path)
@@ -98,7 +103,7 @@ def qr_login_step3(uid, app="alipaymini"):
             with open(path, "w", encoding="utf-8") as f:
                 f.write(cookie)
             return {"success": True, "message": "登录成功"}
-        return {"success": False, "message": "获取 cookie 失败", "raw": str(result)[:200]}
+        return {"success": False, "message": "获取 cookie 失败", "raw": str(body)[:200]}
     except Exception as e:
         return {"success": False, "message": str(e)}
 
