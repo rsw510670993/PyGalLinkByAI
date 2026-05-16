@@ -209,7 +209,9 @@ function loadPage(page) {
         .then(response => response.json())
         .then(res => {
             if (res.status === 'error') {
-                showEmptyMessage('数据加载失败：' + (res.message || '未知错误'));
+                let msg = '数据加载失败：' + (res.message || '未知错误');
+                if (res.stderr) msg += ' (stderr: ' + res.stderr + ')';
+                showEmptyMessage(msg);
                 return;
             }
 

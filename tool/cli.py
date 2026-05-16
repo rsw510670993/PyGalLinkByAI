@@ -9,19 +9,12 @@ import time
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
 import tool
-from tool.p115_client import (
-    check_magnet_exists,
-    get_login_status,
-    offline_submit,
-    qr_login_step1,
-    qr_login_step2,
-    qr_login_step3,
-)
 from tool.runtime import pid_is_running, read_json, runtime_paths, terminate_pid, write_json_atomic
 
 
 def _print(obj):
     sys.stdout.write(json.dumps(obj, ensure_ascii=False))
+    sys.stdout.flush()
 
 
 def _base_dir():
