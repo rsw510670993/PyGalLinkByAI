@@ -38,7 +38,12 @@ function run_cli($args) {
         1 => ['pipe', 'w'],
         2 => ['pipe', 'w'],
     ];
-    $proc = proc_open($cmd, $spec, $pipes, $root);
+
+    $env = array_merge($_SERVER, [
+        'HOME' => $root,
+    ]);
+
+    $proc = proc_open($cmd, $spec, $pipes, $root, $env);
     if (!is_resource($proc)) {
         return [1, ['status' => 'error', 'message' => '无法启动Python进程']];
     }
