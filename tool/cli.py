@@ -13,7 +13,8 @@ from tool.runtime import pid_is_running, read_json, runtime_paths, terminate_pid
 
 
 def _print(obj):
-    sys.stdout.write(json.dumps(obj, ensure_ascii=False))
+    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
 
 
 def _base_dir():
@@ -55,6 +56,14 @@ def _download_status_default():
 def cmd_years(args):
     years = tool.get_years_list()
     _print({"years": years})
+
+def cmd_latest_month(args):
+    games = tool.get_games_data()
+    if not games:
+        _print({"year": None, "month": None})
+        return
+    g = games[0]
+    _print({"year": int(g.year), "month": int(g.month)})
 
 
 def cmd_games(args):
@@ -272,12 +281,83 @@ def cmd_download_stop(args):
         _print({"status": "error", "message": str(e), "pid": int(pid)})
 
 
+def cmd_115_login_qrcode(args):
+    try:
+        from tool.p115_client import qr_login_step1
+        _print(qr_login_step1())
+    except Exception as e:
+        _print({"status": "error", "message": f"115模块加载失败: {e}"})
+
+
+def cmd_115_login_qrcode_status(args):
+    try:
+        from tool.p115_client import qr_login_step2
+        uid = args.uid
+        time = args.time
+        sign = args.sign
+        _print(qr_login_step2(uid, time, sign))
+    except Exception as e:
+        _print({"status": "error", "message": f"115模块加载失败: {e}"})
+
+
+def cmd_115_login_confirm(args):
+    try:
+        from tool.p115_client import qr_login_step3
+        uid = args.uid
+        app = args.app or "alipaymini"
+        _print(qr_login_step3(uid, app))
+    except Exception as e:
+        _print({"status": "error", "message": f"115模块加载失败: {e}"})
+
+
+def cmd_115_logout(args):
+    try:
+        from tool.p115_client import cookies_path
+        path = cookies_path()
+        if os.path.isfile(path):
+            os.remove(path)
+        _print({"success": True, "message": "已退出登录"})
+    except Exception as e:
+        _print({"success": False, "message": str(e)})
+
+
+def cmd_115_login_status(args):
+    try:
+        from tool.p115_client import get_login_status
+        _print(get_login_status())
+    except Exception as e:
+        _print({"status": "error", "message": f"115模块加载失败: {e}"})
+
+
+def cmd_115_check(args):
+    try:
+        from tool.p115_client import check_magnet_exists
+        magnet = args.magnet
+        save_path = args.dir or ""
+        _print(check_magnet_exists(magnet, save_path))
+    except Exception as e:
+        _print({"status": "error", "message": f"115模块加载失败: {e}"})
+
+
+def cmd_115_submit(args):
+    try:
+        from tool.p115_client import offline_submit
+        magnet = args.magnet
+        save_path = args.dir or ""
+        _print(offline_submit(magnet, save_path))
+    except Exception as e:
+        _print({"status": "error", "message": f"115模块加载失败: {e}"})
+
+
 def build_parser():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_years = sub.add_parser("years")
     p_years.set_defaults(func=cmd_years)
+
+    p_latest = sub.add_parser("latest_month")
+    p_latest.set_defaults(func=cmd_latest_month)
 
     p_games = sub.add_parser("games")
     p_games.add_argument("--page", type=int, default=1)
@@ -312,6 +392,39 @@ def build_parser():
 
     p_download_stop = download_sub.add_parser("stop")
     p_download_stop.set_defaults(func=cmd_download_stop)
+
+    p_115 = sub.add_parser("115")
+    _115_sub = p_115.add_subparsers(dest="action", required=True)
+
+    p_115_login_qrcode = _115_sub.add_parser("login_qrcode")
+    p_115_login_qrcode.set_defaults(func=cmd_115_login_qrcode)
+
+    p_115_login_qrcode_status = _115_sub.add_parser("login_qrcode_status")
+    p_115_login_qrcode_status.add_argument("--uid", type=str, required=True)
+    p_115_login_qrcode_status.add_argument("--time", type=str, required=True)
+    p_115_login_qrcode_status.add_argument("--sign", type=str, required=True)
+    p_115_login_qrcode_status.set_defaults(func=cmd_115_login_qrcode_status)
+
+    p_115_login_confirm = _115_sub.add_parser("login_confirm")
+    p_115_login_confirm.add_argument("--uid", type=str, required=True)
+    p_115_login_confirm.add_argument("--app", type=str, default="alipaymini")
+    p_115_login_confirm.set_defaults(func=cmd_115_login_confirm)
+
+    p_115_logout = _115_sub.add_parser("logout")
+    p_115_logout.set_defaults(func=cmd_115_logout)
+
+    p_115_login_status = _115_sub.add_parser("login_status")
+    p_115_login_status.set_defaults(func=cmd_115_login_status)
+
+    p_115_check = _115_sub.add_parser("check")
+    p_115_check.add_argument("--magnet", type=str, required=True)
+    p_115_check.add_argument("--dir", type=str, default="")
+    p_115_check.set_defaults(func=cmd_115_check)
+
+    p_115_submit = _115_sub.add_parser("submit")
+    p_115_submit.add_argument("--magnet", type=str, required=True)
+    p_115_submit.add_argument("--dir", type=str, default="")
+    p_115_submit.set_defaults(func=cmd_115_submit)
 
     return parser
 

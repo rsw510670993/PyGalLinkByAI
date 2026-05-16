@@ -38,7 +38,12 @@ function run_cli($args) {
         1 => ['pipe', 'w'],
         2 => ['pipe', 'w'],
     ];
-    $proc = proc_open($cmd, $spec, $pipes, $root);
+
+    $env = array_merge($_SERVER, [
+        'HOME' => $root,
+    ]);
+
+    $proc = proc_open($cmd, $spec, $pipes, $root, $env);
     if (!is_resource($proc)) {
         return [1, ['status' => 'error', 'message' => '无法启动Python进程']];
     }
@@ -58,6 +63,11 @@ $action = isset($_GET['action']) ? $_GET['action'] : '';
 
 if ($action === 'years') {
     [$code, $data] = run_cli(['years']);
+    json_response($data);
+}
+
+if ($action === 'latest_month') {
+    [$code, $data] = run_cli(['latest_month']);
     json_response($data);
 }
 
@@ -118,5 +128,51 @@ if ($action === 'stop_download') {
     json_response($data);
 }
 
-json_response(['status' => 'error', 'message' => 'unknown action']);
+if ($action === '115_login_qrcode') {
+    [$code, $data] = run_cli(['115', 'login_qrcode']);
+    json_response($data);
+}
 
+if ($action === '115_login_qrcode_status') {
+    $uid = $_GET['uid'] ?? '';
+    $time = $_GET['time'] ?? '';
+    $sign = $_GET['sign'] ?? '';
+    [$code, $data] = run_cli(['115', 'login_qrcode_status', '--uid', $uid, '--time', $time, '--sign', $sign]);
+    json_response($data);
+}
+
+if ($action === '115_login_confirm') {
+    $body = read_json_body();
+    $uid = $body['uid'] ?? '';
+    $app = $body['app'] ?? 'alipaymini';
+    [$code, $data] = run_cli(['115', 'login_confirm', '--uid', $uid, '--app', $app]);
+    json_response($data);
+}
+
+if ($action === '115_logout') {
+    [$code, $data] = run_cli(['115', 'logout']);
+    json_response($data);
+}
+
+if ($action === '115_login_status') {
+    [$code, $data] = run_cli(['115', 'login_status']);
+    json_response($data);
+}
+
+if ($action === '115_check') {
+    $body = read_json_body();
+    $magnet = $body['magnet'] ?? '';
+    $dir = $body['dir'] ?? '';
+    [$code, $data] = run_cli(['115', 'check', '--magnet', $magnet, '--dir', $dir]);
+    json_response($data);
+}
+
+if ($action === '115_submit') {
+    $body = read_json_body();
+    $magnet = $body['magnet'] ?? '';
+    $dir = $body['dir'] ?? '';
+    [$code, $data] = run_cli(['115', 'submit', '--magnet', $magnet, '--dir', $dir]);
+    json_response($data);
+}
+
+json_response(['status' => 'error', 'message' => 'unknown action']);

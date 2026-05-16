@@ -82,10 +82,19 @@ def main():
 
                     status["current_month"] = month
                     status["current_game"] = None
+                    status["current_month_fetched"] = 0
+                    status["current_month_inserted"] = 0
+                    status["current_month_skipped"] = 0
                     status["updated_at"] = now_ts()
                     write_json_atomic(paths["spider_status_path"], status)
 
                     games = tool.get_getchu_games(year, month)
+                    status["current_month_fetched"] = len(games)
+                    status["updated_at"] = now_ts()
+                    write_json_atomic(paths["spider_status_path"], status)
+
+                    inserted = 0
+                    skipped = 0
 
                     for idx, game in enumerate(games):
                         if _stop_requested:
@@ -96,9 +105,15 @@ def main():
                             "INSERT OR IGNORE INTO getchu_games (date, name, company) VALUES (?,?,?)",
                             (game.date, game.name, game.company),
                         )
+                        if cursor.rowcount == 1:
+                            inserted += 1
+                        else:
+                            skipped += 1
 
                         if idx % 10 == 0 or idx == len(games) - 1:
                             status["current_game"] = f"{game.name} ({idx + 1}/{len(games)})"
+                            status["current_month_inserted"] = inserted
+                            status["current_month_skipped"] = skipped
                             status["updated_at"] = now_ts()
                             write_json_atomic(paths["spider_status_path"], status)
 
@@ -106,6 +121,8 @@ def main():
 
                     done_months += 1
                     status["progress"] = round(done_months / total_months * 100, 2)
+                    status["current_month_inserted"] = inserted
+                    status["current_month_skipped"] = skipped
                     status["updated_at"] = now_ts()
                     write_json_atomic(paths["spider_status_path"], status)
 
