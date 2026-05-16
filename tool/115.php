@@ -133,7 +133,7 @@ function updateLoginUI(status) {
         badge.textContent = '未登录';
         loginBtn.style.display = '';
         logoutBtn.style.display = 'none';
-        userInfo.textContent = '';
+        userInfo.textContent = status.reason || '';
     }
 }
 

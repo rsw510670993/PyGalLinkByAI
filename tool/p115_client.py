@@ -37,7 +37,7 @@ def load_client():
 def get_login_status():
     client = load_client()
     if client is None:
-        return {"logged_in": False, "user": None}
+        return {"logged_in": False, "user": None, "reason": "cookie文件不存在"}
     try:
         resp = check_response(client.fs_get_user_info())
         user = {}
@@ -46,8 +46,8 @@ def get_login_status():
             if isinstance(data, dict):
                 user = data
         return {"logged_in": True, "user": user.get("user_name", user.get("nickname", ""))}
-    except Exception:
-        return {"logged_in": False, "user": None}
+    except Exception as e:
+        return {"logged_in": False, "user": None, "reason": f"接口调用失败: {e}"}
 
 
 def qr_login_step1():
