@@ -65,14 +65,32 @@ def get_login_status():
         resp.raise_for_status()
         body = resp.json()
         if isinstance(body, dict) and body.get("state") in (False, 0):
-            reason = body.get("error") or body.get("message") or str(body)
+            reason = body.get("error") or body.get("message") or body.get("msg") or str(body)
             return {"logged_in": False, "user": None, "reason": f"接口返回失败: {reason}"}
+
         data = body.get("data") if isinstance(body, dict) else None
-        if not isinstance(data, dict):
-            data = body if isinstance(body, dict) else {}
-        user = data.get("user_name") or data.get("nickname") or ""
+        root = body if isinstance(body, dict) else {}
+        if isinstance(data, dict):
+            payload = data
+        elif isinstance(data, list) and data and isinstance(data[0], dict):
+            payload = data[0]
+        else:
+            payload = root
+
+        user = (
+            payload.get("user_name")
+            or payload.get("nickname")
+            or payload.get("name")
+            or (payload.get("user") or {}).get("user_name") if isinstance(payload.get("user"), dict) else ""
+        )
+        if not user and isinstance(root.get("data"), dict):
+            d = root["data"]
+            user = d.get("user_name") or d.get("nickname") or ""
         if not user:
-            return {"logged_in": False, "user": None, "reason": "接口返回缺少用户信息"}
+            brief = ""
+            if isinstance(root, dict):
+                brief = str({k: root.get(k) for k in ("state", "errno", "error", "message", "msg") if k in root})
+            return {"logged_in": False, "user": None, "reason": f"接口返回缺少用户信息: {brief}"}
         return {"logged_in": True, "user": user}
     except Exception as e:
         return {"logged_in": False, "user": None, "reason": f"接口调用失败: {e}"}
