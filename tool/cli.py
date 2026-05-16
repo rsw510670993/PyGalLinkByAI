@@ -9,7 +9,7 @@ import time
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
 import tool
-from tool.runtime import pid_is_running, read_json, runtime_paths, terminate_pid, write_json_atomic
+from tool.runtime import now_ts, pid_is_running, read_json, runtime_paths, terminate_pid, write_json_atomic
 
 
 def _print(obj):
@@ -433,10 +433,9 @@ def cmd_115_check_all_worker(args):
     tool.core.ensure_getchu_schema(conn)
     cursor = conn.cursor()
     if args.year and args.month:
-        date_prefix = f"{args.year}-{args.month:02d}"
         cursor.execute(
-            "SELECT date, name, link FROM getchu_games WHERE date LIKE ? AND link IS NOT NULL AND link != ''",
-            (f"{date_prefix}%",),
+            "SELECT date, name, link FROM getchu_games WHERE substr(date, 1, 4) = ? AND CAST(substr(date, 6) AS INTEGER) = ? AND link IS NOT NULL AND link != ''",
+            (str(args.year), int(args.month)),
         )
     else:
         cursor.execute(
