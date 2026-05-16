@@ -282,23 +282,36 @@ def cmd_download_stop(args):
 
 
 def cmd_115_login_qrcode(args):
-    _print(qr_login_step1())
+    try:
+        from tool.p115_client import qr_login_step1
+        _print(qr_login_step1())
+    except Exception as e:
+        _print({"status": "error", "message": f"115模块加载失败: {e}"})
 
 
 def cmd_115_login_qrcode_status(args):
-    uid = args.uid
-    time = args.time
-    sign = args.sign
-    _print(qr_login_step2(uid, time, sign))
+    try:
+        from tool.p115_client import qr_login_step2
+        uid = args.uid
+        time = args.time
+        sign = args.sign
+        _print(qr_login_step2(uid, time, sign))
+    except Exception as e:
+        _print({"status": "error", "message": f"115模块加载失败: {e}"})
 
 
 def cmd_115_login_confirm(args):
-    uid = args.uid
-    app = args.app or "alipaymini"
-    _print(qr_login_step3(uid, app))
+    try:
+        from tool.p115_client import qr_login_step3
+        uid = args.uid
+        app = args.app or "alipaymini"
+        _print(qr_login_step3(uid, app))
+    except Exception as e:
+        _print({"status": "error", "message": f"115模块加载失败: {e}"})
 
 
 def cmd_115_logout(args):
+    import os
     path = os.path.join(_base_dir(), "115-cookies.txt")
     try:
         if os.path.isfile(path):
@@ -309,19 +322,31 @@ def cmd_115_logout(args):
 
 
 def cmd_115_login_status(args):
-    _print(get_login_status())
+    try:
+        from tool.p115_client import get_login_status
+        _print(get_login_status())
+    except Exception as e:
+        _print({"status": "error", "message": f"115模块加载失败: {e}"})
 
 
 def cmd_115_check(args):
-    magnet = args.magnet
-    save_path = args.dir or ""
-    _print(check_magnet_exists(magnet, save_path))
+    try:
+        from tool.p115_client import check_magnet_exists
+        magnet = args.magnet
+        save_path = args.dir or ""
+        _print(check_magnet_exists(magnet, save_path))
+    except Exception as e:
+        _print({"status": "error", "message": f"115模块加载失败: {e}"})
 
 
 def cmd_115_submit(args):
-    magnet = args.magnet
-    save_path = args.dir or ""
-    _print(offline_submit(magnet, save_path))
+    try:
+        from tool.p115_client import offline_submit
+        magnet = args.magnet
+        save_path = args.dir or ""
+        _print(offline_submit(magnet, save_path))
+    except Exception as e:
+        _print({"status": "error", "message": f"115模块加载失败: {e}"})
 
 
 def build_parser():
