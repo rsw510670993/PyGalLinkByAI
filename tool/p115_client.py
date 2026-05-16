@@ -27,6 +27,18 @@ def cookies_path():
     return os.path.join(_tool_dir(), "115-cookies.txt")
 
 
+def _read_cookie_string():
+    path = cookies_path()
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+        return content or None
+    except Exception:
+        return None
+
+
 def load_client():
     path = cookies_path()
     if os.path.isfile(path):
@@ -35,17 +47,33 @@ def load_client():
 
 
 def get_login_status():
-    client = load_client()
-    if client is None:
+    import requests
+    cookie = _read_cookie_string()
+    if not cookie:
         return {"logged_in": False, "user": None, "reason": "cookie文件不存在"}
     try:
-        resp = check_response(client.fs_get_user_info())
-        user = {}
-        if isinstance(resp, dict):
-            data = resp.get("data") or resp
-            if isinstance(data, dict):
-                user = data
-        return {"logged_in": True, "user": user.get("user_name", user.get("nickname", ""))}
+        resp = requests.get(
+            "https://webapi.115.com/user/info",
+            headers={
+                "Accept": "application/json, text/plain, */*",
+                "Cookie": cookie,
+                "Referer": "https://115.com/",
+                "User-Agent": "Mozilla/5.0",
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        if isinstance(body, dict) and body.get("state") in (False, 0):
+            reason = body.get("error") or body.get("message") or str(body)
+            return {"logged_in": False, "user": None, "reason": f"接口返回失败: {reason}"}
+        data = body.get("data") if isinstance(body, dict) else None
+        if not isinstance(data, dict):
+            data = body if isinstance(body, dict) else {}
+        user = data.get("user_name") or data.get("nickname") or ""
+        if not user:
+            return {"logged_in": False, "user": None, "reason": "接口返回缺少用户信息"}
+        return {"logged_in": True, "user": user}
     except Exception as e:
         return {"logged_in": False, "user": None, "reason": f"接口调用失败: {e}"}
 
@@ -93,20 +121,25 @@ def qr_login_step3(uid, app="alipaymini"):
         body = resp.json()
         body_data = body.get("data") or body
         cookie = body_data.get("cookie") or ""
+        cookie_header = ""
 
         if isinstance(cookie, dict):
-            cookie = "; ".join(f"{k}={v}" for k, v in cookie.items() if v)
+            cookie_header = "; ".join(f"{k}={v}" for k, v in cookie.items() if v)
+        else:
+            cookie_dict = resp.cookies.get_dict()
+            if cookie_dict:
+                cookie_header = "; ".join(f"{k}={v}" for k, v in cookie_dict.items() if v)
 
-        if not cookie:
-            cookie = resp.headers.get("Set-Cookie", "")
+        if not cookie_header and isinstance(cookie, str):
+            cookie_header = cookie
 
-        if cookie and isinstance(cookie, str):
+        if cookie_header and isinstance(cookie_header, str):
             path = cookies_path()
             parent = os.path.dirname(path)
             if parent:
                 os.makedirs(parent, exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
-                f.write(cookie)
+                f.write(cookie_header)
             return {"success": True, "message": "登录成功"}
 
         return {"success": False, "message": "获取 cookie 失败", "raw": str(body)[:200]}

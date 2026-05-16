@@ -13,7 +13,7 @@ from tool.runtime import pid_is_running, read_json, runtime_paths, terminate_pid
 
 
 def _print(obj):
-    sys.stdout.write(json.dumps(obj, ensure_ascii=False))
+    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
     sys.stdout.flush()
 
 
@@ -311,9 +311,9 @@ def cmd_115_login_confirm(args):
 
 
 def cmd_115_logout(args):
-    import os
-    path = os.path.join(_base_dir(), "115-cookies.txt")
     try:
+        from tool.p115_client import cookies_path
+        path = cookies_path()
         if os.path.isfile(path):
             os.remove(path)
         _print({"success": True, "message": "已退出登录"})
