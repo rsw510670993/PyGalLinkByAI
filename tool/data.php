@@ -85,6 +85,7 @@
                     </div>
                     <div class="col-12 col-lg-5 d-flex gap-2 justify-content-lg-end">
                         <button id="toggle-select" class="btn btn-outline-secondary" type="button">全选</button>
+                        <button id="batch-115-check" class="btn btn-outline-info" type="button">批量校验已下载</button>
                         <button id="batch-115-download" class="btn btn-success" type="button">批量115云下载</button>
                     </div>
                 </div>
@@ -143,15 +144,17 @@ function updateTable(data) {
         if (game.download_url && urlCounts[game.download_url] > 1) {
             btnClass = 'btn-danger';
         }
+        const isDownloaded = game.downloaded == 1;
+        const rowClass = isDownloaded ? ' class="table-secondary text-muted"' : '';
         return `
-        <tr>
+        <tr${rowClass}>
             <td class="check-col text-center">
-                ${(game.download_url) ?
+                ${(game.download_url && !isDownloaded) ?
                     `<input type="checkbox"
                         class="game-checkbox"
                         ${game.download_url ? 'checked' : ''}
                         onchange="handleCheckboxChange(this)">`
-                    : ''}
+                    : isDownloaded ? '<span class="badge bg-secondary">已下载</span>' : ''}
             </td>
             <td class="ym-col">${game.year}/${game.month}</td>
             <td class="game-name-cell">${game.name}${game.nyaa_name ? `<div class="text-muted small" style="display:${game.download_url ? 'none' : ''}">${game.nyaa_name}</div>` : ''}</td>
@@ -416,6 +419,30 @@ document.getElementById('toggle-select').addEventListener('click', () => {
 });
 
 document.getElementById('batch-115-download').addEventListener('click', batch115Download);
+
+document.getElementById('batch-115-check').addEventListener('click', function() {
+    const btn = this;
+    if (!confirm('将对所有未标记的游戏进行115云下载校验，该操作可能需要较长时间，是否继续？')) return;
+    btn.disabled = true;
+    btn.textContent = '校验中...';
+    fetch(`${basePath}/tool/api.php?action=115_check_all`, { method: 'POST' })
+        .then(r => r.json())
+        .then(res => {
+            let msg = `校验完成\n\n总记录: ${res.total}\n已检查: ${res.checked}\n发现已下载: ${res.found_downloaded}`;
+            if (res.errors && res.errors.length > 0) {
+                msg += '\n\n错误（前10条）:\n' + res.errors.join('\n');
+            }
+            alert(msg);
+            loadPage(currentPage);
+        })
+        .catch(err => {
+            alert('批量校验失败: ' + err.message);
+        })
+        .finally(() => {
+            btn.disabled = false;
+            btn.textContent = '批量校验已下载';
+        });
+});
 
 document.querySelector('#gamesTable tbody').addEventListener('click', (e) => {
     const btn = e.target.closest('.magnet-check-btn');

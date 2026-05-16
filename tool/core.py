@@ -114,6 +114,8 @@ def ensure_getchu_schema(conn):
             link TEXT,
             nyaa_name TEXT,
             comment TEXT,
+            downloaded INTEGER DEFAULT 0,
+            infohash_hex TEXT,
             PRIMARY KEY (date, name)
         )
         """
@@ -122,7 +124,29 @@ def ensure_getchu_schema(conn):
     cols = {row[1] for row in cursor.fetchall()}
     if "nyaa_name" not in cols:
         cursor.execute("ALTER TABLE getchu_games ADD COLUMN nyaa_name TEXT")
+    if "downloaded" not in cols:
+        cursor.execute("ALTER TABLE getchu_games ADD COLUMN downloaded INTEGER DEFAULT 0")
+    if "infohash_hex" not in cols:
+        cursor.execute("ALTER TABLE getchu_games ADD COLUMN infohash_hex TEXT")
     conn.commit()
+
+
+def set_downloaded_status(date, name, downloaded=1, infohash_hex=None, db_path=None):
+    conn = sqlite3.connect(db_path or get_db_path())
+    ensure_getchu_schema(conn)
+    cursor = conn.cursor()
+    if infohash_hex:
+        cursor.execute(
+            "UPDATE getchu_games SET downloaded = ?, infohash_hex = ? WHERE date = ? AND name = ?",
+            (downloaded, infohash_hex, date, name),
+        )
+    else:
+        cursor.execute(
+            "UPDATE getchu_games SET downloaded = ? WHERE date = ? AND name = ?",
+            (downloaded, date, name),
+        )
+    conn.commit()
+    conn.close()
 
 
 def get_all_getchu_games(start_year, end_year, start_month, end_month, db_path=None):
@@ -362,7 +386,9 @@ def get_games_data():
             company,
             link as download_url,
             nyaa_name,
-            comment
+            comment,
+            COALESCE(downloaded, 0) as downloaded,
+            infohash_hex
         FROM getchu_games
         ORDER BY year DESC, month DESC
         """
@@ -376,6 +402,8 @@ def get_games_data():
             row[4],
             row[5],
             row[6],
+            row[7],
+            row[8],
         )
         for row in cursor.fetchall()
     ]

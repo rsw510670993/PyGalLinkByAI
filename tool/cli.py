@@ -99,6 +99,7 @@ def cmd_games(args):
                     "download_url": g.link,
                     "nyaa_name": g.nyaa_name,
                     "comment": g.comment,
+                    "downloaded": g.downloaded,
                 }
                 for g in games_data
             ],
@@ -349,6 +350,43 @@ def cmd_115_submit(args):
         _print({"status": "error", "message": f"115模块加载失败: {e}"})
 
 
+def cmd_115_check_all(args):
+    import sqlite3
+    import tool.core
+    from tool.p115_client import check_magnet_exists
+    conn = sqlite3.connect(tool.core.get_db_path())
+    tool.core.ensure_getchu_schema(conn)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT date, name, link FROM getchu_games WHERE (downloaded IS NULL OR downloaded = 0) AND link IS NOT NULL AND link != ''"
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    total = len(rows)
+    checked = 0
+    found = 0
+    errors = []
+
+    for date, name, link in rows:
+        try:
+            result = check_magnet_exists(link, "")
+            checked += 1
+            if result.get("exists"):
+                tool.core.set_downloaded_status(date, name, 1, result.get("infohash_hex"))
+                found += 1
+        except Exception as e:
+            errors.append(f"{date}/{name}: {e}")
+
+    _print({
+        "success": True,
+        "total": total,
+        "checked": checked,
+        "found_downloaded": found,
+        "errors": errors[:10],
+    })
+
+
 def build_parser():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -425,6 +463,9 @@ def build_parser():
     p_115_submit.add_argument("--magnet", type=str, required=True)
     p_115_submit.add_argument("--dir", type=str, default="")
     p_115_submit.set_defaults(func=cmd_115_submit)
+
+    p_115_check_all = _115_sub.add_parser("check_all")
+    p_115_check_all.set_defaults(func=cmd_115_check_all)
 
     return parser
 

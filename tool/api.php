@@ -175,4 +175,9 @@ if ($action === '115_submit') {
     json_response($data);
 }
 
+if ($action === '115_check_all') {
+    [$code, $data] = run_cli(['115', 'check_all']);
+    json_response($data);
+}
+
 json_response(['status' => 'error', 'message' => 'unknown action']);
