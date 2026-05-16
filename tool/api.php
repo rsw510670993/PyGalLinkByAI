@@ -123,4 +123,51 @@ if ($action === 'stop_download') {
     json_response($data);
 }
 
+if ($action === '115_login_qrcode') {
+    [$code, $data] = run_cli(['115', 'login_qrcode']);
+    json_response($data);
+}
+
+if ($action === '115_login_qrcode_status') {
+    $uid = $_GET['uid'] ?? '';
+    $time = $_GET['time'] ?? '';
+    $sign = $_GET['sign'] ?? '';
+    [$code, $data] = run_cli(['115', 'login_qrcode_status', '--uid', $uid, '--time', $time, '--sign', $sign]);
+    json_response($data);
+}
+
+if ($action === '115_login_confirm') {
+    $body = read_json_body();
+    $uid = $body['uid'] ?? '';
+    $app = $body['app'] ?? 'alipaymini';
+    [$code, $data] = run_cli(['115', 'login_confirm', '--uid', $uid, '--app', $app]);
+    json_response($data);
+}
+
+if ($action === '115_logout') {
+    [$code, $data] = run_cli(['115', 'logout']);
+    json_response($data);
+}
+
+if ($action === '115_login_status') {
+    [$code, $data] = run_cli(['115', 'login_status']);
+    json_response($data);
+}
+
+if ($action === '115_check') {
+    $body = read_json_body();
+    $magnet = $body['magnet'] ?? '';
+    $dir = $body['dir'] ?? '';
+    [$code, $data] = run_cli(['115', 'check', '--magnet', $magnet, '--dir', $dir]);
+    json_response($data);
+}
+
+if ($action === '115_submit') {
+    $body = read_json_body();
+    $magnet = $body['magnet'] ?? '';
+    $dir = $body['dir'] ?? '';
+    [$code, $data] = run_cli(['115', 'submit', '--magnet', $magnet, '--dir', $dir]);
+    json_response($data);
+}
+
 json_response(['status' => 'error', 'message' => 'unknown action']);

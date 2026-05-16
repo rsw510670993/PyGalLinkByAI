@@ -46,5 +46,7 @@
         "Switch",
         "NSW"
     ],
-    "per_page": 50
+    "per_page": 50,
+    "115_save_path": "/我的下载/Getchu",
+    "115_cookies_path": "tool/115-cookies.txt"
 }
