@@ -281,6 +281,28 @@ def parse_magnet_simple(magnet):
     return {"ok": len(errors) == 0, "btih": btih, "dn": dn, "infohash_hex": infohash_hex, "errors": errors}
 
 
+def _normalize_for_comparison(name):
+    name = name.strip()
+    first_bracket = name.find('[')
+    if first_bracket > 0:
+        name = name[first_bracket:]
+    name = re.split(r'\s*\+\s*', name)[0]
+    name = name.lower()
+    name = name.replace('・', '').replace('♡', '').replace('❤', '').replace('♥', '')
+    name = name.replace('~', '').replace('～', '').replace('！', '').replace('：', '')
+    name = re.sub(r'[\s\-_.]+', ' ', name).strip()
+    return name
+
+
+def _search_keyword_from_dn(dn):
+    name = dn.strip()
+    first_bracket = name.find('[')
+    if first_bracket > 0:
+        name = name[first_bracket:]
+    name = re.split(r'\s*\+\s*', name)[0]
+    return name.strip()[:80]
+
+
 def check_magnet_exists(magnet, save_path):
     parsed = parse_magnet_simple(magnet)
     if not parsed.get("ok"):
@@ -315,10 +337,13 @@ def check_magnet_exists(magnet, save_path):
     if dn:
         cid = _resolve_path_to_cid(save_path) if save_path else 0
         if cid is not None:
-            files = search_files(dn, cid)
+            keyword = _search_keyword_from_dn(dn)
+            files = search_files(keyword, cid)
+            norm_dn = _normalize_for_comparison(dn)
             for f in files:
                 fname = f.get("n", "") if isinstance(f, dict) else ""
-                if dn.lower() in fname.lower():
+                norm_fname = _normalize_for_comparison(fname)
+                if norm_dn and norm_fname and (norm_dn in norm_fname or norm_fname in norm_dn):
                     matched_files.append({
                         "name": fname,
                         "size": f.get("s") if isinstance(f, dict) else None,
@@ -330,7 +355,8 @@ def check_magnet_exists(magnet, save_path):
     elif in_offline:
         confidence = "high"
     elif dn and cid:
-        broad = search_files(dn[:max(4, len(dn)//2)], cid)
+        keyword = _search_keyword_from_dn(dn)
+        broad = search_files(keyword[:max(8, len(keyword)//3)], cid)
         if broad:
             confidence = "low"
 
