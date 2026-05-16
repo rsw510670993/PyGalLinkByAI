@@ -39,6 +39,20 @@ def _read_cookie_string():
         return None
 
 
+def _cookie_header_to_dict(cookie_header: str):
+    items = {}
+    for part in cookie_header.split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        k, v = part.split("=", 1)
+        k = k.strip()
+        v = v.strip()
+        if k and v:
+            items[k] = v
+    return items
+
+
 def load_client():
     path = cookies_path()
     if os.path.isfile(path):
@@ -52,45 +66,38 @@ def get_login_status():
     if not cookie:
         return {"logged_in": False, "user": None, "reason": "cookie文件不存在"}
     try:
-        resp = requests.get(
-            "https://webapi.115.com/user/info",
-            headers={
-                "Accept": "application/json, text/plain, */*",
-                "Cookie": cookie,
-                "Referer": "https://115.com/",
-                "User-Agent": "Mozilla/5.0",
-            },
-            timeout=10,
-        )
-        resp.raise_for_status()
-        body = resp.json()
-        if isinstance(body, dict) and body.get("state") in (False, 0):
-            reason = body.get("error") or body.get("message") or body.get("msg") or str(body)
+        sess = requests.Session()
+        sess.headers.update({
+            "Accept": "application/json, text/plain, */*",
+            "Referer": "https://115.com/",
+            "User-Agent": "Mozilla/5.0",
+        })
+
+        for k, v in _cookie_header_to_dict(cookie).items():
+            sess.cookies.set(k, v, domain=".115.com", path="/")
+
+        sess.get("https://webapi.115.com/", timeout=10)
+
+        index_resp = sess.get("https://webapi.115.com/files/index_info", timeout=10)
+        index_resp.raise_for_status()
+        index_body = index_resp.json()
+        if isinstance(index_body, dict) and index_body.get("state") in (False, 0):
+            reason = index_body.get("error") or index_body.get("message") or index_body.get("msg") or str(index_body)
             return {"logged_in": False, "user": None, "reason": f"接口返回失败: {reason}"}
 
-        data = body.get("data") if isinstance(body, dict) else None
-        root = body if isinstance(body, dict) else {}
-        if isinstance(data, dict):
-            payload = data
-        elif isinstance(data, list) and data and isinstance(data[0], dict):
-            payload = data[0]
-        else:
-            payload = root
+        user = ""
+        try:
+            info_resp = sess.get("https://webapi.115.com/user/info", timeout=10)
+            info_resp.raise_for_status()
+            body = info_resp.json()
+            if isinstance(body, dict) and body.get("state") in (False, 0):
+                body = {}
+            data = body.get("data") if isinstance(body, dict) else None
+            if isinstance(data, dict):
+                user = data.get("user_name") or data.get("nickname") or ""
+        except Exception:
+            user = ""
 
-        user = (
-            payload.get("user_name")
-            or payload.get("nickname")
-            or payload.get("name")
-            or (payload.get("user") or {}).get("user_name") if isinstance(payload.get("user"), dict) else ""
-        )
-        if not user and isinstance(root.get("data"), dict):
-            d = root["data"]
-            user = d.get("user_name") or d.get("nickname") or ""
-        if not user:
-            brief = ""
-            if isinstance(root, dict):
-                brief = str({k: root.get(k) for k in ("state", "errno", "error", "message", "msg") if k in root})
-            return {"logged_in": False, "user": None, "reason": f"接口返回缺少用户信息: {brief}"}
         return {"logged_in": True, "user": user}
     except Exception as e:
         return {"logged_in": False, "user": None, "reason": f"接口调用失败: {e}"}
