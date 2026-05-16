@@ -177,8 +177,18 @@ def offline_submit(magnet, save_path):
     if client is None:
         return {"success": False, "message": "未登录"}
     try:
-        resp = check_response(client.offline_download_add(magnet, save_path=save_path))
-        return {"success": True, "pick_code": resp.get("pick_code")}
+        cid = 0
+        if save_path:
+            cid = _resolve_path_to_cid(save_path)
+        payload = {"url": magnet}
+        if cid:
+            payload["wp_path_id"] = cid
+        resp = check_response(client.offline_add_url(payload))
+        pick_code = None
+        if isinstance(resp, dict):
+            data = resp.get("data") if isinstance(resp.get("data"), dict) else resp
+            pick_code = data.get("pick_code") or data.get("pickcode") or data.get("pc")
+        return {"success": True, "pick_code": pick_code, "response": resp}
     except Exception as e:
         return {"success": False, "message": str(e)}
 
@@ -188,9 +198,23 @@ def offline_list():
     if client is None:
         return {"success": False, "message": "未登录", "tasks": []}
     try:
-        resp = check_response(client.offline_download_list())
-        data = resp if isinstance(resp, list) else resp.get("data", []) if isinstance(resp, dict) else []
-        return {"success": True, "tasks": data}
+        resp = check_response(client.offline_list({"page": 1, "page_size": 100}))
+        tasks = []
+        if isinstance(resp, dict):
+            for k in ("tasks", "data", "list"):
+                v = resp.get(k)
+                if isinstance(v, list):
+                    tasks = v
+                    break
+                if isinstance(v, dict):
+                    for kk in ("tasks", "data", "list"):
+                        vv = v.get(kk)
+                        if isinstance(vv, list):
+                            tasks = vv
+                            break
+                    if tasks:
+                        break
+        return {"success": True, "tasks": tasks, "response": resp}
     except Exception as e:
         return {"success": False, "message": str(e), "tasks": []}
 
@@ -200,15 +224,15 @@ def _resolve_path_to_cid(path):
     if client is None:
         return 0
     try:
-        parts = [p for p in path.strip("/").split("/") if p]
-        cid = 0
-        for part in parts:
-            resp = check_response(client.fs_get_id_by_path(part, cid=cid))
-            if isinstance(resp, dict):
-                cid = resp.get("id", resp.get("cid", 0))
-                if not cid:
-                    return 0
-        return cid
+        resp = check_response(client.fs_dir_getid(path))
+        if not isinstance(resp, dict):
+            return 0
+        data = resp.get("data") if isinstance(resp.get("data"), dict) else resp
+        cid = data.get("id") or data.get("file_id") or data.get("cid") or 0
+        try:
+            return int(cid)
+        except Exception:
+            return 0
     except Exception:
         return 0
 
