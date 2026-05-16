@@ -42,6 +42,13 @@ function run_cli($args) {
     $env = array_merge($_SERVER, [
         'HOME' => $root,
     ]);
+    if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
+        $env['USERPROFILE'] = $root;
+        if (preg_match('/^[A-Za-z]:/', $root)) {
+            $env['HOMEDRIVE'] = substr($root, 0, 2);
+            $env['HOMEPATH'] = substr($root, 2);
+        }
+    }
 
     $proc = proc_open($cmd, $spec, $pipes, $root, $env);
     if (!is_resource($proc)) {
