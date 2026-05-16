@@ -437,7 +437,7 @@ let checkAllIntervalId = null;
 
 document.getElementById('batch-115-check').addEventListener('click', function() {
     const btn = this;
-    if (!confirm('将对所有未标记的游戏进行115云下载校验，该操作可能需要较长时间，是否继续？')) return;
+    if (!confirm('将对当前月份的所有游戏进行115云下载校验（含已下载记录），是否继续？')) return;
 
     btn.disabled = true;
     btn.textContent = '启动中...';
@@ -447,7 +447,19 @@ document.getElementById('batch-115-check').addEventListener('click', function() 
         checkAllIntervalId = null;
     }
 
-    fetch(`${basePath}/tool/api.php?action=115_check_all_start`, { method: 'POST' })
+    const monthValue = document.getElementById('month-picker').value;
+    const parsed = parseMonthValue(monthValue);
+    const body = {};
+    if (parsed) {
+        body.year = parseInt(parsed.year, 10);
+        body.month = parseInt(parsed.month, 10);
+    }
+
+    fetch(`${basePath}/tool/api.php?action=115_check_all_start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    })
         .then(r => r.json())
         .then(res => {
             if (res.status === 'error') {

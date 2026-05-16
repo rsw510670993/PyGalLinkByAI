@@ -374,12 +374,18 @@ def cmd_115_check_all_start(args):
     if not os.path.isdir(paths["status_dir"]):
         os.makedirs(paths["status_dir"], exist_ok=True)
 
+    worker_args = [
+        sys.executable,
+        os.path.join(_base_dir(), "cli.py"),
+        "115", "check_all", "worker",
+    ]
+    if args.year:
+        worker_args += ["--year", str(args.year)]
+    if args.month:
+        worker_args += ["--month", str(args.month)]
+
     p = subprocess.Popen(
-        [
-            sys.executable,
-            os.path.join(_base_dir(), "cli.py"),
-            "115", "check_all", "worker",
-        ],
+        worker_args,
         cwd=_base_dir(),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -426,9 +432,16 @@ def cmd_115_check_all_worker(args):
     conn = sqlite3.connect(tool.core.get_db_path())
     tool.core.ensure_getchu_schema(conn)
     cursor = conn.cursor()
-    cursor.execute(
-        "SELECT date, name, link FROM getchu_games WHERE (downloaded IS NULL OR downloaded = 0) AND link IS NOT NULL AND link != ''"
-    )
+    if args.year and args.month:
+        date_prefix = f"{args.year}-{args.month:02d}"
+        cursor.execute(
+            "SELECT date, name, link FROM getchu_games WHERE date LIKE ? AND link IS NOT NULL AND link != ''",
+            (f"{date_prefix}%",),
+        )
+    else:
+        cursor.execute(
+            "SELECT date, name, link FROM getchu_games WHERE link IS NOT NULL AND link != ''"
+        )
     rows = cursor.fetchall()
     conn.close()
 
@@ -541,12 +554,16 @@ def build_parser():
     check_all_sub = p_115_check_all.add_subparsers(dest="check_all_action", required=True)
 
     p_115_check_all_start = check_all_sub.add_parser("start")
+    p_115_check_all_start.add_argument("--year", type=int)
+    p_115_check_all_start.add_argument("--month", type=int)
     p_115_check_all_start.set_defaults(func=cmd_115_check_all_start)
 
     p_115_check_all_status = check_all_sub.add_parser("status")
     p_115_check_all_status.set_defaults(func=cmd_115_check_all_status)
 
     p_115_check_all_worker = check_all_sub.add_parser("worker")
+    p_115_check_all_worker.add_argument("--year", type=int)
+    p_115_check_all_worker.add_argument("--month", type=int)
     p_115_check_all_worker.set_defaults(func=cmd_115_check_all_worker)
 
     return parser

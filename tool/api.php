@@ -176,7 +176,13 @@ if ($action === '115_submit') {
 }
 
 if ($action === '115_check_all_start') {
-    [$code, $data] = run_cli(['115', 'check_all', 'start']);
+    $body = read_json_body();
+    $year = $body['year'] ?? '';
+    $month = $body['month'] ?? '';
+    $args = ['115', 'check_all', 'start'];
+    if ($year) { $args[] = '--year'; $args[] = strval($year); }
+    if ($month) { $args[] = '--month'; $args[] = strval($month); }
+    [$code, $data] = run_cli($args);
     json_response($data);
 }
 

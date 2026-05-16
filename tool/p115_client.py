@@ -249,6 +249,16 @@ def search_files(keyword, cid=0):
         return []
 
 
+def _get_default_save_path():
+    config_path = os.path.join(_tool_dir(), "config.json")
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        return config.get("115_save_path", "")
+    except Exception:
+        return ""
+
+
 def parse_magnet_simple(magnet):
     if not magnet or not magnet.startswith("magnet:?"):
         return {"ok": False, "errors": ["not_magnet"]}
@@ -335,9 +345,10 @@ def check_magnet_exists(magnet, save_path):
                     break
 
     if dn:
-        cid = _resolve_path_to_cid(save_path) if save_path else 0
+        actual_save_path = save_path or _get_default_save_path()
+        cid = _resolve_path_to_cid(actual_save_path) if actual_save_path else 0
+        keyword = _search_keyword_from_dn(dn)
         if cid is not None:
-            keyword = _search_keyword_from_dn(dn)
             files = search_files(keyword, cid)
             norm_dn = _normalize_for_comparison(dn)
             for f in files:
@@ -349,6 +360,21 @@ def check_magnet_exists(magnet, save_path):
                         "size": f.get("s") if isinstance(f, dict) else None,
                         "pick_code": f.get("pc") if isinstance(f, dict) else None,
                     })
+
+        if not matched_files and not in_offline and infohash_hex:
+            try:
+                broad = search_files(infohash_hex[:12], cid or 0)
+                for f in broad:
+                    fname = f.get("n", "") if isinstance(f, dict) else ""
+                    norm_fname = _normalize_for_comparison(fname)
+                    if norm_dn and norm_fname and (norm_dn in norm_fname or norm_fname in norm_dn):
+                        matched_files.append({
+                            "name": fname,
+                            "size": f.get("s") if isinstance(f, dict) else None,
+                            "pick_code": f.get("pc") if isinstance(f, dict) else None,
+                        })
+            except Exception:
+                pass
 
     if matched_files:
         confidence = "high"
