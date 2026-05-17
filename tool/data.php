@@ -86,7 +86,6 @@
             <div class="navbar-nav">
                 <a class="nav-link" href="<?= $base ?>/index.php">首页</a>
                 <a class="nav-link active" href="<?= $base ?>/tool/data.php">数据展示</a>
-                <a class="nav-link" href="<?= $base ?>/tool/115.php">115 下载</a>
             </div>
         </div>
     </nav>
@@ -213,6 +212,33 @@
                         <button id="modal-submit-btn" class="btn btn-success btn-sm">提交到115</button>
                     </div>
                     <div id="modal-result" class="small" style="white-space:pre-wrap;word-break:break-all;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="editModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">编辑游戏信息</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="edit-old-name">
+                    <input type="hidden" id="edit-date">
+                    <div class="mb-2">
+                        <label class="form-label mb-0 small">游戏名称</label>
+                        <input id="edit-game-name" class="form-control">
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label mb-0 small">公司</label>
+                        <input id="edit-company" class="form-control">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-sm btn-primary" id="edit-save-btn">保存</button>
+                    <button class="btn btn-sm btn-secondary" data-bs-dismiss="modal">取消</button>
                 </div>
             </div>
         </div>
@@ -847,78 +873,79 @@ document.getElementById('modal-submit-btn').addEventListener('click', function()
     });
 });
 
-// === 行内编辑 ===
-let editRestore = null;
-
-document.querySelector('#gamesTable tbody').addEventListener('dblclick', (e) => {
+// === 编辑弹窗 ===
+document.querySelector('#gamesTable tbody').addEventListener('click', (e) => {
     const cell = e.target.closest('.editable-cell');
     if (!cell) return;
 
     const row = cell.closest('tr');
-    const oldNameCell = row.querySelector('.game-name-cell');
-    const oldName = oldNameCell ? oldNameCell.childNodes[0].nodeValue.trim() : '';
-    const dateFull = row.dataset.date || '';
-    const field = cell.dataset.field || '';
+    const nameCell = row.querySelector('.game-name-cell');
+    const companyCell = row.querySelector('.company-col');
 
-    if (editRestore) editRestore();
+    const oldName = decodeURIComponent(row.dataset.name || '');
+    const date = row.dataset.date || '';
 
-    const origHTML = cell.innerHTML;
-    const origText = cell.textContent.trim();
-    const input = document.createElement('input');
-    input.value = origText;
-    input.addEventListener('keydown', (ke) => {
-        if (ke.key === 'Escape') {
-            if (editRestore) editRestore();
-        }
-        if (ke.key === 'Enter') {
-            const newVal = input.value.trim();
-            if (!newVal || newVal === origText) {
-                if (editRestore) editRestore();
-                return;
-            }
-            input.disabled = true;
-            const body = { date: dateFull, old_name: oldName };
-            if (field === 'name') body.new_name = newVal;
-            if (field === 'company') body.new_company = newVal;
-            fetch(`${basePath}/tool/api.php?action=update_game`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body),
-            }).then(r => r.json()).then(res => {
-                if (res.success) {
-                    cell.textContent = newVal;
-                    if (field === 'name') {
-                        row.dataset.name = encodeURIComponent(newVal);
-                        const ckBtn = row.querySelector('.magnet-check-btn');
-                        if (ckBtn) ckBtn.dataset.name = encodeURIComponent(newVal);
-                        const subBtn = row.querySelector('.btn-115-submit');
-                        if (subBtn) subBtn.dataset.name = encodeURIComponent(newVal);
+    document.getElementById('edit-old-name').value = oldName;
+    document.getElementById('edit-date').value = date;
+    document.getElementById('edit-game-name').value = oldName;
+    document.getElementById('edit-company').value = companyCell?.textContent.trim() || '';
+
+    new bootstrap.Modal(document.getElementById('editModal')).show();
+});
+
+document.getElementById('edit-save-btn').addEventListener('click', function() {
+    const btn = this;
+    const date = document.getElementById('edit-date').value;
+    const oldName = document.getElementById('edit-old-name').value;
+    const newName = document.getElementById('edit-game-name').value.trim();
+    const newCompany = document.getElementById('edit-company').value.trim();
+
+    if (!newName && !newCompany) {
+        alert('至少填写游戏名称或公司');
+        return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = '保存中...';
+
+    const body = { date, old_name: oldName };
+    if (newName && newName !== oldName) body.new_name = newName;
+    if (newCompany) body.new_company = newCompany;
+
+    fetch(`${basePath}/tool/api.php?action=update_game`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    }).then(r => r.json()).then(res => {
+        if (res.success) {
+            const rows = document.querySelectorAll('#gamesTable tbody tr');
+            for (const r of rows) {
+                if (r.dataset.date === date && decodeURIComponent(r.dataset.name || '') === oldName) {
+                    const nc = r.querySelector('.game-name-cell');
+                    const cc = r.querySelector('.company-col');
+                    if (newName) {
+                        nc.childNodes[0].nodeValue = newName;
+                        r.dataset.name = encodeURIComponent(newName);
                     }
-                    editRestore = null;
-                } else {
-                    alert('保存失败: ' + (res.message || ''));
-                    if (editRestore) editRestore();
+                    if (newCompany) cc.textContent = newCompany;
+                    break;
                 }
-            }).catch(err => {
-                alert('保存失败: ' + err.message);
-                if (editRestore) editRestore();
-            });
+            }
+            bootstrap.Modal.getInstance(document.getElementById('editModal')).hide();
+        } else {
+            alert('保存失败: ' + (res.message || ''));
         }
+    }).catch(err => {
+        alert('保存失败: ' + err.message);
+    }).finally(() => {
+        btn.disabled = false;
+        btn.textContent = '保存';
     });
-    input.addEventListener('blur', () => {
-        setTimeout(() => {
-            if (editRestore) editRestore();
-        }, 200);
-    });
-    cell.innerHTML = '';
-    cell.appendChild(input);
-    input.focus();
-    input.select();
+});
 
-    editRestore = () => {
-        cell.innerHTML = origHTML;
-        editRestore = null;
-    };
+document.getElementById('editModal').addEventListener('hidden.bs.modal', () => {
+    document.getElementById('edit-save-btn').disabled = false;
+    document.getElementById('edit-save-btn').textContent = '保存';
 });
 </script>
 </body>
