@@ -105,6 +105,38 @@
             </div>
         </div>
 
+        <div class="card mb-3" id="panel-115-login">
+            <div class="card-header d-flex align-items-center justify-content-between py-2">
+                <span>
+                    115 网盘
+                    <span id="data-115-badge" class="badge bg-secondary ms-2">未登录</span>
+                    <span id="data-115-user" class="text-muted small ms-2"></span>
+                </span>
+                <div>
+                    <button id="data-115-toggle" class="btn btn-outline-secondary btn-sm" type="button"
+                        data-bs-toggle="collapse" data-bs-target="#data-115-collapse" aria-expanded="false">
+                        展开
+                    </button>
+                </div>
+            </div>
+            <div class="collapse" id="data-115-collapse">
+                <div class="card-body">
+                    <div id="data-115-login-actions">
+                        <button id="data-115-login-btn" class="btn btn-primary btn-sm">扫码登录</button>
+                        <button id="data-115-logout-btn" class="btn btn-outline-danger btn-sm" style="display:none;">退出登录</button>
+                    </div>
+                    <div id="data-115-qrcode-section" style="display:none;" class="text-center mt-2">
+                        <img id="data-115-qrcode-img" class="img-thumbnail mb-1" style="max-width:180px;max-height:180px;" alt="二维码">
+                        <div id="data-115-qrcode-status" class="text-muted small mb-2">等待扫码...</div>
+                        <div class="d-flex gap-2 justify-content-center">
+                            <button id="data-115-refresh-qrcode" class="btn btn-outline-secondary btn-sm">刷新</button>
+                            <button id="data-115-cancel-login" class="btn btn-outline-danger btn-sm">取消</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div class="card">
             <div class="card-header d-flex align-items-center justify-content-between">
                 <div class="fw-semibold">游戏列表</div>
@@ -131,6 +163,40 @@
         </div>
     </div>
 
+    <div class="modal fade" id="checkModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">磁链校验与115提交</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-2">
+                        <span id="modal-115-badge" class="badge bg-secondary">未登录</span>
+                        <span id="modal-115-user" class="text-muted small ms-2"></span>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label mb-0 small">游戏</label>
+                        <div id="modal-game-name" class="fw-semibold"></div>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label mb-0 small">磁力链接</label>
+                        <textarea id="modal-magnet" class="form-control" rows="2" readonly></textarea>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label mb-0 small">115 保存路径</label>
+                        <input id="modal-save-path" class="form-control">
+                    </div>
+                    <div class="d-flex gap-2 mb-3">
+                        <button id="modal-check-btn" class="btn btn-outline-info btn-sm">检查115是否存在</button>
+                        <button id="modal-submit-btn" class="btn btn-success btn-sm">提交到115</button>
+                    </div>
+                    <div id="modal-result" class="small" style="white-space:pre-wrap;word-break:break-all;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdn.bootcdn.net/ajax/libs/jquery/3.6.4/jquery.min.js"></script>
     <script src="https://cdn.bootcdn.net/ajax/libs/bootstrap-datepicker/1.9.0/js/bootstrap-datepicker.min.js"></script>
     <script src="https://cdn.bootcdn.net/ajax/libs/bootstrap-datepicker/1.9.0/locales/bootstrap-datepicker.zh-CN.min.js"></script>
@@ -145,18 +211,7 @@ function updateTable(data) {
 
     const tbody = document.querySelector('#gamesTable tbody');
 
-    const urlCounts = {};
-    data.forEach(game => {
-        if (game.download_url) {
-            urlCounts[game.download_url] = (urlCounts[game.download_url] || 0) + 1;
-        }
-    });
-
     tbody.innerHTML = data.map(game => {
-        let btnClass = 'btn-primary';
-        if (game.download_url && urlCounts[game.download_url] > 1) {
-            btnClass = 'btn-danger';
-        }
         const isDownloaded = game.downloaded == 1;
         const rowClass = isDownloaded ? ' class="table-secondary text-muted"' : '';
         return `
@@ -174,12 +229,14 @@ function updateTable(data) {
             <td class="company-col">${game.company}</td>
             <td class="actions-col">
                 ${game.download_url ?
-                    `<div class="btn-group actions-group" role="group" style="display:${game.download_url ? '' : 'none'}">
-                        <a href="${game.download_url}" class="btn ${btnClass} download-btn btn-sm">下载</a>
+                    `<div class="btn-group actions-group" role="group">
+                        <button type="button" class="btn btn-success btn-sm btn-115-submit"
+                            data-magnet="${encodeURIComponent(game.download_url)}"
+                            data-year="${game.year}">115云下载</button>
                         <button type="button" class="btn btn-outline-secondary btn-sm magnet-check-btn"
                             data-magnet="${encodeURIComponent(game.download_url)}"
                             data-name="${encodeURIComponent(game.name)}"
-                            data-company="${encodeURIComponent(game.company)}">校验</button>
+                            data-year="${game.year}">校验</button>
                     </div>`
                     : ''
                 }
@@ -302,6 +359,11 @@ function initMonthPicker() {
 
 window.addEventListener('DOMContentLoaded', () => {
     initMonthPicker();
+    data115CheckLoginStatus();
+    if (window.location.hash === '#115-panel') {
+        const toggle = document.getElementById('data-115-toggle');
+        if (toggle) toggle.click();
+    }
     fetch(`${basePath}/tool/api.php?action=latest_month`)
         .then(r => r.json())
         .then((res) => {
@@ -378,8 +440,8 @@ function batch115Download() {
         const ymText = tr.querySelector('.ym-col')?.textContent || '';
         const year = ymText.split('/')[0] || '';
         const name = tr.querySelector('.game-name-cell')?.textContent?.trim() || '';
-        const a = tr.querySelector('a.download-btn');
-        const magnet = a ? a.href : '';
+        const subBtn = tr.querySelector('.btn-115-submit');
+        const magnet = subBtn ? decodeURIComponent(subBtn.dataset.magnet || '') : '';
 
         if (!magnet || !year) {
             fail++;
@@ -527,35 +589,241 @@ function pollCheckAllStatus() {
         });
 }
 
+// === 115 登录 ===
+let data115QrPollTimer = null;
+let data115QrData = null;
+
+function data115CheckLoginStatus() {
+    fetch(`${basePath}/tool/api.php?action=115_login_status`)
+        .then(r => r.json())
+        .then(res => {
+            const badge = document.getElementById('data-115-badge');
+            const userEl = document.getElementById('data-115-user');
+            const loginBtn = document.getElementById('data-115-login-btn');
+            const logoutBtn = document.getElementById('data-115-logout-btn');
+            if (res.logged_in) {
+                badge.className = 'badge bg-success ms-2';
+                badge.textContent = '已登录';
+                loginBtn.style.display = 'none';
+                logoutBtn.style.display = '';
+                userEl.textContent = res.user || '';
+            } else {
+                badge.className = 'badge bg-secondary ms-2';
+                badge.textContent = '未登录';
+                loginBtn.style.display = '';
+                logoutBtn.style.display = 'none';
+                userEl.textContent = res.reason || '';
+            }
+            const modalBadge = document.getElementById('modal-115-badge');
+            const modalUser = document.getElementById('modal-115-user');
+            if (modalBadge) {
+                modalBadge.className = res.logged_in ? 'badge bg-success' : 'badge bg-secondary';
+                modalBadge.textContent = res.logged_in ? '已登录' : '未登录';
+                modalUser.textContent = res.logged_in ? (res.user || '') : (res.reason || '');
+            }
+        }).catch(() => {});
+}
+
+function data115StartQRLogin() {
+    document.getElementById('data-115-login-btn').disabled = true;
+    document.getElementById('data-115-qrcode-section').style.display = '';
+    document.getElementById('data-115-login-actions').style.display = 'none';
+    data115FetchQRCode();
+}
+
+function data115FetchQRCode() {
+    document.getElementById('data-115-qrcode-status').textContent = '获取二维码中...';
+    fetch(`${basePath}/tool/api.php?action=115_login_qrcode`)
+        .then(r => r.json())
+        .then(res => {
+            if (!res.qrcode_base64) {
+                document.getElementById('data-115-qrcode-status').textContent = '获取二维码失败';
+                return;
+            }
+            data115QrData = res;
+            document.getElementById('data-115-qrcode-img').src = 'data:image/png;base64,' + res.qrcode_base64;
+            document.getElementById('data-115-qrcode-status').textContent = '请使用 115 App 扫码';
+            if (data115QrPollTimer) clearInterval(data115QrPollTimer);
+            data115QrPollTimer = setInterval(data115PollQRStatus, 2000);
+        }).catch(() => {
+            document.getElementById('data-115-qrcode-status').textContent = '获取二维码失败，请重试';
+        });
+}
+
+function data115PollQRStatus() {
+    if (!data115QrData) return;
+    const uid = data115QrData.uid, time = data115QrData.time, sign = data115QrData.sign;
+    fetch(`${basePath}/tool/api.php?action=115_login_qrcode_status&uid=${encodeURIComponent(uid)}&time=${encodeURIComponent(time)}&sign=${encodeURIComponent(sign)}`)
+        .then(r => r.json())
+        .then(res => {
+            const el = document.getElementById('data-115-qrcode-status');
+            if (res.status === 2) {
+                clearInterval(data115QrPollTimer);
+                data115QrPollTimer = null;
+                el.textContent = '扫码成功，确认登录中...';
+                fetch(`${basePath}/tool/api.php?action=115_login_confirm`, {
+                    method: 'POST',
+                    headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({uid, app:'alipaymini'}),
+                }).then(r => r.json()).then(cr => {
+                    if (cr.success) {
+                        el.textContent = '登录成功';
+                        data115CancelQRLogin();
+                        data115CheckLoginStatus();
+                    } else {
+                        el.textContent = '登录失败: ' + (cr.message || '');
+                    }
+                });
+            } else if (res.status === 1) {
+                el.textContent = '已扫描，请在手机上确认';
+            } else if (res.status === -1) {
+                clearInterval(data115QrPollTimer);
+                data115QrPollTimer = null;
+                el.textContent = '二维码已过期，请刷新';
+            } else {
+                el.textContent = '等待扫码...';
+            }
+        }).catch(() => {});
+}
+
+function data115CancelQRLogin() {
+    if (data115QrPollTimer) { clearInterval(data115QrPollTimer); data115QrPollTimer = null; }
+    document.getElementById('data-115-login-btn').disabled = false;
+    document.getElementById('data-115-qrcode-section').style.display = 'none';
+    document.getElementById('data-115-login-actions').style.display = '';
+    data115QrData = null;
+}
+
+document.getElementById('data-115-login-btn').addEventListener('click', data115StartQRLogin);
+document.getElementById('data-115-refresh-qrcode').addEventListener('click', data115FetchQRCode);
+document.getElementById('data-115-cancel-login').addEventListener('click', data115CancelQRLogin);
+document.getElementById('data-115-logout-btn').addEventListener('click', () => {
+    if (!confirm('确定退出 115 登录？')) return;
+    fetch(`${basePath}/tool/api.php?action=115_logout`, {method:'POST'}).then(r=>r.json()).then(res => {
+        if (res.success) data115CheckLoginStatus(); else alert('退出失败');
+    });
+});
+
+document.getElementById('data-115-collapse').addEventListener('show.bs.collapse', () => {
+    document.getElementById('data-115-toggle').textContent = '收起';
+});
+document.getElementById('data-115-collapse').addEventListener('hide.bs.collapse', () => {
+    document.getElementById('data-115-toggle').textContent = '展开';
+});
+
+// === 单行 115 云下载 ===
+document.querySelector('#gamesTable tbody').addEventListener('click', (e) => {
+    const btn = e.target.closest('.btn-115-submit');
+    if (!btn) return;
+    const magnet = decodeURIComponent(btn.dataset.magnet || '');
+    const year = btn.dataset.year || '';
+    if (!magnet) return;
+    btn.disabled = true;
+    const origText = btn.textContent;
+    btn.textContent = '提交中...';
+    const savePath = `/GAL/GAL-${year}`;
+    fetch(`${basePath}/tool/api.php?action=115_submit`, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({magnet, dir: savePath}),
+    }).then(r => r.json()).then(res => {
+        if (res.success) {
+            btn.className = 'btn btn-success btn-sm disabled';
+            btn.textContent = '✓已提交';
+            setTimeout(() => { btn.disabled = false; btn.className = 'btn btn-success btn-sm btn-115-submit'; btn.textContent = origText; }, 3000);
+        } else {
+            btn.className = 'btn btn-outline-danger btn-sm disabled';
+            btn.textContent = '✗失败';
+            setTimeout(() => { btn.disabled = false; btn.className = 'btn btn-success btn-sm btn-115-submit'; btn.textContent = origText; }, 3000);
+        }
+    }).catch(() => {
+        btn.className = 'btn btn-outline-danger btn-sm disabled';
+        btn.textContent = '✗失败';
+        setTimeout(() => { btn.disabled = false; btn.className = 'btn btn-success btn-sm btn-115-submit'; btn.textContent = origText; }, 3000);
+    });
+});
+
+// === 校验 Modal ===
 document.querySelector('#gamesTable tbody').addEventListener('click', (e) => {
     const btn = e.target.closest('.magnet-check-btn');
     if (!btn) return;
     const magnet = decodeURIComponent(btn.dataset.magnet || '');
     const name = decodeURIComponent(btn.dataset.name || '');
-    const company = decodeURIComponent(btn.dataset.company || '');
-    openMagnetCheck(magnet, name, company);
+    const year = btn.dataset.year || '';
+    openCheckModal(magnet, name, year);
 });
 
-function openMagnetCheck(magnet, name, company) {
+function openCheckModal(magnet, name, year) {
     if (!magnet) return;
-    const form = document.createElement('form');
-    form.method = 'POST';
-    form.action = `${basePath}/tool/magnet_check.php`;
-    form.target = '_blank';
-
-    const fields = { magnet, name, company };
-    Object.keys(fields).forEach((k) => {
-        const input = document.createElement('input');
-        input.type = 'hidden';
-        input.name = k;
-        input.value = fields[k];
-        form.appendChild(input);
-    });
-
-    document.body.appendChild(form);
-    form.submit();
-    form.remove();
+    document.getElementById('modal-game-name').textContent = name || '-';
+    document.getElementById('modal-magnet').value = magnet;
+    document.getElementById('modal-save-path').value = `/GAL/GAL-${year}`;
+    document.getElementById('modal-result').textContent = '';
+    document.getElementById('modal-check-btn').disabled = false;
+    document.getElementById('modal-submit-btn').disabled = false;
+    data115CheckLoginStatus();
+    const modal = new bootstrap.Modal(document.getElementById('checkModal'));
+    modal.show();
 }
+
+document.getElementById('modal-check-btn').addEventListener('click', function() {
+    const magnet = document.getElementById('modal-magnet').value.trim();
+    const dir = document.getElementById('modal-save-path').value.trim();
+    if (!magnet) return;
+    this.disabled = true;
+    const resultEl = document.getElementById('modal-result');
+    resultEl.textContent = '检查中...';
+    fetch(`${basePath}/tool/api.php?action=115_check`, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({magnet, dir}),
+    }).then(r => r.json()).then(res => {
+        let msg = '';
+        if (res.exists) {
+            msg += '该磁链已存在于 115 网盘\n';
+            if (res.in_offline_tasks) msg += '（离线任务列表中）\n';
+            msg += '置信度: ' + (res.confidence === 'high' ? '高' : res.confidence === 'low' ? '低' : '无') + '\n';
+            if (res.matched_files && res.matched_files.length > 0) {
+                msg += '\n匹配文件:\n';
+                res.matched_files.forEach(f => { msg += '  - ' + f.name + '\n'; });
+            }
+        } else {
+            msg += '未在 115 网盘找到该磁链\n';
+            if (res.infohash_hex) msg += 'InfoHash: ' + res.infohash_hex + '\n';
+            if (res.dn) msg += '文件名: ' + res.dn;
+            msg += '\n\n可点击「提交到115」将其加入离线下载';
+        }
+        resultEl.textContent = msg;
+    }).catch(err => {
+        resultEl.textContent = '检查失败: ' + err.message;
+    }).finally(() => {
+        this.disabled = false;
+    });
+});
+
+document.getElementById('modal-submit-btn').addEventListener('click', function() {
+    const magnet = document.getElementById('modal-magnet').value.trim();
+    const dir = document.getElementById('modal-save-path').value.trim();
+    if (!magnet) return;
+    this.disabled = true;
+    const resultEl = document.getElementById('modal-result');
+    resultEl.textContent = '提交中...';
+    fetch(`${basePath}/tool/api.php?action=115_submit`, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({magnet, dir}),
+    }).then(r => r.json()).then(res => {
+        if (res.success) {
+            resultEl.textContent = '提交成功！\nPick Code: ' + (res.pick_code || '') + '\n文件将保存到: ' + dir;
+        } else {
+            resultEl.textContent = '提交失败: ' + (res.message || '');
+        }
+    }).catch(err => {
+        resultEl.textContent = '提交失败: ' + err.message;
+    }).finally(() => {
+        this.disabled = false;
+    });
+});
 </script>
 </body>
 </html>
