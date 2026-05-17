@@ -198,4 +198,9 @@ if ($action === '115_check_all_status') {
     json_response($data);
 }
 
+if ($action === '115_check_all_stop') {
+    [$code, $data] = run_cli(['115', 'check_all', 'stop']);
+    json_response($data);
+}
+
 json_response(['status' => 'error', 'message' => 'unknown action']);
