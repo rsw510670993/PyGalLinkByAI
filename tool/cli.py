@@ -496,7 +496,7 @@ def cmd_115_check_all_stop(args):
 
 def cmd_update_game(args):
     import tool.core
-    kwargs = {"date": args.date, "old_name": args.old_name}
+    kwargs = {"date": args.date, "name": args.old_name}
     if args.new_name:
         kwargs["new_name"] = args.new_name
     if args.new_company:

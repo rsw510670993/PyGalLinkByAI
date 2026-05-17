@@ -268,11 +268,9 @@ function updateTable(data) {
         return `
         <tr${rowClass} data-date="${dateFull}" data-name="${encName}" data-magnet="${encodeURIComponent(magnet)}" data-downloaded="${game.downloaded || 0}">
             <td class="check-col text-center">
-                ${magnet ?
-                    `<input type="checkbox" class="game-checkbox"
-                        ${!isDownloaded ? 'checked' : ''}
-                        onchange="handleCheckboxChange(this)">`
-                    : '<span class="text-muted small">-</span>'
+                ${!magnet ? '<span class="text-muted small">-</span>'
+                    : isDownloaded ? '<span class="badge bg-success">已下载</span>'
+                    : `<input type="checkbox" class="game-checkbox" checked onchange="handleCheckboxChange(this)">`
                 }
             </td>
             <td class="ym-col">${game.year}/${game.month}</td>
