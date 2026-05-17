@@ -221,6 +221,16 @@
                         <label class="form-label mb-0 small">游戏名称</label>
                         <input id="edit-game-name" class="form-control">
                     </div>
+                    <div class="row g-2 mb-2">
+                        <div class="col-6">
+                            <label class="form-label mb-0 small">年份</label>
+                            <input type="number" id="edit-year" class="form-control" min="1980" max="3000">
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label mb-0 small">月份</label>
+                            <input type="number" id="edit-month" class="form-control" min="1" max="12">
+                        </div>
+                    </div>
                     <div class="mb-2">
                         <label class="form-label mb-0 small">公司</label>
                         <input id="edit-company" class="form-control">
@@ -930,11 +940,17 @@ document.querySelector('#gamesTable tbody').addEventListener('click', (e) => {
     const downloaded = row.dataset.downloaded || '0';
     const oldNyaa = row.dataset.nyaaName ? decodeURIComponent(row.dataset.nyaaName) : '';
 
+    const dateParts = date.split('-');
+    const oldYear = dateParts[0] || '';
+    const oldMonth = dateParts[1] ? parseInt(dateParts[1], 10).toString() : '';
+
     document.getElementById('edit-old-name').value = oldName;
     document.getElementById('edit-date').value = date;
     document.getElementById('edit-old-magnet').value = magnet;
     document.getElementById('edit-old-nyaa-name').value = oldNyaa;
     document.getElementById('edit-game-name').value = oldName;
+    document.getElementById('edit-year').value = oldYear;
+    document.getElementById('edit-month').value = oldMonth;
     document.getElementById('edit-company').value = companyCell?.textContent.trim() || '';
     document.getElementById('edit-nyaa-name').value = oldNyaa;
     document.getElementById('edit-magnet').value = magnet;
@@ -950,6 +966,8 @@ document.getElementById('edit-save-btn').addEventListener('click', function() {
     const oldMagnet = document.getElementById('edit-old-magnet').value;
     const oldNyaa = document.getElementById('edit-old-nyaa-name').value;
     const newName = document.getElementById('edit-game-name').value.trim();
+    const newYear = document.getElementById('edit-year').value.trim();
+    const newMonth = document.getElementById('edit-month').value.trim();
     const newCompany = document.getElementById('edit-company').value.trim();
     const newNyaaName = document.getElementById('edit-nyaa-name').value.trim();
     const newLink = document.getElementById('edit-magnet').value.trim();
@@ -958,7 +976,10 @@ document.getElementById('edit-save-btn').addEventListener('click', function() {
     btn.disabled = true;
     btn.textContent = '保存中...';
 
+    const newDate = newYear && newMonth ? `${newYear}-${String(parseInt(newMonth, 10)).padStart(2, '0')}` : '';
+
     const body = { date, old_name: oldName };
+    if (newDate && newDate !== date) body.new_date = newDate;
     if (newName && newName !== oldName) body.new_name = newName;
     if (newCompany) body.new_company = newCompany;
     if (newLink !== oldMagnet) body.new_link = newLink;

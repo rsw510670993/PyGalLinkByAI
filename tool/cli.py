@@ -497,6 +497,8 @@ def cmd_115_check_all_stop(args):
 def cmd_update_game(args):
     import tool.core
     kwargs = {"date": args.date, "name": args.old_name}
+    if args.new_date:
+        kwargs["new_date"] = args.new_date
     if args.new_name:
         kwargs["new_name"] = args.new_name
     if args.new_company:
@@ -702,6 +704,7 @@ def build_parser():
     p_update = sub.add_parser("update_game")
     p_update.add_argument("--date", type=str, required=True)
     p_update.add_argument("--old-name", type=str, required=True)
+    p_update.add_argument("--new-date", type=str)
     p_update.add_argument("--new-name", type=str)
     p_update.add_argument("--new-company", type=str)
     p_update.add_argument("--new-link", type=str)
