@@ -149,6 +149,46 @@ def set_downloaded_status(date, name, downloaded=1, infohash_hex=None, db_path=N
     conn.close()
 
 
+def update_game_record(date, name, new_date=None, new_name=None, new_company=None, new_link=None, new_downloaded=None, new_nyaa_name=None, db_path=None):
+    conn = sqlite3.connect(db_path or get_db_path())
+    ensure_getchu_schema(conn)
+    cursor = conn.cursor()
+    fields = {}
+    if new_date is not None and new_date != date:
+        fields["date"] = new_date
+    if new_name is not None:
+        fields["name"] = new_name
+    if new_company is not None:
+        fields["company"] = new_company
+    if new_link is not None:
+        fields["link"] = new_link
+    if new_downloaded is not None:
+        fields["downloaded"] = 1 if new_downloaded else 0
+    if new_nyaa_name is not None:
+        fields["nyaa_name"] = new_nyaa_name
+    if not fields:
+        conn.close()
+        return False
+    sets = ", ".join(f"{k} = ?" for k in fields)
+    values = list(fields.values()) + [date, name]
+    cursor.execute(f"UPDATE getchu_games SET {sets} WHERE date = ? AND name = ?", values)
+    affected = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return affected > 0
+
+
+def delete_game_record(date, name, db_path=None):
+    conn = sqlite3.connect(db_path or get_db_path())
+    ensure_getchu_schema(conn)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM getchu_games WHERE date = ? AND name = ?", (date, name))
+    affected = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return affected > 0
+
+
 def get_all_getchu_games(start_year, end_year, start_month, end_month, db_path=None):
     logger.info("开始获取%s年%s月至%s年%s月的数据", start_year, start_month, end_year, end_month)
     try:

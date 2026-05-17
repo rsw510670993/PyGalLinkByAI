@@ -494,6 +494,31 @@ def cmd_115_check_all_stop(args):
     _print({"status": "success", "message": "已停止校验任务"})
 
 
+def cmd_update_game(args):
+    import tool.core
+    kwargs = {"date": args.date, "name": args.old_name}
+    if args.new_date:
+        kwargs["new_date"] = args.new_date
+    if args.new_name:
+        kwargs["new_name"] = args.new_name
+    if args.new_company:
+        kwargs["new_company"] = args.new_company
+    if args.new_link is not None:
+        kwargs["new_link"] = args.new_link
+    if args.new_downloaded is not None:
+        kwargs["new_downloaded"] = args.new_downloaded
+    if args.new_nyaa_name is not None:
+        kwargs["new_nyaa_name"] = args.new_nyaa_name
+    ok = tool.core.update_game_record(**kwargs)
+    _print({"success": ok, "message": "更新成功" if ok else "未找到匹配记录"})
+
+
+def cmd_delete_game(args):
+    import tool.core
+    ok = tool.core.delete_game_record(args.date, args.name)
+    _print({"success": ok, "message": "删除成功" if ok else "未找到匹配记录"})
+
+
 
 def cmd_115_check_all_worker(args):
     import sqlite3
@@ -675,6 +700,22 @@ def build_parser():
     p_115_check_all_worker.add_argument("--year", type=int)
     p_115_check_all_worker.add_argument("--month", type=int)
     p_115_check_all_worker.set_defaults(func=cmd_115_check_all_worker)
+
+    p_update = sub.add_parser("update_game")
+    p_update.add_argument("--date", type=str, required=True)
+    p_update.add_argument("--old-name", type=str, required=True)
+    p_update.add_argument("--new-date", type=str)
+    p_update.add_argument("--new-name", type=str)
+    p_update.add_argument("--new-company", type=str)
+    p_update.add_argument("--new-link", type=str)
+    p_update.add_argument("--new-downloaded", type=int, choices=[0, 1])
+    p_update.add_argument("--new-nyaa-name", type=str)
+    p_update.set_defaults(func=cmd_update_game)
+
+    p_delete = sub.add_parser("delete_game")
+    p_delete.add_argument("--date", type=str, required=True)
+    p_delete.add_argument("--name", type=str, required=True)
+    p_delete.set_defaults(func=cmd_delete_game)
 
     return parser
 

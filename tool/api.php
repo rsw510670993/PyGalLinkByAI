@@ -203,4 +203,39 @@ if ($action === '115_check_all_stop') {
     json_response($data);
 }
 
+if ($action === 'update_game') {
+    $body = read_json_body();
+    $date = $body['date'] ?? '';
+    $old_name = $body['old_name'] ?? '';
+    $new_date = $body['new_date'] ?? '';
+    $new_name = $body['new_name'] ?? '';
+    $new_company = $body['new_company'] ?? '';
+    $new_link = $body['new_link'] ?? null;
+    $new_downloaded = $body['new_downloaded'] ?? null;
+    $new_nyaa_name = $body['new_nyaa_name'] ?? null;
+    if (!$date || !$old_name) {
+        json_response(['success' => false, 'message' => '缺少必填字段 date/old_name']);
+    }
+    $args = ['update_game', '--date', $date, '--old-name', $old_name];
+    if ($new_date) { $args[] = '--new-date'; $args[] = $new_date; }
+    if ($new_name) { $args[] = '--new-name'; $args[] = $new_name; }
+    if ($new_company) { $args[] = '--new-company'; $args[] = $new_company; }
+    if ($new_link !== null) { $args[] = '--new-link'; $args[] = $new_link; }
+    if ($new_downloaded !== null) { $args[] = '--new-downloaded'; $args[] = strval($new_downloaded); }
+    if ($new_nyaa_name !== null) { $args[] = '--new-nyaa-name'; $args[] = $new_nyaa_name; }
+    [$code, $data] = run_cli($args);
+    json_response($data);
+}
+
+if ($action === 'delete_game') {
+    $body = read_json_body();
+    $date = $body['date'] ?? '';
+    $name = $body['name'] ?? '';
+    if (!$date || !$name) {
+        json_response(['success' => false, 'message' => '缺少必填字段 date/name']);
+    }
+    [$code, $data] = run_cli(['delete_game', '--date', $date, '--name', $name]);
+    json_response($data);
+}
+
 json_response(['status' => 'error', 'message' => 'unknown action']);
