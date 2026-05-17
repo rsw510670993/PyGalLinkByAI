@@ -496,12 +496,23 @@ def cmd_115_check_all_stop(args):
 
 def cmd_update_game(args):
     import tool.core
-    ok = tool.core.update_game_record(
-        args.date, args.old_name,
-        new_name=args.new_name,
-        new_company=args.new_company,
-    )
+    kwargs = {"date": args.date, "old_name": args.old_name}
+    if args.new_name:
+        kwargs["new_name"] = args.new_name
+    if args.new_company:
+        kwargs["new_company"] = args.new_company
+    if args.new_link is not None:
+        kwargs["new_link"] = args.new_link
+    if args.new_downloaded is not None:
+        kwargs["new_downloaded"] = args.new_downloaded
+    ok = tool.core.update_game_record(**kwargs)
     _print({"success": ok, "message": "更新成功" if ok else "未找到匹配记录"})
+
+
+def cmd_delete_game(args):
+    import tool.core
+    ok = tool.core.delete_game_record(args.date, args.name)
+    _print({"success": ok, "message": "删除成功" if ok else "未找到匹配记录"})
 
 
 
@@ -691,7 +702,14 @@ def build_parser():
     p_update.add_argument("--old-name", type=str, required=True)
     p_update.add_argument("--new-name", type=str)
     p_update.add_argument("--new-company", type=str)
+    p_update.add_argument("--new-link", type=str)
+    p_update.add_argument("--new-downloaded", type=int, choices=[0, 1])
     p_update.set_defaults(func=cmd_update_game)
+
+    p_delete = sub.add_parser("delete_game")
+    p_delete.add_argument("--date", type=str, required=True)
+    p_delete.add_argument("--name", type=str, required=True)
+    p_delete.set_defaults(func=cmd_delete_game)
 
     return parser
 

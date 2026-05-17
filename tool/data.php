@@ -126,32 +126,18 @@
         </div>
 
         <div class="card mb-3" id="panel-115-login">
-            <div class="card-header d-flex align-items-center justify-content-between py-2">
-                <span>
-                    115 网盘
-                    <span id="data-115-badge" class="badge bg-secondary ms-2">未登录</span>
-                    <span id="data-115-user" class="text-muted small ms-2"></span>
-                </span>
-                <div>
-                    <button id="data-115-toggle" class="btn btn-outline-secondary btn-sm" type="button"
-                        data-bs-toggle="collapse" data-bs-target="#data-115-collapse" aria-expanded="false">
-                        展开
-                    </button>
-                </div>
-            </div>
-            <div class="collapse" id="data-115-collapse">
-                <div class="card-body">
-                    <div id="data-115-login-actions">
-                        <button id="data-115-login-btn" class="btn btn-primary btn-sm">扫码登录</button>
-                        <button id="data-115-logout-btn" class="btn btn-outline-danger btn-sm" style="display:none;">退出登录</button>
-                    </div>
-                    <div id="data-115-qrcode-section" style="display:none;" class="text-center mt-2">
-                        <img id="data-115-qrcode-img" class="img-thumbnail mb-1" style="max-width:180px;max-height:180px;" alt="二维码">
-                        <div id="data-115-qrcode-status" class="text-muted small mb-2">等待扫码...</div>
-                        <div class="d-flex gap-2 justify-content-center">
-                            <button id="data-115-refresh-qrcode" class="btn btn-outline-secondary btn-sm">刷新</button>
-                            <button id="data-115-cancel-login" class="btn btn-outline-danger btn-sm">取消</button>
-                        </div>
+            <div class="card-body py-2 d-flex align-items-center gap-2 flex-wrap">
+                <span class="fw-semibold me-1">115 网盘</span>
+                <span id="data-115-badge" class="badge bg-secondary">未登录</span>
+                <span id="data-115-user" class="text-muted small"></span>
+                <button id="data-115-login-btn" class="btn btn-primary btn-sm ms-auto">扫码登录</button>
+                <button id="data-115-logout-btn" class="btn btn-outline-danger btn-sm" style="display:none;">退出登录</button>
+                <div id="data-115-qrcode-section" style="display:none;" class="w-100 text-center">
+                    <img id="data-115-qrcode-img" class="img-thumbnail mb-1" style="max-width:180px;max-height:180px;" alt="二维码">
+                    <div id="data-115-qrcode-status" class="text-muted small mb-2">等待扫码...</div>
+                    <div class="d-flex gap-2 justify-content-center">
+                        <button id="data-115-refresh-qrcode" class="btn btn-outline-secondary btn-sm">刷新</button>
+                        <button id="data-115-cancel-login" class="btn btn-outline-danger btn-sm">取消</button>
                     </div>
                 </div>
             </div>
@@ -227,6 +213,7 @@
                 <div class="modal-body">
                     <input type="hidden" id="edit-old-name">
                     <input type="hidden" id="edit-date">
+                    <input type="hidden" id="edit-old-magnet">
                     <div class="mb-2">
                         <label class="form-label mb-0 small">游戏名称</label>
                         <input id="edit-game-name" class="form-control">
@@ -235,10 +222,24 @@
                         <label class="form-label mb-0 small">公司</label>
                         <input id="edit-company" class="form-control">
                     </div>
+                    <div class="mb-2">
+                        <label class="form-label mb-0 small">磁力链接</label>
+                        <textarea id="edit-magnet" class="form-control" rows="2"></textarea>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label mb-0 small">已下载状态</label>
+                        <select id="edit-downloaded" class="form-select">
+                            <option value="0">未下载 / 未知</option>
+                            <option value="1">已下载到115</option>
+                        </select>
+                    </div>
                 </div>
-                <div class="modal-footer">
-                    <button class="btn btn-sm btn-primary" id="edit-save-btn">保存</button>
-                    <button class="btn btn-sm btn-secondary" data-bs-dismiss="modal">取消</button>
+                <div class="modal-footer d-flex justify-content-between">
+                    <button class="btn btn-sm btn-outline-danger" id="edit-delete-btn">删除记录</button>
+                    <div>
+                        <button class="btn btn-sm btn-primary" id="edit-save-btn">保存</button>
+                        <button class="btn btn-sm btn-secondary" data-bs-dismiss="modal">取消</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -260,38 +261,43 @@ function updateTable(data) {
 
     tbody.innerHTML = data.map(game => {
         const isDownloaded = game.downloaded == 1;
-        const rowClass = isDownloaded ? ' class="table-secondary text-muted"' : '';
+        const rowClass = isDownloaded ? ' class="table-success"' : '';
         const dateFull = `${game.year}-${String(game.month).padStart(2, '0')}`;
+        const magnet = game.download_url || '';
+        const encName = encodeURIComponent(game.name);
         return `
-        <tr${rowClass} data-date="${dateFull}" data-name="${encodeURIComponent(game.name)}">
+        <tr${rowClass} data-date="${dateFull}" data-name="${encName}" data-magnet="${encodeURIComponent(magnet)}" data-downloaded="${game.downloaded || 0}">
             <td class="check-col text-center">
-                ${(game.download_url && !isDownloaded) ?
-                    `<input type="checkbox"
-                        class="game-checkbox"
-                        ${game.download_url ? 'checked' : ''}
+                ${magnet ?
+                    `<input type="checkbox" class="game-checkbox"
+                        ${!isDownloaded ? 'checked' : ''}
                         onchange="handleCheckboxChange(this)">`
-                    : isDownloaded ? '<span class="badge bg-secondary">已下载</span>' : ''}
+                    : '<span class="text-muted small">-</span>'
+                }
             </td>
             <td class="ym-col">${game.year}/${game.month}</td>
-            <td class="game-name-cell editable-cell" data-field="name">${game.name}${game.nyaa_name ? `<div class="text-muted small" style="display:${game.download_url ? 'none' : ''}">${game.nyaa_name}</div>` : ''}</td>
+            <td class="game-name-cell editable-cell" data-field="name">${game.name}${game.nyaa_name ? `<div class="text-muted small" style="display:${magnet ? 'none' : ''}">${game.nyaa_name}</div>` : ''}</td>
             <td class="company-col editable-cell" data-field="company">${game.company}</td>
             <td class="actions-col">
-                ${game.download_url ?
+                ${magnet ?
                     `<div class="btn-group actions-group" role="group">
                         <button type="button" class="btn btn-success btn-sm btn-115-submit"
-                            data-magnet="${encodeURIComponent(game.download_url)}"
+                            data-magnet="${encodeURIComponent(magnet)}"
                             data-year="${game.year}">115云下载</button>
                         <button type="button" class="btn btn-outline-secondary btn-sm magnet-check-btn"
-                            data-magnet="${encodeURIComponent(game.download_url)}"
-                            data-name="${encodeURIComponent(game.name)}"
+                            data-magnet="${encodeURIComponent(magnet)}"
+                            data-name="${encName}"
                             data-year="${game.year}">校验</button>
                     </div>`
-                    : ''
+                    : '<span class="text-muted small">暂无可编辑</span>'
                 }
             </td>
         </tr>
         `;
     }).join('');
+
+    updateBatchButtons();
+    updateToggleButtonText();
 }
 
 function parseMonthValue(value) {
@@ -408,10 +414,6 @@ function initMonthPicker() {
 window.addEventListener('DOMContentLoaded', () => {
     initMonthPicker();
     data115CheckLoginStatus();
-    if (window.location.hash === '#115-panel') {
-        const toggle = document.getElementById('data-115-toggle');
-        if (toggle) toggle.click();
-    }
     fetch(`${basePath}/tool/api.php?action=latest_month`)
         .then(r => r.json())
         .then((res) => {
@@ -444,11 +446,18 @@ function updateToggleButtonText() {
     btn.textContent = anyChecked ? '全不选' : '全选';
 }
 
+function updateBatchButtons() {
+    const anyChecked = Array.from(document.querySelectorAll('#gamesTable tbody input.game-checkbox')).some(cb => cb.checked);
+    document.getElementById('batch-115-download').disabled = !anyChecked;
+    document.getElementById('batch-115-check').disabled = !anyChecked;
+}
+
 function handleCheckboxChange(checkbox) {
     const tr = checkbox.closest('tr');
     const nyaaDiv = tr.querySelector('.text-muted');
     if(nyaaDiv) nyaaDiv.style.display = checkbox.checked ? 'none' : '';
     updateToggleButtonText();
+    updateBatchButtons();
 }
 
 function batch115Download() {
@@ -752,13 +761,6 @@ document.getElementById('data-115-logout-btn').addEventListener('click', () => {
     });
 });
 
-document.getElementById('data-115-collapse').addEventListener('show.bs.collapse', () => {
-    document.getElementById('data-115-toggle').textContent = '收起';
-});
-document.getElementById('data-115-collapse').addEventListener('hide.bs.collapse', () => {
-    document.getElementById('data-115-toggle').textContent = '展开';
-});
-
 // === 单行 115 云下载 ===
 document.querySelector('#gamesTable tbody').addEventListener('click', (e) => {
     const btn = e.target.closest('.btn-115-submit');
@@ -884,11 +886,16 @@ document.querySelector('#gamesTable tbody').addEventListener('click', (e) => {
 
     const oldName = decodeURIComponent(row.dataset.name || '');
     const date = row.dataset.date || '';
+    const magnet = decodeURIComponent(row.dataset.magnet || '');
+    const downloaded = row.dataset.downloaded || '0';
 
     document.getElementById('edit-old-name').value = oldName;
     document.getElementById('edit-date').value = date;
+    document.getElementById('edit-old-magnet').value = magnet;
     document.getElementById('edit-game-name').value = oldName;
     document.getElementById('edit-company').value = companyCell?.textContent.trim() || '';
+    document.getElementById('edit-magnet').value = magnet;
+    document.getElementById('edit-downloaded').value = downloaded;
 
     new bootstrap.Modal(document.getElementById('editModal')).show();
 });
@@ -897,13 +904,11 @@ document.getElementById('edit-save-btn').addEventListener('click', function() {
     const btn = this;
     const date = document.getElementById('edit-date').value;
     const oldName = document.getElementById('edit-old-name').value;
+    const oldMagnet = document.getElementById('edit-old-magnet').value;
     const newName = document.getElementById('edit-game-name').value.trim();
     const newCompany = document.getElementById('edit-company').value.trim();
-
-    if (!newName && !newCompany) {
-        alert('至少填写游戏名称或公司');
-        return;
-    }
+    const newLink = document.getElementById('edit-magnet').value.trim();
+    const newDownloaded = parseInt(document.getElementById('edit-downloaded').value, 10);
 
     btn.disabled = true;
     btn.textContent = '保存中...';
@@ -911,6 +916,8 @@ document.getElementById('edit-save-btn').addEventListener('click', function() {
     const body = { date, old_name: oldName };
     if (newName && newName !== oldName) body.new_name = newName;
     if (newCompany) body.new_company = newCompany;
+    if (newLink !== oldMagnet) body.new_link = newLink;
+    body.new_downloaded = newDownloaded;
 
     fetch(`${basePath}/tool/api.php?action=update_game`, {
         method: 'POST',
@@ -918,20 +925,8 @@ document.getElementById('edit-save-btn').addEventListener('click', function() {
         body: JSON.stringify(body),
     }).then(r => r.json()).then(res => {
         if (res.success) {
-            const rows = document.querySelectorAll('#gamesTable tbody tr');
-            for (const r of rows) {
-                if (r.dataset.date === date && decodeURIComponent(r.dataset.name || '') === oldName) {
-                    const nc = r.querySelector('.game-name-cell');
-                    const cc = r.querySelector('.company-col');
-                    if (newName) {
-                        nc.childNodes[0].nodeValue = newName;
-                        r.dataset.name = encodeURIComponent(newName);
-                    }
-                    if (newCompany) cc.textContent = newCompany;
-                    break;
-                }
-            }
             bootstrap.Modal.getInstance(document.getElementById('editModal')).hide();
+            loadPage(currentPage);
         } else {
             alert('保存失败: ' + (res.message || ''));
         }
@@ -946,6 +941,34 @@ document.getElementById('edit-save-btn').addEventListener('click', function() {
 document.getElementById('editModal').addEventListener('hidden.bs.modal', () => {
     document.getElementById('edit-save-btn').disabled = false;
     document.getElementById('edit-save-btn').textContent = '保存';
+});
+
+document.getElementById('edit-delete-btn').addEventListener('click', function() {
+    const date = document.getElementById('edit-date').value;
+    const name = document.getElementById('edit-old-name').value;
+    if (!confirm(`确定要删除该记录吗？\n\n${date} / ${name}`)) return;
+
+    const btn = this;
+    btn.disabled = true;
+    btn.textContent = '删除中...';
+
+    fetch(`${basePath}/tool/api.php?action=delete_game`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date, name }),
+    }).then(r => r.json()).then(res => {
+        if (res.success) {
+            bootstrap.Modal.getInstance(document.getElementById('editModal')).hide();
+            loadPage(currentPage);
+        } else {
+            alert('删除失败: ' + (res.message || ''));
+        }
+    }).catch(err => {
+        alert('删除失败: ' + err.message);
+    }).finally(() => {
+        btn.disabled = false;
+        btn.textContent = '删除记录';
+    });
 });
 </script>
 </body>
