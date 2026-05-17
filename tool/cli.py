@@ -494,6 +494,16 @@ def cmd_115_check_all_stop(args):
     _print({"status": "success", "message": "已停止校验任务"})
 
 
+def cmd_update_game(args):
+    import tool.core
+    ok = tool.core.update_game_record(
+        args.date, args.old_name,
+        new_name=args.new_name,
+        new_company=args.new_company,
+    )
+    _print({"success": ok, "message": "更新成功" if ok else "未找到匹配记录"})
+
+
 
 def cmd_115_check_all_worker(args):
     import sqlite3
@@ -675,6 +685,13 @@ def build_parser():
     p_115_check_all_worker.add_argument("--year", type=int)
     p_115_check_all_worker.add_argument("--month", type=int)
     p_115_check_all_worker.set_defaults(func=cmd_115_check_all_worker)
+
+    p_update = sub.add_parser("update_game")
+    p_update.add_argument("--date", type=str, required=True)
+    p_update.add_argument("--old-name", type=str, required=True)
+    p_update.add_argument("--new-name", type=str)
+    p_update.add_argument("--new-company", type=str)
+    p_update.set_defaults(func=cmd_update_game)
 
     return parser
 

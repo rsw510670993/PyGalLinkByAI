@@ -55,6 +55,27 @@
         .datepicker-dropdown {
             margin-top: 30px;
         }
+
+        .editable-cell {
+            cursor: pointer;
+            transition: background-color 0.15s;
+        }
+
+        .editable-cell:hover {
+            background-color: rgba(13, 110, 253, 0.08);
+            text-decoration: underline;
+            text-decoration-style: dotted;
+            text-underline-offset: 3px;
+        }
+
+        .editable-cell input {
+            width: 100%;
+            border: 1px solid #0d6efd;
+            border-radius: 3px;
+            padding: 2px 4px;
+            font-size: inherit;
+            font-family: inherit;
+        }
     </style>
 </head>
 <body style="padding-top: 56px;">
@@ -214,8 +235,9 @@ function updateTable(data) {
     tbody.innerHTML = data.map(game => {
         const isDownloaded = game.downloaded == 1;
         const rowClass = isDownloaded ? ' class="table-secondary text-muted"' : '';
+        const dateFull = `${game.year}-${String(game.month).padStart(2, '0')}`;
         return `
-        <tr${rowClass}>
+        <tr${rowClass} data-date="${dateFull}" data-name="${encodeURIComponent(game.name)}">
             <td class="check-col text-center">
                 ${(game.download_url && !isDownloaded) ?
                     `<input type="checkbox"
@@ -225,8 +247,8 @@ function updateTable(data) {
                     : isDownloaded ? '<span class="badge bg-secondary">已下载</span>' : ''}
             </td>
             <td class="ym-col">${game.year}/${game.month}</td>
-            <td class="game-name-cell">${game.name}${game.nyaa_name ? `<div class="text-muted small" style="display:${game.download_url ? 'none' : ''}">${game.nyaa_name}</div>` : ''}</td>
-            <td class="company-col">${game.company}</td>
+            <td class="game-name-cell editable-cell" data-field="name">${game.name}${game.nyaa_name ? `<div class="text-muted small" style="display:${game.download_url ? 'none' : ''}">${game.nyaa_name}</div>` : ''}</td>
+            <td class="company-col editable-cell" data-field="company">${game.company}</td>
             <td class="actions-col">
                 ${game.download_url ?
                     `<div class="btn-group actions-group" role="group">
@@ -823,6 +845,80 @@ document.getElementById('modal-submit-btn').addEventListener('click', function()
     }).finally(() => {
         this.disabled = false;
     });
+});
+
+// === 行内编辑 ===
+let editRestore = null;
+
+document.querySelector('#gamesTable tbody').addEventListener('dblclick', (e) => {
+    const cell = e.target.closest('.editable-cell');
+    if (!cell) return;
+
+    const row = cell.closest('tr');
+    const oldNameCell = row.querySelector('.game-name-cell');
+    const oldName = oldNameCell ? oldNameCell.childNodes[0].nodeValue.trim() : '';
+    const dateFull = row.dataset.date || '';
+    const field = cell.dataset.field || '';
+
+    if (editRestore) editRestore();
+
+    const origHTML = cell.innerHTML;
+    const origText = cell.textContent.trim();
+    const input = document.createElement('input');
+    input.value = origText;
+    input.addEventListener('keydown', (ke) => {
+        if (ke.key === 'Escape') {
+            if (editRestore) editRestore();
+        }
+        if (ke.key === 'Enter') {
+            const newVal = input.value.trim();
+            if (!newVal || newVal === origText) {
+                if (editRestore) editRestore();
+                return;
+            }
+            input.disabled = true;
+            const body = { date: dateFull, old_name: oldName };
+            if (field === 'name') body.new_name = newVal;
+            if (field === 'company') body.new_company = newVal;
+            fetch(`${basePath}/tool/api.php?action=update_game`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            }).then(r => r.json()).then(res => {
+                if (res.success) {
+                    cell.textContent = newVal;
+                    if (field === 'name') {
+                        row.dataset.name = encodeURIComponent(newVal);
+                        const ckBtn = row.querySelector('.magnet-check-btn');
+                        if (ckBtn) ckBtn.dataset.name = encodeURIComponent(newVal);
+                        const subBtn = row.querySelector('.btn-115-submit');
+                        if (subBtn) subBtn.dataset.name = encodeURIComponent(newVal);
+                    }
+                    editRestore = null;
+                } else {
+                    alert('保存失败: ' + (res.message || ''));
+                    if (editRestore) editRestore();
+                }
+            }).catch(err => {
+                alert('保存失败: ' + err.message);
+                if (editRestore) editRestore();
+            });
+        }
+    });
+    input.addEventListener('blur', () => {
+        setTimeout(() => {
+            if (editRestore) editRestore();
+        }, 200);
+    });
+    cell.innerHTML = '';
+    cell.appendChild(input);
+    input.focus();
+    input.select();
+
+    editRestore = () => {
+        cell.innerHTML = origHTML;
+        editRestore = null;
+    };
 });
 </script>
 </body>
