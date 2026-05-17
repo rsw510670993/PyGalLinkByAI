@@ -390,6 +390,12 @@ def _normalize_for_comparison(name):
     name = name.lower()
     name = name.replace('・', '').replace('♡', '').replace('❤', '').replace('♥', '')
     name = name.replace('~', '').replace('～', '').replace('！', '').replace('：', '')
+    name = re.sub(r'\(\s*mdf\s*\+\s*mds\s*\)', '', name)
+    name = re.sub(r'\b(disc|disk)\s*\d+\b', '', name)
+    name = re.sub(r'\[(\d{7,})\]', '', name)
+    name = re.sub(r'\[\s*\d+(?:\.\d+)?\s*(?:kb|mb|gb|tb)\s*\]', '', name)
+    name = re.sub(r'\b(?:crack|patch|update)\b', '', name)
+    name = re.sub(r'\bmini\s*adv\b', '', name)
     name = re.sub(r'[\s\-_.]+', ' ', name).strip()
     return name
 
@@ -399,11 +405,26 @@ def _search_keyword_from_dn(dn):
     first_bracket = name.find('[')
     if first_bracket > 0:
         name = name[first_bracket:]
-    brackets = re.findall(r'\[[^\]]+\]', name)
-    if len(brackets) >= 2:
-        return f"{brackets[0]} {brackets[1]}"
-    if len(brackets) == 1:
-        return brackets[0]
+    brackets = re.findall(r'\[([^\]]+)\]', name)
+    date_bracket = ""
+    rest = []
+    for raw in brackets:
+        v = raw.strip()
+        if re.fullmatch(r'\d{6}', v):
+            if not date_bracket:
+                date_bracket = v
+            continue
+        if re.fullmatch(r'\d{7,}', v):
+            continue
+        if re.fullmatch(r'\s*\d+(?:\.\d+)?\s*(?:kb|mb|gb|tb)\s*', v.lower()):
+            continue
+        rest.append(v)
+    if date_bracket and rest:
+        return f"[{date_bracket}] [{rest[0]}]"
+    if date_bracket:
+        return f"[{date_bracket}]"
+    if rest:
+        return f"[{rest[0]}]"
     name = re.split(r'\s*\+\s*', name)[0]
     return name.strip()[:30]
 
