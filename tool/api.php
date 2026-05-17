@@ -42,6 +42,13 @@ function run_cli($args) {
     $env = array_merge($_SERVER, [
         'HOME' => $root,
     ]);
+    if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
+        $env['USERPROFILE'] = $root;
+        if (preg_match('/^[A-Za-z]:/', $root)) {
+            $env['HOMEDRIVE'] = substr($root, 0, 2);
+            $env['HOMEPATH'] = substr($root, 2);
+        }
+    }
 
     $proc = proc_open($cmd, $spec, $pipes, $root, $env);
     if (!is_resource($proc)) {
@@ -172,6 +179,27 @@ if ($action === '115_submit') {
     $magnet = $body['magnet'] ?? '';
     $dir = $body['dir'] ?? '';
     [$code, $data] = run_cli(['115', 'submit', '--magnet', $magnet, '--dir', $dir]);
+    json_response($data);
+}
+
+if ($action === '115_check_all_start') {
+    $body = read_json_body();
+    $year = $body['year'] ?? '';
+    $month = $body['month'] ?? '';
+    $args = ['115', 'check_all', 'start'];
+    if ($year) { $args[] = '--year'; $args[] = strval($year); }
+    if ($month) { $args[] = '--month'; $args[] = strval($month); }
+    [$code, $data] = run_cli($args);
+    json_response($data);
+}
+
+if ($action === '115_check_all_status') {
+    [$code, $data] = run_cli(['115', 'check_all', 'status']);
+    json_response($data);
+}
+
+if ($action === '115_check_all_stop') {
+    [$code, $data] = run_cli(['115', 'check_all', 'stop']);
     json_response($data);
 }
 

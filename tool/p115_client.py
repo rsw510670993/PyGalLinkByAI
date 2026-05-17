@@ -5,11 +5,18 @@ import re
 import sys
 from pathlib import Path
 
-from p115client import P115Client, check_response
+from .runtime import ensure_home_env, repo_root
 
 
 def _tool_dir():
     return os.path.dirname(os.path.abspath(__file__))
+
+
+def _import_p115client():
+    ensure_home_env(repo_root())
+    from p115client import P115Client, check_response
+
+    return P115Client, check_response
 
 
 def cookies_path():
@@ -53,9 +60,59 @@ def _cookie_header_to_dict(cookie_header: str):
     return items
 
 
+def _deep_find_first_str(obj, keys):
+    if obj is None:
+        return ""
+    if isinstance(obj, dict):
+        for k in keys:
+            v = obj.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        for v in obj.values():
+            r = _deep_find_first_str(v, keys)
+            if r:
+                return r
+        return ""
+    if isinstance(obj, list):
+        for it in obj:
+            r = _deep_find_first_str(it, keys)
+            if r:
+                return r
+        return ""
+    return ""
+
+
+def _deep_find_first_int(obj, keys):
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        for k in keys:
+            v = obj.get(k)
+            if isinstance(v, int):
+                return v
+            if isinstance(v, str) and v.strip().isdigit():
+                try:
+                    return int(v.strip())
+                except Exception:
+                    pass
+        for v in obj.values():
+            r = _deep_find_first_int(v, keys)
+            if r is not None:
+                return r
+        return None
+    if isinstance(obj, list):
+        for it in obj:
+            r = _deep_find_first_int(it, keys)
+            if r is not None:
+                return r
+        return None
+    return None
+
+
 def load_client():
     path = cookies_path()
     if os.path.isfile(path):
+        P115Client, _ = _import_p115client()
         return P115Client(Path(path), check_for_relogin=True)
     return None
 
@@ -85,18 +142,47 @@ def get_login_status():
             reason = index_body.get("error") or index_body.get("message") or index_body.get("msg") or str(index_body)
             return {"logged_in": False, "user": None, "reason": f"接口返回失败: {reason}"}
 
+        name_keys = [
+            "user_name",
+            "nickname",
+            "username",
+            "name",
+            "uname",
+            "nick",
+        ]
+        id_keys = ["user_id", "uid", "userid", "id"]
+
         user = ""
+        user_id = None
         try:
             info_resp = sess.get("https://webapi.115.com/user/info", timeout=10)
             info_resp.raise_for_status()
             body = info_resp.json()
             if isinstance(body, dict) and body.get("state") in (False, 0):
                 body = {}
-            data = body.get("data") if isinstance(body, dict) else None
-            if isinstance(data, dict):
-                user = data.get("user_name") or data.get("nickname") or ""
+            user = _deep_find_first_str(body, name_keys)
+            user_id = _deep_find_first_int(body, id_keys)
         except Exception:
             user = ""
+            user_id = None
+
+        if not user:
+            user = _deep_find_first_str(index_body, name_keys)
+        if user_id is None:
+            user_id = _deep_find_first_int(index_body, id_keys)
+
+        if not user:
+            try:
+                info2 = sess.get("https://webapi.115.com/user/get_info", timeout=10)
+                if info2.status_code == 200:
+                    body2 = info2.json()
+                    user = _deep_find_first_str(body2, name_keys) or user
+                    user_id = _deep_find_first_int(body2, id_keys) if user_id is None else user_id
+            except Exception:
+                pass
+
+        if not user and user_id is not None:
+            user = f"UID:{user_id}"
 
         return {"logged_in": True, "user": user}
     except Exception as e:
@@ -177,6 +263,7 @@ def offline_submit(magnet, save_path):
     if client is None:
         return {"success": False, "message": "未登录"}
     try:
+        _, check_response = _import_p115client()
         cid = 0
         if save_path:
             cid = _resolve_path_to_cid(save_path)
@@ -198,6 +285,7 @@ def offline_list():
     if client is None:
         return {"success": False, "message": "未登录", "tasks": []}
     try:
+        _, check_response = _import_p115client()
         resp = check_response(client.offline_list({"page": 1, "page_size": 100}))
         tasks = []
         if isinstance(resp, dict):
@@ -224,6 +312,7 @@ def _resolve_path_to_cid(path):
     if client is None:
         return 0
     try:
+        _, check_response = _import_p115client()
         resp = check_response(client.fs_dir_getid(path))
         if not isinstance(resp, dict):
             return 0
@@ -242,11 +331,22 @@ def search_files(keyword, cid=0):
     if client is None:
         return []
     try:
+        _, check_response = _import_p115client()
         resp = check_response(client.fs_search(keyword, cid=cid))
         data = resp if isinstance(resp, list) else resp.get("data", []) if isinstance(resp, dict) else []
         return data
     except Exception:
         return []
+
+
+def _get_default_save_path():
+    config_path = os.path.join(_tool_dir(), "config.json")
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        return config.get("115_save_path", "")
+    except Exception:
+        return ""
 
 
 def parse_magnet_simple(magnet):
@@ -281,6 +381,54 @@ def parse_magnet_simple(magnet):
     return {"ok": len(errors) == 0, "btih": btih, "dn": dn, "infohash_hex": infohash_hex, "errors": errors}
 
 
+def _normalize_for_comparison(name):
+    name = name.strip()
+    first_bracket = name.find('[')
+    if first_bracket > 0:
+        name = name[first_bracket:]
+    name = re.split(r'\s*\+\s*', name)[0]
+    name = name.lower()
+    name = name.replace('・', '').replace('♡', '').replace('❤', '').replace('♥', '')
+    name = name.replace('~', '').replace('～', '').replace('！', '').replace('：', '')
+    name = re.sub(r'\(\s*mdf\s*\+\s*mds\s*\)', '', name)
+    name = re.sub(r'\b(disc|disk)\s*\d+\b', '', name)
+    name = re.sub(r'\[(\d{7,})\]', '', name)
+    name = re.sub(r'\[\s*\d+(?:\.\d+)?\s*(?:kb|mb|gb|tb)\s*\]', '', name)
+    name = re.sub(r'\b(?:crack|patch|update)\b', '', name)
+    name = re.sub(r'\bmini\s*adv\b', '', name)
+    name = re.sub(r'[\s\-_.]+', ' ', name).strip()
+    return name
+
+
+def _search_keyword_from_dn(dn):
+    name = dn.strip()
+    first_bracket = name.find('[')
+    if first_bracket > 0:
+        name = name[first_bracket:]
+    brackets = re.findall(r'\[([^\]]+)\]', name)
+    date_bracket = ""
+    rest = []
+    for raw in brackets:
+        v = raw.strip()
+        if re.fullmatch(r'\d{6}', v):
+            if not date_bracket:
+                date_bracket = v
+            continue
+        if re.fullmatch(r'\d{7,}', v):
+            continue
+        if re.fullmatch(r'\s*\d+(?:\.\d+)?\s*(?:kb|mb|gb|tb)\s*', v.lower()):
+            continue
+        rest.append(v)
+    if date_bracket and rest:
+        return f"[{date_bracket}] [{rest[0]}]"
+    if date_bracket:
+        return f"[{date_bracket}]"
+    if rest:
+        return f"[{rest[0]}]"
+    name = re.split(r'\s*\+\s*', name)[0]
+    return name.strip()[:30]
+
+
 def check_magnet_exists(magnet, save_path):
     parsed = parse_magnet_simple(magnet)
     if not parsed.get("ok"):
@@ -313,24 +461,77 @@ def check_magnet_exists(magnet, save_path):
                     break
 
     if dn:
-        cid = _resolve_path_to_cid(save_path) if save_path else 0
+        actual_save_path = save_path or _get_default_save_path()
+        cid = _resolve_path_to_cid(actual_save_path) if actual_save_path else 0
+        keyword = _search_keyword_from_dn(dn)
+        norm_dn = _normalize_for_comparison(dn)
         if cid is not None:
-            files = search_files(dn, cid)
+            files = search_files(keyword, cid)
             for f in files:
                 fname = f.get("n", "") if isinstance(f, dict) else ""
-                if dn.lower() in fname.lower():
+                norm_fname = _normalize_for_comparison(fname)
+                if norm_dn and norm_fname and (norm_dn in norm_fname or norm_fname in norm_dn):
                     matched_files.append({
                         "name": fname,
                         "size": f.get("s") if isinstance(f, dict) else None,
                         "pick_code": f.get("pc") if isinstance(f, dict) else None,
                     })
 
+            if not files and not matched_files:
+                brackets = re.findall(r'\[(\d{6})\]', dn)
+                date_code = brackets[0] if brackets else ""
+                if date_code:
+                    files = search_files(date_code, cid or 0)
+                    for f in files:
+                        fname = f.get("n", "") if isinstance(f, dict) else ""
+                        norm_fname = _normalize_for_comparison(fname)
+                        if norm_dn and norm_fname and (norm_dn in norm_fname or norm_fname in norm_dn):
+                            matched_files.append({
+                                "name": fname,
+                                "size": f.get("s") if isinstance(f, dict) else None,
+                                "pick_code": f.get("pc") if isinstance(f, dict) else None,
+                            })
+
+            if not files and not matched_files:
+                name_no_bracket = re.split(r'\s*\+\s*', dn)[0]
+                first_bracket = name_no_bracket.find('[')
+                if first_bracket > 0:
+                    name_no_bracket = name_no_bracket[first_bracket:]
+                name_no_bracket = re.sub(r'\[[^\]]+\]', '', name_no_bracket).strip()
+                if len(name_no_bracket) >= 3:
+                    files = search_files(name_no_bracket[:20], cid or 0)
+                    for f in files:
+                        fname = f.get("n", "") if isinstance(f, dict) else ""
+                        norm_fname = _normalize_for_comparison(fname)
+                        if norm_dn and norm_fname and (norm_dn in norm_fname or norm_fname in norm_dn):
+                            matched_files.append({
+                                "name": fname,
+                                "size": f.get("s") if isinstance(f, dict) else None,
+                                "pick_code": f.get("pc") if isinstance(f, dict) else None,
+                            })
+
+        if not matched_files and not in_offline and infohash_hex:
+            try:
+                broad = search_files(infohash_hex[:12], cid or 0)
+                for f in broad:
+                    fname = f.get("n", "") if isinstance(f, dict) else ""
+                    norm_fname = _normalize_for_comparison(fname)
+                    if norm_dn and norm_fname and (norm_dn in norm_fname or norm_fname in norm_dn):
+                        matched_files.append({
+                            "name": fname,
+                            "size": f.get("s") if isinstance(f, dict) else None,
+                            "pick_code": f.get("pc") if isinstance(f, dict) else None,
+                        })
+            except Exception:
+                pass
+
     if matched_files:
         confidence = "high"
     elif in_offline:
         confidence = "high"
     elif dn and cid:
-        broad = search_files(dn[:max(4, len(dn)//2)], cid)
+        keyword = _search_keyword_from_dn(dn)
+        broad = search_files(keyword[:max(8, len(keyword)//3)], cid)
         if broad:
             confidence = "low"
 

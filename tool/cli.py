@@ -5,11 +5,14 @@ import signal
 import subprocess
 import sys
 import time
+import threading
+import concurrent.futures as cf
+import multiprocessing as mp
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
 import tool
-from tool.runtime import pid_is_running, read_json, runtime_paths, terminate_pid, write_json_atomic
+from tool.runtime import now_ts, pid_is_running, read_json, runtime_paths, terminate_pid, write_json_atomic
 
 
 def _print(obj):
@@ -99,6 +102,7 @@ def cmd_games(args):
                     "download_url": g.link,
                     "nyaa_name": g.nyaa_name,
                     "comment": g.comment,
+                    "downloaded": g.downloaded,
                 }
                 for g in games_data
             ],
@@ -349,6 +353,233 @@ def cmd_115_submit(args):
         _print({"status": "error", "message": f"115模块加载失败: {e}"})
 
 
+def _check_all_status_default():
+    return {
+        "running": False,
+        "pid": None,
+        "total": 0,
+        "checked": 0,
+        "found_downloaded": 0,
+        "errors": [],
+        "current": None,
+        "started_at": None,
+        "updated_at": None,
+        "stopped_reason": None,
+    }
+
+
+def _check_magnet_exists_child(link, q):
+    try:
+        from tool.p115_client import check_magnet_exists
+
+        res = check_magnet_exists(link, "")
+        q.put({"ok": True, "res": res})
+    except Exception as e:
+        q.put({"ok": False, "error": str(e)})
+
+
+def _check_magnet_exists_with_timeout(link, timeout_s=60):
+    if os.name != "nt":
+        try:
+            ctx = mp.get_context("fork")
+        except Exception:
+            ctx = mp.get_context("spawn")
+
+        q = ctx.Queue(maxsize=1)
+        p = ctx.Process(target=_check_magnet_exists_child, args=(link, q))
+        p.daemon = True
+        p.start()
+        p.join(timeout_s)
+        if p.is_alive():
+            try:
+                p.terminate()
+            except Exception:
+                pass
+            p.join(5)
+            return None, "timeout"
+        try:
+            msg = q.get_nowait()
+        except Exception:
+            return None, "no_result"
+        if not isinstance(msg, dict):
+            return None, "bad_result"
+        if msg.get("ok") is True:
+            return msg.get("res"), None
+        return None, msg.get("error") or "error"
+
+    def _run():
+        from tool.p115_client import check_magnet_exists
+
+        return check_magnet_exists(link, "")
+
+    ex = cf.ThreadPoolExecutor(max_workers=1)
+    try:
+        fut = ex.submit(_run)
+        try:
+            res = fut.result(timeout=timeout_s)
+            return res, None
+        except cf.TimeoutError:
+            return None, "timeout"
+        except Exception as e:
+            return None, str(e)
+    finally:
+        try:
+            ex.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            ex.shutdown(wait=False)
+
+
+
+def cmd_115_check_all_start(args):
+    paths = runtime_paths()
+    status = read_json(paths["check_all_status_path"], _check_all_status_default())
+    pid = status.get("pid")
+    if status.get("running") and pid and pid_is_running(int(pid)):
+        _print({"status": "error", "message": "校验任务已在运行中"})
+        return
+
+    if not os.path.isdir(paths["status_dir"]):
+        os.makedirs(paths["status_dir"], exist_ok=True)
+
+    worker_args = [
+        sys.executable,
+        os.path.join(_base_dir(), "cli.py"),
+        "115", "check_all", "worker",
+    ]
+    if args.year:
+        worker_args += ["--year", str(args.year)]
+    if args.month:
+        worker_args += ["--month", str(args.month)]
+
+    p = subprocess.Popen(
+        worker_args,
+        cwd=_base_dir(),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    time.sleep(0.5)
+    if pid_is_running(p.pid):
+        _print({"status": "success", "message": "校验任务已启动", "pid": p.pid})
+    else:
+        _print({"status": "error", "message": "校验任务启动失败"})
+
+
+def cmd_115_check_all_status(args):
+    paths = runtime_paths()
+    status = read_json(paths["check_all_status_path"], _check_all_status_default())
+    pid = status.get("pid")
+    if status.get("running") and pid and not pid_is_running(int(pid)):
+        status["running"] = False
+        write_json_atomic(paths["check_all_status_path"], status)
+    _print(status)
+
+
+def cmd_115_check_all_stop(args):
+    paths = runtime_paths()
+    status = read_json(paths["check_all_status_path"], _check_all_status_default())
+    pid = status.get("pid")
+    if pid and pid_is_running(int(pid)):
+        try:
+            terminate_pid(int(pid))
+        except Exception as e:
+            _print({"status": "error", "message": f"停止失败: {e}"})
+            return
+    status["running"] = False
+    status["pid"] = None
+    status["stopped_reason"] = "manual_stop"
+    status["updated_at"] = now_ts()
+    write_json_atomic(paths["check_all_status_path"], status)
+    _print({"status": "success", "message": "已停止校验任务"})
+
+
+
+def cmd_115_check_all_worker(args):
+    import sqlite3
+    import tool.core
+
+    paths = runtime_paths()
+    status_path = paths["check_all_status_path"]
+
+    status = {
+        "running": True,
+        "pid": os.getpid(),
+        "total": 0,
+        "checked": 0,
+        "found_downloaded": 0,
+        "current": None,
+        "errors": [],
+        "started_at": now_ts(),
+        "stopped_reason": None,
+        "updated_at": now_ts(),
+    }
+    write_json_atomic(status_path, status)
+
+    conn = sqlite3.connect(tool.core.get_db_path())
+    tool.core.ensure_getchu_schema(conn)
+    cursor = conn.cursor()
+    if args.year and args.month:
+        cursor.execute(
+            "SELECT date, name, link FROM getchu_games WHERE substr(date, 1, 4) = ? AND CAST(substr(date, 6) AS INTEGER) = ? AND link IS NOT NULL AND link != ''",
+            (str(args.year), int(args.month)),
+        )
+    else:
+        cursor.execute(
+            "SELECT date, name, link FROM getchu_games WHERE link IS NOT NULL AND link != ''"
+        )
+    rows = cursor.fetchall()
+    conn.close()
+
+    status["total"] = len(rows)
+    write_json_atomic(status_path, status)
+
+    stop_event = threading.Event()
+
+    def _heartbeat():
+        while not stop_event.is_set():
+            try:
+                status["updated_at"] = now_ts()
+                write_json_atomic(status_path, status)
+            except Exception:
+                pass
+            stop_event.wait(3)
+
+    t = threading.Thread(target=_heartbeat, daemon=True)
+    t.start()
+
+    for date, name, link in rows:
+        try:
+            status["current"] = {"date": date, "name": name}
+            status["checked"] += 1
+            status["updated_at"] = now_ts()
+            write_json_atomic(status_path, status)
+            result, err = _check_magnet_exists_with_timeout(link, 60)
+            if err:
+                status["errors"].append(f"{date}/{name}: {err}")
+            elif isinstance(result, dict) and result.get("exists"):
+                tool.core.set_downloaded_status(date, name, 1, result.get("infohash_hex"))
+                status["found_downloaded"] += 1
+        except Exception as e:
+            status["errors"].append(f"{date}/{name}: {e}")
+
+        status["updated_at"] = now_ts()
+        write_json_atomic(status_path, status)
+
+    stop_event.set()
+    status["running"] = False
+    status["current"] = None
+    write_json_atomic(status_path, status)
+
+    _print({
+        "success": True,
+        "total": status["total"],
+        "checked": status["checked"],
+        "found_downloaded": status["found_downloaded"],
+        "errors": status["errors"][:10],
+    })
+
+
 def build_parser():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -425,6 +656,25 @@ def build_parser():
     p_115_submit.add_argument("--magnet", type=str, required=True)
     p_115_submit.add_argument("--dir", type=str, default="")
     p_115_submit.set_defaults(func=cmd_115_submit)
+
+    p_115_check_all = _115_sub.add_parser("check_all")
+    check_all_sub = p_115_check_all.add_subparsers(dest="check_all_action", required=True)
+
+    p_115_check_all_start = check_all_sub.add_parser("start")
+    p_115_check_all_start.add_argument("--year", type=int)
+    p_115_check_all_start.add_argument("--month", type=int)
+    p_115_check_all_start.set_defaults(func=cmd_115_check_all_start)
+
+    p_115_check_all_status = check_all_sub.add_parser("status")
+    p_115_check_all_status.set_defaults(func=cmd_115_check_all_status)
+
+    p_115_check_all_stop = check_all_sub.add_parser("stop")
+    p_115_check_all_stop.set_defaults(func=cmd_115_check_all_stop)
+
+    p_115_check_all_worker = check_all_sub.add_parser("worker")
+    p_115_check_all_worker.add_argument("--year", type=int)
+    p_115_check_all_worker.add_argument("--month", type=int)
+    p_115_check_all_worker.set_defaults(func=cmd_115_check_all_worker)
 
     return parser
 

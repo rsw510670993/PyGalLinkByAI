@@ -13,6 +13,20 @@ def repo_root():
     return os.path.abspath(os.path.join(_tool_dir(), os.pardir))
 
 
+def ensure_home_env(home_dir=None):
+    home_dir = home_dir or repo_root()
+    if not os.environ.get("HOME"):
+        os.environ["HOME"] = home_dir
+    if os.name == "nt":
+        if not os.environ.get("USERPROFILE"):
+            os.environ["USERPROFILE"] = home_dir
+        drive, tail = os.path.splitdrive(home_dir)
+        if drive and not os.environ.get("HOMEDRIVE"):
+            os.environ["HOMEDRIVE"] = drive
+        if tail and not os.environ.get("HOMEPATH"):
+            os.environ["HOMEPATH"] = tail
+
+
 def _abs_from_root(path):
     if not path:
         return path
@@ -44,6 +58,7 @@ def runtime_paths(config_path=None):
         "log_path": log_path,
         "spider_status_path": os.path.join(status_dir, "spider_status.json"),
         "download_status_path": os.path.join(status_dir, "download_status.json"),
+        "check_all_status_path": os.path.join(status_dir, "check_all_status.json"),
     }
 
 

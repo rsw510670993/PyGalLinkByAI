@@ -85,11 +85,22 @@
                     </div>
                     <div class="col-12 col-lg-5 d-flex gap-2 justify-content-lg-end">
                         <button id="toggle-select" class="btn btn-outline-secondary" type="button">全选</button>
-                        <button id="get-all-links" class="btn btn-success" type="button">全部下载链接</button>
+                        <button id="batch-115-check" class="btn btn-outline-info" type="button">批量校验已下载</button>
+                        <button id="batch-115-download" class="btn btn-success" type="button">批量115云下载</button>
                     </div>
-                    <div class="col-12">
-                        <textarea id="download-links-output" class="form-control" rows="6" style="display:none;"></textarea>
-                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card mb-3" id="check-progress-card" style="display:none;">
+            <div class="card-body">
+                <div class="d-flex justify-content-between small text-muted mb-1">
+                    <span id="check-progress-text">准备中...</span>
+                    <span id="check-progress-count"></span>
+                </div>
+                <div class="progress" style="height: 18px;">
+                    <div class="progress-bar progress-bar-striped progress-bar-animated bg-info" id="check-progress-bar"
+                        role="progressbar" style="width: 0%;" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
                 </div>
             </div>
         </div>
@@ -146,15 +157,17 @@ function updateTable(data) {
         if (game.download_url && urlCounts[game.download_url] > 1) {
             btnClass = 'btn-danger';
         }
+        const isDownloaded = game.downloaded == 1;
+        const rowClass = isDownloaded ? ' class="table-secondary text-muted"' : '';
         return `
-        <tr>
+        <tr${rowClass}>
             <td class="check-col text-center">
-                ${(game.download_url) ?
+                ${(game.download_url && !isDownloaded) ?
                     `<input type="checkbox"
                         class="game-checkbox"
                         ${game.download_url ? 'checked' : ''}
                         onchange="handleCheckboxChange(this)">`
-                    : ''}
+                    : isDownloaded ? '<span class="badge bg-secondary">已下载</span>' : ''}
             </td>
             <td class="ym-col">${game.year}/${game.month}</td>
             <td class="game-name-cell">${game.name}${game.nyaa_name ? `<div class="text-muted small" style="display:${game.download_url ? 'none' : ''}">${game.nyaa_name}</div>` : ''}</td>
@@ -314,44 +327,6 @@ document.getElementById('next-page').addEventListener('click', () => {
     loadPage(currentPage + 1);
 });
 
-function getAllDownloadLinks() {
-    const downloadLinks = Array.from(document.querySelectorAll('#gamesTable tbody tr'))
-        .filter((tr) => {
-            const cb = tr.querySelector('input.game-checkbox');
-            return cb && cb.checked;
-        })
-        .map((tr) => {
-            const a = tr.querySelector('a.download-btn');
-            return a ? a.href : '';
-        })
-        .filter(Boolean)
-        .join('\n');
-
-    const outputBox = document.getElementById('download-links-output');
-
-    if (downloadLinks) {
-        if (navigator.clipboard) {
-            navigator.clipboard.writeText(downloadLinks)
-                .then(() => {
-                    alert('下载链接已复制到剪贴板!');
-                    outputBox.style.display = 'none';
-                })
-                .catch(err => {
-                    console.error('无法复制到剪贴板:', err);
-                    outputBox.value = downloadLinks;
-                    outputBox.style.display = 'block';
-                    alert('自动复制失败，链接已显示在下方文本框中');
-                });
-        } else {
-            outputBox.value = downloadLinks;
-            outputBox.style.display = 'block';
-            alert('您的浏览器不支持自动复制，链接已显示在下方文本框中');
-        }
-    } else {
-        alert('没有找到可下载的链接');
-    }
-}
-
 function updateToggleButtonText() {
     const btn = document.getElementById('toggle-select');
     const checkboxes = document.querySelectorAll('#gamesTable tbody input.game-checkbox');
@@ -366,7 +341,80 @@ function handleCheckboxChange(checkbox) {
     updateToggleButtonText();
 }
 
-document.getElementById('get-all-links').addEventListener('click', getAllDownloadLinks);
+function batch115Download() {
+    const rows = Array.from(document.querySelectorAll('#gamesTable tbody tr'))
+        .filter((tr) => {
+            const cb = tr.querySelector('input.game-checkbox');
+            return cb && cb.checked;
+        });
+
+    if (rows.length === 0) {
+        alert('请先勾选需要下载的游戏');
+        return;
+    }
+
+    const btn = document.getElementById('batch-115-download');
+    btn.disabled = true;
+    btn.textContent = '提交中...';
+
+    let success = 0;
+    let fail = 0;
+    const results = [];
+
+    function submitNext(index) {
+        if (index >= rows.length) {
+            btn.disabled = false;
+            btn.textContent = '批量115云下载';
+            const msg = `提交完成：成功 ${success} 条，失败 ${fail} 条`;
+            if (fail > 0) {
+                alert(msg + '\n\n失败详情：\n' + results.filter(r => !r.ok).map(r => '  - ' + r.name + ': ' + r.reason).join('\n'));
+            } else {
+                alert(msg);
+            }
+            return;
+        }
+
+        const tr = rows[index];
+        const ymText = tr.querySelector('.ym-col')?.textContent || '';
+        const year = ymText.split('/')[0] || '';
+        const name = tr.querySelector('.game-name-cell')?.textContent?.trim() || '';
+        const a = tr.querySelector('a.download-btn');
+        const magnet = a ? a.href : '';
+
+        if (!magnet || !year) {
+            fail++;
+            results.push({ ok: false, name, reason: !magnet ? '无磁链' : '无年份' });
+            submitNext(index + 1);
+            return;
+        }
+
+        const savePath = `/GAL/GAL-${year}`;
+
+        fetch(`${basePath}/tool/api.php?action=115_submit`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ magnet, dir: savePath }),
+        })
+        .then(r => r.json())
+        .then(res => {
+            if (res.success) {
+                success++;
+                results.push({ ok: true, name });
+            } else {
+                fail++;
+                results.push({ ok: false, name, reason: res.message || '未知错误' });
+            }
+            submitNext(index + 1);
+        })
+        .catch(err => {
+            fail++;
+            results.push({ ok: false, name, reason: err.message });
+            submitNext(index + 1);
+        });
+    }
+
+    submitNext(0);
+}
 
 function setAllCheckboxes(checked) {
     Array.from(document.querySelectorAll('#gamesTable tbody input.game-checkbox')).forEach((cb) => {
@@ -382,6 +430,102 @@ document.getElementById('toggle-select').addEventListener('click', () => {
     const btn = document.getElementById('toggle-select');
     setAllCheckboxes(btn.textContent === '全选');
 });
+
+document.getElementById('batch-115-download').addEventListener('click', batch115Download);
+
+let checkAllIntervalId = null;
+
+document.getElementById('batch-115-check').addEventListener('click', function() {
+    const btn = this;
+    if (!confirm('将对当前月份的所有游戏进行115云下载校验（含已下载记录），是否继续？')) return;
+
+    btn.disabled = true;
+    btn.textContent = '启动中...';
+
+    if (checkAllIntervalId) {
+        clearInterval(checkAllIntervalId);
+        checkAllIntervalId = null;
+    }
+
+    const monthValue = document.getElementById('month-picker').value;
+    const parsed = parseMonthValue(monthValue);
+    const body = {};
+    if (parsed) {
+        body.year = parseInt(parsed.year, 10);
+        body.month = parseInt(parsed.month, 10);
+    }
+
+    fetch(`${basePath}/tool/api.php?action=115_check_all_start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    })
+        .then(r => r.json())
+        .then(res => {
+            if (res.status === 'error') {
+                alert('启动校验失败: ' + res.message);
+                btn.disabled = false;
+                btn.textContent = '批量校验已下载';
+                return;
+            }
+
+            document.getElementById('check-progress-card').style.display = '';
+            document.getElementById('check-progress-text').textContent = '校验中...';
+            document.getElementById('check-progress-bar').style.width = '0%';
+            document.getElementById('check-progress-bar').setAttribute('aria-valuenow', '0');
+            document.getElementById('check-progress-count').textContent = '';
+
+            checkAllIntervalId = setInterval(pollCheckAllStatus, 3000);
+        })
+        .catch(err => {
+            alert('启动校验失败: ' + err.message);
+            btn.disabled = false;
+            btn.textContent = '批量校验已下载';
+        });
+});
+
+function pollCheckAllStatus() {
+    fetch(`${basePath}/tool/api.php?action=115_check_all_status`)
+        .then(r => r.json())
+        .then(status => {
+            if (status.running) {
+                const progress = status.total > 0 ? Math.round(status.checked / status.total * 100) : 0;
+                document.getElementById('check-progress-text').textContent =
+                    `校验中... (已检查 ${status.checked}/${status.total})`;
+                document.getElementById('check-progress-bar').style.width = `${progress}%`;
+                document.getElementById('check-progress-bar').setAttribute('aria-valuenow', `${progress}`);
+                document.getElementById('check-progress-count').textContent =
+                    `发现 ${status.found_downloaded} 条已下载`;
+            } else {
+                clearInterval(checkAllIntervalId);
+                checkAllIntervalId = null;
+
+                document.getElementById('check-progress-card').style.display = 'none';
+
+                const btn = document.getElementById('batch-115-check');
+                btn.disabled = false;
+                btn.textContent = '批量校验已下载';
+
+                let msg = `校验完成\n\n总记录: ${status.total}\n已检查: ${status.checked}\n发现已下载: ${status.found_downloaded}`;
+                if (status.errors && status.errors.length > 0) {
+                    msg += '\n\n错误（前10条）:\n' + status.errors.join('\n');
+                }
+                alert(msg);
+                loadPage(currentPage);
+            }
+        })
+        .catch(err => {
+            clearInterval(checkAllIntervalId);
+            checkAllIntervalId = null;
+
+            document.getElementById('check-progress-card').style.display = 'none';
+
+            const btn = document.getElementById('batch-115-check');
+            btn.disabled = false;
+            btn.textContent = '批量校验已下载';
+            alert('获取校验状态失败: ' + err.message);
+        });
+}
 
 document.querySelector('#gamesTable tbody').addEventListener('click', (e) => {
     const btn = e.target.closest('.magnet-check-btn');
