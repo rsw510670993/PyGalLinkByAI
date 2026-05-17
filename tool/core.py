@@ -149,7 +149,7 @@ def set_downloaded_status(date, name, downloaded=1, infohash_hex=None, db_path=N
     conn.close()
 
 
-def update_game_record(date, name, new_date=None, new_name=None, new_company=None, new_link=None, new_downloaded=None, db_path=None):
+def update_game_record(date, name, new_date=None, new_name=None, new_company=None, new_link=None, new_downloaded=None, new_nyaa_name=None, db_path=None):
     conn = sqlite3.connect(db_path or get_db_path())
     ensure_getchu_schema(conn)
     cursor = conn.cursor()
@@ -164,6 +164,8 @@ def update_game_record(date, name, new_date=None, new_name=None, new_company=Non
         fields["link"] = new_link
     if new_downloaded is not None:
         fields["downloaded"] = 1 if new_downloaded else 0
+    if new_nyaa_name is not None:
+        fields["nyaa_name"] = new_nyaa_name
     if not fields:
         conn.close()
         return False

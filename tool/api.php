@@ -211,6 +211,7 @@ if ($action === 'update_game') {
     $new_company = $body['new_company'] ?? '';
     $new_link = $body['new_link'] ?? null;
     $new_downloaded = $body['new_downloaded'] ?? null;
+    $new_nyaa_name = $body['new_nyaa_name'] ?? null;
     if (!$date || !$old_name) {
         json_response(['success' => false, 'message' => '缺少必填字段 date/old_name']);
     }
@@ -219,6 +220,7 @@ if ($action === 'update_game') {
     if ($new_company) { $args[] = '--new-company'; $args[] = $new_company; }
     if ($new_link !== null) { $args[] = '--new-link'; $args[] = $new_link; }
     if ($new_downloaded !== null) { $args[] = '--new-downloaded'; $args[] = strval($new_downloaded); }
+    if ($new_nyaa_name !== null) { $args[] = '--new-nyaa-name'; $args[] = $new_nyaa_name; }
     [$code, $data] = run_cli($args);
     json_response($data);
 }

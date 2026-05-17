@@ -103,7 +103,7 @@
                             <button id="next-year" class="btn btn-outline-secondary" type="button">明年</button>
                         </div>
                     </div>
-                    <div class="col-12 col-lg-5 d-flex gap-2 justify-content-lg-end">
+                    <div class="col-12 col-lg-5 d-flex gap-2 justify-content-end">
                         <button id="toggle-select" class="btn btn-outline-secondary" type="button">全选</button>
                         <button id="batch-115-check" class="btn btn-outline-info" type="button">批量校验已下载</button>
                         <button id="batch-115-download" class="btn btn-success" type="button">批量115云下载</button>
@@ -131,7 +131,7 @@
                 <span id="data-115-badge" class="badge bg-secondary">未登录</span>
                 <span id="data-115-user" class="text-muted small"></span>
                 <button id="data-115-login-btn" class="btn btn-primary btn-sm ms-auto">扫码登录</button>
-                <button id="data-115-logout-btn" class="btn btn-outline-danger btn-sm" style="display:none;">退出登录</button>
+                <button id="data-115-logout-btn" class="btn btn-outline-danger btn-sm ms-auto" style="display:none;">退出登录</button>
                 <div id="data-115-qrcode-section" style="display:none;" class="w-100 text-center">
                     <img id="data-115-qrcode-img" class="img-thumbnail mb-1" style="max-width:180px;max-height:180px;" alt="二维码">
                     <div id="data-115-qrcode-status" class="text-muted small mb-2">等待扫码...</div>
@@ -177,6 +177,8 @@
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
+                    <input type="hidden" id="check-modal-date">
+                    <input type="hidden" id="check-modal-name">
                     <div class="mb-2">
                         <span id="modal-115-badge" class="badge bg-secondary">未登录</span>
                         <span id="modal-115-user" class="text-muted small ms-2"></span>
@@ -214,6 +216,7 @@
                     <input type="hidden" id="edit-old-name">
                     <input type="hidden" id="edit-date">
                     <input type="hidden" id="edit-old-magnet">
+                    <input type="hidden" id="edit-old-nyaa-name">
                     <div class="mb-2">
                         <label class="form-label mb-0 small">游戏名称</label>
                         <input id="edit-game-name" class="form-control">
@@ -221,6 +224,10 @@
                     <div class="mb-2">
                         <label class="form-label mb-0 small">公司</label>
                         <input id="edit-company" class="form-control">
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label mb-0 small">Nyaa名称</label>
+                        <input id="edit-nyaa-name" class="form-control" placeholder="nyaa 站点上的游戏名称">
                     </div>
                     <div class="mb-2">
                         <label class="form-label mb-0 small">磁力链接</label>
@@ -265,8 +272,9 @@ function updateTable(data) {
         const dateFull = `${game.year}-${String(game.month).padStart(2, '0')}`;
         const magnet = game.download_url || '';
         const encName = encodeURIComponent(game.name);
+        const encNyaa = game.nyaa_name ? encodeURIComponent(game.nyaa_name) : '';
         return `
-        <tr${rowClass} data-date="${dateFull}" data-name="${encName}" data-magnet="${encodeURIComponent(magnet)}" data-downloaded="${game.downloaded || 0}">
+        <tr${rowClass} data-date="${dateFull}" data-name="${encName}" data-magnet="${encodeURIComponent(magnet)}" data-downloaded="${game.downloaded || 0}" data-nyaa-name="${encNyaa}">
             <td class="check-col text-center">
                 ${!magnet ? '<span class="text-muted small">-</span>'
                     : isDownloaded ? '<span class="badge bg-success">已下载</span>'
@@ -285,7 +293,8 @@ function updateTable(data) {
                         <button type="button" class="btn btn-outline-secondary btn-sm magnet-check-btn"
                             data-magnet="${encodeURIComponent(magnet)}"
                             data-name="${encName}"
-                            data-year="${game.year}">校验</button>
+                            data-year="${game.year}"
+                            data-date="${dateFull}">校验</button>
                     </div>`
                     : '<span class="text-muted small">暂无可编辑</span>'
                 }
@@ -798,11 +807,14 @@ document.querySelector('#gamesTable tbody').addEventListener('click', (e) => {
     const magnet = decodeURIComponent(btn.dataset.magnet || '');
     const name = decodeURIComponent(btn.dataset.name || '');
     const year = btn.dataset.year || '';
-    openCheckModal(magnet, name, year);
+    const date = btn.dataset.date || '';
+    openCheckModal(magnet, name, year, date);
 });
 
-function openCheckModal(magnet, name, year) {
+function openCheckModal(magnet, name, year, date) {
     if (!magnet) return;
+    document.getElementById('check-modal-date').value = date;
+    document.getElementById('check-modal-name').value = name;
     document.getElementById('modal-game-name').textContent = name || '-';
     document.getElementById('modal-magnet').value = magnet;
     document.getElementById('modal-save-path').value = `/GAL/GAL-${year}`;
@@ -835,6 +847,21 @@ document.getElementById('modal-check-btn').addEventListener('click', function() 
                 msg += '\n匹配文件:\n';
                 res.matched_files.forEach(f => { msg += '  - ' + f.name + '\n'; });
             }
+            const date = document.getElementById('check-modal-date').value;
+            const name = document.getElementById('check-modal-name').value;
+            if (date && name) {
+                fetch(`${basePath}/tool/api.php?action=update_game`, {
+                    method: 'POST',
+                    headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({date, old_name: name, new_downloaded: 1}),
+                }).then(() => {
+                    bootstrap.Modal.getInstance(document.getElementById('checkModal')).hide();
+                    loadPage(currentPage);
+                }).catch(() => {
+                    bootstrap.Modal.getInstance(document.getElementById('checkModal')).hide();
+                    loadPage(currentPage);
+                });
+            }
         } else {
             msg += '未在 115 网盘找到该磁链\n';
             if (res.infohash_hex) msg += 'InfoHash: ' + res.infohash_hex + '\n';
@@ -863,6 +890,21 @@ document.getElementById('modal-submit-btn').addEventListener('click', function()
     }).then(r => r.json()).then(res => {
         if (res.success) {
             resultEl.textContent = '提交成功！\nPick Code: ' + (res.pick_code || '') + '\n文件将保存到: ' + dir;
+            const date = document.getElementById('check-modal-date').value;
+            const name = document.getElementById('check-modal-name').value;
+            if (date && name) {
+                fetch(`${basePath}/tool/api.php?action=update_game`, {
+                    method: 'POST',
+                    headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({date, old_name: name, new_downloaded: 1}),
+                }).then(() => {
+                    bootstrap.Modal.getInstance(document.getElementById('checkModal')).hide();
+                    loadPage(currentPage);
+                }).catch(() => {
+                    bootstrap.Modal.getInstance(document.getElementById('checkModal')).hide();
+                    loadPage(currentPage);
+                });
+            }
         } else {
             resultEl.textContent = '提交失败: ' + (res.message || '');
         }
@@ -886,12 +928,15 @@ document.querySelector('#gamesTable tbody').addEventListener('click', (e) => {
     const date = row.dataset.date || '';
     const magnet = decodeURIComponent(row.dataset.magnet || '');
     const downloaded = row.dataset.downloaded || '0';
+    const oldNyaa = row.dataset.nyaaName ? decodeURIComponent(row.dataset.nyaaName) : '';
 
     document.getElementById('edit-old-name').value = oldName;
     document.getElementById('edit-date').value = date;
     document.getElementById('edit-old-magnet').value = magnet;
+    document.getElementById('edit-old-nyaa-name').value = oldNyaa;
     document.getElementById('edit-game-name').value = oldName;
     document.getElementById('edit-company').value = companyCell?.textContent.trim() || '';
+    document.getElementById('edit-nyaa-name').value = oldNyaa;
     document.getElementById('edit-magnet').value = magnet;
     document.getElementById('edit-downloaded').value = downloaded;
 
@@ -903,8 +948,10 @@ document.getElementById('edit-save-btn').addEventListener('click', function() {
     const date = document.getElementById('edit-date').value;
     const oldName = document.getElementById('edit-old-name').value;
     const oldMagnet = document.getElementById('edit-old-magnet').value;
+    const oldNyaa = document.getElementById('edit-old-nyaa-name').value;
     const newName = document.getElementById('edit-game-name').value.trim();
     const newCompany = document.getElementById('edit-company').value.trim();
+    const newNyaaName = document.getElementById('edit-nyaa-name').value.trim();
     const newLink = document.getElementById('edit-magnet').value.trim();
     const newDownloaded = parseInt(document.getElementById('edit-downloaded').value, 10);
 
@@ -915,6 +962,7 @@ document.getElementById('edit-save-btn').addEventListener('click', function() {
     if (newName && newName !== oldName) body.new_name = newName;
     if (newCompany) body.new_company = newCompany;
     if (newLink !== oldMagnet) body.new_link = newLink;
+    if (newNyaaName !== oldNyaa) body.new_nyaa_name = newNyaaName;
     body.new_downloaded = newDownloaded;
 
     fetch(`${basePath}/tool/api.php?action=update_game`, {
