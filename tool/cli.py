@@ -421,7 +421,7 @@ def cmd_115_check(args):
         from tool.p115_client import check_magnet_exists
         magnet = args.magnet
         save_path = args.dir or ""
-        _print(check_magnet_exists(magnet, save_path))
+        _print(check_magnet_exists(magnet, save_path, debug=bool(getattr(args, "debug", False))))
     except Exception as e:
         _print({"status": "error", "message": f"115模块加载失败: {e}"})
 
@@ -929,6 +929,7 @@ def build_parser():
     p_115_check = _115_sub.add_parser("check")
     p_115_check.add_argument("--magnet", type=str, required=True)
     p_115_check.add_argument("--dir", type=str, default="")
+    p_115_check.add_argument("--debug", action="store_true")
     p_115_check.set_defaults(func=cmd_115_check)
 
     p_115_submit = _115_sub.add_parser("submit")

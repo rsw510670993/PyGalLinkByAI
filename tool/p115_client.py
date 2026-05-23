@@ -430,10 +430,10 @@ def _search_keyword_from_dn(dn):
     return name.strip()[:30]
 
 
-def check_magnet_exists(magnet, save_path):
+def check_magnet_exists(magnet, save_path, debug=False):
     parsed = parse_magnet_simple(magnet)
     if not parsed.get("ok"):
-        return {
+        out = {
             "exists": False,
             "confidence": "none",
             "infohash_hex": parsed.get("infohash_hex"),
@@ -441,6 +441,9 @@ def check_magnet_exists(magnet, save_path):
             "in_offline_tasks": False,
             "message": "磁链解析失败: " + ", ".join(parsed.get("errors", [])),
         }
+        if debug:
+            out["debug"] = {"stage": "parse_magnet_simple", "parsed": parsed}
+        return out
 
     infohash_hex = parsed.get("infohash_hex")
     dn = parsed.get("dn", "")
@@ -448,6 +451,16 @@ def check_magnet_exists(magnet, save_path):
     matched_files = []
     in_offline = False
     confidence = "none"
+
+    dbg = None
+    if debug:
+        dbg = {
+            "parsed": parsed,
+            "has_cookie_file": bool(_read_cookie_string()),
+            "save_path_input": save_path,
+            "save_path_default": _get_default_save_path(),
+            "steps": [],
+        }
 
     ol = offline_list()
     if ol.get("success"):
@@ -460,6 +473,11 @@ def check_magnet_exists(magnet, save_path):
                 if magnet.lower() in task_url or (infohash_hex and infohash_hex in task_url):
                     in_offline = True
                     break
+        if dbg is not None:
+            dbg["steps"].append({"stage": "offline_list", "success": True, "tasks_len": len(tasks), "in_offline": in_offline})
+    else:
+        if dbg is not None:
+            dbg["steps"].append({"stage": "offline_list", "success": False, "message": ol.get("message")})
 
     if dn:
         actual_save_path = save_path or _get_default_save_path()
@@ -475,10 +493,20 @@ def check_magnet_exists(magnet, save_path):
             if compact2 and compact2 not in keywords:
                 keywords.append(compact2)
         norm_dn = _normalize_for_comparison(dn)
+        if dbg is not None:
+            dbg["dn"] = dn
+            dbg["norm_dn"] = norm_dn
+            dbg["actual_save_path"] = actual_save_path
+            dbg["cid"] = cid
+            dbg["keyword_primary"] = keyword
+            dbg["keywords"] = keywords
+
         if cid is not None:
             files = []
             for kw in keywords:
                 files = search_files(kw, cid)
+                if dbg is not None:
+                    dbg["steps"].append({"stage": "search_files", "mode": "keyword", "query": kw, "cid": cid, "result_len": len(files)})
                 for f in files:
                     fname = f.get("n", "") if isinstance(f, dict) else ""
                     norm_fname = _normalize_for_comparison(fname)
@@ -488,6 +516,18 @@ def check_magnet_exists(magnet, save_path):
                             "size": f.get("s") if isinstance(f, dict) else None,
                             "pick_code": f.get("pc") if isinstance(f, dict) else None,
                         })
+                if dbg is not None:
+                    dbg["steps"].append({
+                        "stage": "match_compare",
+                        "mode": "keyword",
+                        "query": kw,
+                        "matched_len": len(matched_files),
+                        "sample_files": [
+                            {"name": (it.get("n") or ""), "norm": _normalize_for_comparison(it.get("n") or "")}
+                            for it in (files[:5] if isinstance(files, list) else [])
+                            if isinstance(it, dict)
+                        ],
+                    })
                 if matched_files:
                     break
 
@@ -497,6 +537,8 @@ def check_magnet_exists(magnet, save_path):
                 if date_code:
                     for kw in (date_code, f"[{date_code}]"):
                         files = search_files(kw, cid or 0)
+                        if dbg is not None:
+                            dbg["steps"].append({"stage": "search_files", "mode": "date_code", "query": kw, "cid": cid or 0, "result_len": len(files)})
                         for f in files:
                             fname = f.get("n", "") if isinstance(f, dict) else ""
                             norm_fname = _normalize_for_comparison(fname)
@@ -506,6 +548,18 @@ def check_magnet_exists(magnet, save_path):
                                     "size": f.get("s") if isinstance(f, dict) else None,
                                     "pick_code": f.get("pc") if isinstance(f, dict) else None,
                                 })
+                        if dbg is not None:
+                            dbg["steps"].append({
+                                "stage": "match_compare",
+                                "mode": "date_code",
+                                "query": kw,
+                                "matched_len": len(matched_files),
+                                "sample_files": [
+                                    {"name": (it.get("n") or ""), "norm": _normalize_for_comparison(it.get("n") or "")}
+                                    for it in (files[:5] if isinstance(files, list) else [])
+                                    if isinstance(it, dict)
+                                ],
+                            })
                         if matched_files:
                             break
 
@@ -517,6 +571,8 @@ def check_magnet_exists(magnet, save_path):
                 name_no_bracket = re.sub(r'\[[^\]]+\]', '', name_no_bracket).strip()
                 if len(name_no_bracket) >= 3:
                     files = search_files(name_no_bracket[:20], cid or 0)
+                    if dbg is not None:
+                        dbg["steps"].append({"stage": "search_files", "mode": "plain_name", "query": name_no_bracket[:20], "cid": cid or 0, "result_len": len(files)})
                     for f in files:
                         fname = f.get("n", "") if isinstance(f, dict) else ""
                         norm_fname = _normalize_for_comparison(fname)
@@ -526,10 +582,24 @@ def check_magnet_exists(magnet, save_path):
                                 "size": f.get("s") if isinstance(f, dict) else None,
                                 "pick_code": f.get("pc") if isinstance(f, dict) else None,
                             })
+                    if dbg is not None:
+                        dbg["steps"].append({
+                            "stage": "match_compare",
+                            "mode": "plain_name",
+                            "query": name_no_bracket[:20],
+                            "matched_len": len(matched_files),
+                            "sample_files": [
+                                {"name": (it.get("n") or ""), "norm": _normalize_for_comparison(it.get("n") or "")}
+                                for it in (files[:5] if isinstance(files, list) else [])
+                                if isinstance(it, dict)
+                            ],
+                        })
 
         if not matched_files and not in_offline and infohash_hex:
             try:
                 broad = search_files(infohash_hex[:12], cid or 0)
+                if dbg is not None:
+                    dbg["steps"].append({"stage": "search_files", "mode": "infohash_prefix", "query": infohash_hex[:12], "cid": cid or 0, "result_len": len(broad)})
                 for f in broad:
                     fname = f.get("n", "") if isinstance(f, dict) else ""
                     norm_fname = _normalize_for_comparison(fname)
@@ -556,7 +626,7 @@ def check_magnet_exists(magnet, save_path):
         if broad:
             confidence = "low"
 
-    return {
+    out = {
         "exists": bool(matched_files) or in_offline,
         "confidence": confidence,
         "infohash_hex": infohash_hex,
@@ -564,3 +634,9 @@ def check_magnet_exists(magnet, save_path):
         "in_offline_tasks": in_offline,
         "dn": dn,
     }
+    if dbg is not None:
+        dbg["result"] = {"matched_len": len(matched_files), "in_offline": in_offline, "confidence": confidence}
+        out["debug"] = dbg
+    if dbg is not None and not dbg.get("has_cookie_file"):
+        out["message"] = "cookie文件不存在或为空，可能未登录导致搜索结果为空"
+    return out
