@@ -431,6 +431,60 @@ def _search_keyword_from_dn(dn):
     return name.strip()[:30]
 
 
+def _extra_keywords_from_dn(dn):
+    name = (dn or "").strip()
+    first_bracket = name.find('[')
+    if first_bracket > 0:
+        name = name[first_bracket:]
+
+    brackets = re.findall(r'\[([^\]]+)\]', name)
+    date_code = ""
+    company = ""
+    digits7 = ""
+    for raw in brackets:
+        v = raw.strip()
+        if not date_code and re.fullmatch(r'\d{6}', v):
+            date_code = v
+            continue
+        if not digits7 and re.fullmatch(r'\d{7,}', v):
+            digits7 = v
+            continue
+        if not company and v and not re.fullmatch(r'\s*\d[\d.,]*(?:\.\d+)?\s*(?:k|m|g|t)i?b\s*', v.lower()):
+            company = v
+
+    title = re.sub(r'\[[^\]]+\]', ' ', name)
+    title = re.split(r'\s*\+\s*', title)[0]
+    title = re.sub(r'\[\s*\d[\d.,]*(?:\.\d+)?\s*(?:k|m|g|t)i?b\s*\]', ' ', title, flags=re.I)
+    title = re.sub(r'(?:パッケージ版|ダウンロード版|dl\s*版|通常版)', ' ', title, flags=re.I)
+    title = re.sub(r'[\(\（].*?[\)\）]', ' ', title)
+    title = re.sub(r'[\s\-_.]+', ' ', title).strip()
+    if len(title) > 24:
+        title = title[:24].strip()
+
+    kws = []
+    if digits7:
+        kws.append(f"[{digits7}]")
+    if date_code:
+        kws.append(f"[{date_code}]")
+    if title and date_code:
+        kws.append(f"[{date_code}] {title}")
+        kws.append(f"[{date_code}]{title}")
+    if title and company:
+        kws.append(f"[{company}] {title}")
+        kws.append(f"[{company}]{title}")
+    if title:
+        kws.append(title)
+
+    uniq = []
+    for it in kws:
+        it = (it or "").strip()
+        if not it:
+            continue
+        if it not in uniq:
+            uniq.append(it)
+    return uniq
+
+
 def check_magnet_exists(magnet, save_path, debug=False):
     parsed = parse_magnet_simple(magnet)
     if not parsed.get("ok"):
@@ -493,6 +547,9 @@ def check_magnet_exists(magnet, save_path, debug=False):
             compact2 = re.sub(r'\s+', ' ', keyword).strip()
             if compact2 and compact2 not in keywords:
                 keywords.append(compact2)
+        for it in _extra_keywords_from_dn(dn):
+            if it not in keywords:
+                keywords.append(it)
         norm_dn = _normalize_for_comparison(dn)
         if dbg is not None:
             dbg["dn"] = dn
