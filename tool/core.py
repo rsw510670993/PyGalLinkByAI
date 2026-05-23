@@ -116,6 +116,8 @@ def ensure_getchu_schema(conn):
             comment TEXT,
             downloaded INTEGER DEFAULT 0,
             infohash_hex TEXT,
+            submitted_115 INTEGER DEFAULT 0,
+            submitted_pick_code TEXT,
             PRIMARY KEY (date, name)
         )
         """
@@ -128,6 +130,11 @@ def ensure_getchu_schema(conn):
         cursor.execute("ALTER TABLE getchu_games ADD COLUMN downloaded INTEGER DEFAULT 0")
     if "infohash_hex" not in cols:
         cursor.execute("ALTER TABLE getchu_games ADD COLUMN infohash_hex TEXT")
+    if "submitted_115" not in cols:
+        cursor.execute("ALTER TABLE getchu_games ADD COLUMN submitted_115 INTEGER DEFAULT 0")
+    if "submitted_pick_code" not in cols:
+        cursor.execute("ALTER TABLE getchu_games ADD COLUMN submitted_pick_code TEXT")
+    cursor.execute("UPDATE getchu_games SET submitted_115 = 1 WHERE COALESCE(downloaded, 0) = 1 AND COALESCE(submitted_115, 0) = 0")
     conn.commit()
 
 
@@ -149,7 +156,25 @@ def set_downloaded_status(date, name, downloaded=1, infohash_hex=None, db_path=N
     conn.close()
 
 
-def update_game_record(date, name, new_date=None, new_name=None, new_company=None, new_link=None, new_downloaded=None, new_nyaa_name=None, db_path=None):
+def set_submitted_status(date, name, submitted_115=1, submitted_pick_code=None, db_path=None):
+    conn = sqlite3.connect(db_path or get_db_path())
+    ensure_getchu_schema(conn)
+    cursor = conn.cursor()
+    if submitted_pick_code is not None:
+        cursor.execute(
+            "UPDATE getchu_games SET submitted_115 = ?, submitted_pick_code = ? WHERE date = ? AND name = ?",
+            (1 if submitted_115 else 0, submitted_pick_code, date, name),
+        )
+    else:
+        cursor.execute(
+            "UPDATE getchu_games SET submitted_115 = ? WHERE date = ? AND name = ?",
+            (1 if submitted_115 else 0, date, name),
+        )
+    conn.commit()
+    conn.close()
+
+
+def update_game_record(date, name, new_date=None, new_name=None, new_company=None, new_link=None, new_downloaded=None, new_nyaa_name=None, new_submitted_115=None, new_submitted_pick_code=None, db_path=None):
     conn = sqlite3.connect(db_path or get_db_path())
     ensure_getchu_schema(conn)
     cursor = conn.cursor()
@@ -166,6 +191,10 @@ def update_game_record(date, name, new_date=None, new_name=None, new_company=Non
         fields["downloaded"] = 1 if new_downloaded else 0
     if new_nyaa_name is not None:
         fields["nyaa_name"] = new_nyaa_name
+    if new_submitted_115 is not None:
+        fields["submitted_115"] = 1 if new_submitted_115 else 0
+    if new_submitted_pick_code is not None:
+        fields["submitted_pick_code"] = new_submitted_pick_code
     if not fields:
         conn.close()
         return False
@@ -428,7 +457,9 @@ def get_games_data():
             nyaa_name,
             comment,
             COALESCE(downloaded, 0) as downloaded,
-            infohash_hex
+            infohash_hex,
+            COALESCE(submitted_115, 0) as submitted_115,
+            submitted_pick_code
         FROM getchu_games
         ORDER BY year DESC, month DESC
         """
@@ -444,6 +475,8 @@ def get_games_data():
             row[6],
             row[7],
             row[8],
+            row[9],
+            row[10],
         )
         for row in cursor.fetchall()
     ]

@@ -395,6 +395,7 @@ def _normalize_for_comparison(name):
     name = re.sub(r'\[(\d{7,})\]', '', name)
     name = re.sub(r'\[\s*\d+(?:\.\d+)?\s*(?:kb|mb|gb|tb)\s*\]', '', name)
     name = re.sub(r'\b(?:crack|patch|update)\b', '', name)
+    name = re.sub(r'(?:パッケージ版|ダウンロード版|dl\s*版|通常版)', '', name)
     name = re.sub(r'\bmini\s*adv\b', '', name)
     name = re.sub(r'[\s\-_.]+', ' ', name).strip()
     return name
@@ -464,33 +465,49 @@ def check_magnet_exists(magnet, save_path):
         actual_save_path = save_path or _get_default_save_path()
         cid = _resolve_path_to_cid(actual_save_path) if actual_save_path else 0
         keyword = _search_keyword_from_dn(dn)
+        keywords = []
+        if keyword:
+            keywords.append(keyword)
+            compact = keyword.replace("] [", "][")
+            if compact != keyword:
+                keywords.append(compact)
+            compact2 = re.sub(r'\s+', ' ', keyword).strip()
+            if compact2 and compact2 not in keywords:
+                keywords.append(compact2)
         norm_dn = _normalize_for_comparison(dn)
         if cid is not None:
-            files = search_files(keyword, cid)
-            for f in files:
-                fname = f.get("n", "") if isinstance(f, dict) else ""
-                norm_fname = _normalize_for_comparison(fname)
-                if norm_dn and norm_fname and (norm_dn in norm_fname or norm_fname in norm_dn):
-                    matched_files.append({
-                        "name": fname,
-                        "size": f.get("s") if isinstance(f, dict) else None,
-                        "pick_code": f.get("pc") if isinstance(f, dict) else None,
-                    })
+            files = []
+            for kw in keywords:
+                files = search_files(kw, cid)
+                for f in files:
+                    fname = f.get("n", "") if isinstance(f, dict) else ""
+                    norm_fname = _normalize_for_comparison(fname)
+                    if norm_dn and norm_fname and (norm_dn in norm_fname or norm_fname in norm_dn):
+                        matched_files.append({
+                            "name": fname,
+                            "size": f.get("s") if isinstance(f, dict) else None,
+                            "pick_code": f.get("pc") if isinstance(f, dict) else None,
+                        })
+                if matched_files:
+                    break
 
             if not files and not matched_files:
                 brackets = re.findall(r'\[(\d{6})\]', dn)
                 date_code = brackets[0] if brackets else ""
                 if date_code:
-                    files = search_files(date_code, cid or 0)
-                    for f in files:
-                        fname = f.get("n", "") if isinstance(f, dict) else ""
-                        norm_fname = _normalize_for_comparison(fname)
-                        if norm_dn and norm_fname and (norm_dn in norm_fname or norm_fname in norm_dn):
-                            matched_files.append({
-                                "name": fname,
-                                "size": f.get("s") if isinstance(f, dict) else None,
-                                "pick_code": f.get("pc") if isinstance(f, dict) else None,
-                            })
+                    for kw in (date_code, f"[{date_code}]"):
+                        files = search_files(kw, cid or 0)
+                        for f in files:
+                            fname = f.get("n", "") if isinstance(f, dict) else ""
+                            norm_fname = _normalize_for_comparison(fname)
+                            if norm_dn and norm_fname and (norm_dn in norm_fname or norm_fname in norm_dn):
+                                matched_files.append({
+                                    "name": fname,
+                                    "size": f.get("s") if isinstance(f, dict) else None,
+                                    "pick_code": f.get("pc") if isinstance(f, dict) else None,
+                                })
+                        if matched_files:
+                            break
 
             if not files and not matched_files:
                 name_no_bracket = re.split(r'\s*\+\s*', dn)[0]
@@ -531,7 +548,11 @@ def check_magnet_exists(magnet, save_path):
         confidence = "high"
     elif dn and cid:
         keyword = _search_keyword_from_dn(dn)
-        broad = search_files(keyword[:max(8, len(keyword)//3)], cid)
+        broad_kw = keyword[:max(8, len(keyword)//3)] if keyword else ""
+        broad_kw2 = broad_kw.replace("] [", "][") if broad_kw else ""
+        broad = search_files(broad_kw, cid) if broad_kw else []
+        if not broad and broad_kw2 and broad_kw2 != broad_kw:
+            broad = search_files(broad_kw2, cid)
         if broad:
             confidence = "low"
 

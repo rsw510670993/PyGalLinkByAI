@@ -60,6 +60,76 @@ def cmd_years(args):
     years = tool.get_years_list()
     _print({"years": years})
 
+
+def cmd_calendar(args):
+    import sqlite3
+    from datetime import datetime
+    import tool.core
+
+    paths = runtime_paths()
+    base_year = int(args.year) if getattr(args, "year", None) else datetime.now().year
+    start_year = base_year - 2
+    end_year = base_year
+
+    conn = sqlite3.connect(tool.core.get_db_path())
+    tool.core.ensure_getchu_schema(conn)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT
+            substr(date, 1, 4) as year,
+            CAST(substr(date, 6, 2) AS INTEGER) as month,
+            COUNT(*) as total,
+            SUM(CASE WHEN link IS NOT NULL AND link != '' THEN 1 ELSE 0 END) as magnet_total,
+            SUM(CASE WHEN link IS NOT NULL AND link != '' AND COALESCE(downloaded, 0) = 1 THEN 1 ELSE 0 END) as magnet_downloaded,
+            SUM(CASE WHEN link IS NOT NULL AND link != '' AND COALESCE(submitted_115, 0) = 1 THEN 1 ELSE 0 END) as magnet_submitted
+        FROM getchu_games
+        WHERE CAST(substr(date, 1, 4) AS INTEGER) BETWEEN ? AND ?
+        GROUP BY year, month
+        ORDER BY year DESC, month DESC
+        """,
+        (int(start_year), int(end_year)),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    stats = {}
+    for y, m, total, magnet_total, magnet_downloaded, magnet_submitted in rows:
+        yy = int(y)
+        mm = int(m)
+        total = int(total or 0)
+        magnet_total = int(magnet_total or 0)
+        magnet_downloaded = int(magnet_downloaded or 0)
+        magnet_submitted = int(magnet_submitted or 0)
+        stats[(yy, mm)] = {
+            "has_data": total > 0,
+            "total": total,
+            "magnet_total": magnet_total,
+            "magnet_downloaded": magnet_downloaded,
+            "magnet_submitted": magnet_submitted,
+            "all_magnet_downloaded": bool(magnet_total > 0 and magnet_total == magnet_downloaded),
+            "all_magnet_submitted": bool(magnet_total > 0 and magnet_total == magnet_submitted),
+        }
+
+    years = []
+    for y in range(end_year, start_year - 1, -1):
+        months = []
+        for m in range(1, 13):
+            st = stats.get((y, m)) or {
+                "has_data": False,
+                "total": 0,
+                "magnet_total": 0,
+                "magnet_downloaded": 0,
+                "magnet_submitted": 0,
+                "all_magnet_downloaded": False,
+                "all_magnet_submitted": False,
+            }
+            months.append({"month": m, **st})
+        years.append({"year": y, "months": months})
+
+    _print({"base_year": base_year, "start_year": start_year, "end_year": end_year, "years": years})
+
+
 def cmd_latest_month(args):
     games = tool.get_games_data()
     if not games:
@@ -114,6 +184,7 @@ def cmd_games(args):
                     "nyaa_name": g.nyaa_name,
                     "comment": g.comment,
                     "downloaded": g.downloaded,
+                    "submitted_115": getattr(g, "submitted_115", 0),
                 }
                 for g in games_data
             ],
@@ -521,6 +592,10 @@ def cmd_update_game(args):
         kwargs["new_downloaded"] = args.new_downloaded
     if args.new_nyaa_name is not None:
         kwargs["new_nyaa_name"] = args.new_nyaa_name
+    if getattr(args, "new_submitted_115", None) is not None:
+        kwargs["new_submitted_115"] = args.new_submitted_115
+    if getattr(args, "new_submitted_pick_code", None) is not None:
+        kwargs["new_submitted_pick_code"] = args.new_submitted_pick_code
     ok = tool.core.update_game_record(**kwargs)
     _print({"success": ok, "message": "更新成功" if ok else "未找到匹配记录"})
 
@@ -787,6 +862,10 @@ def build_parser():
     p_years = sub.add_parser("years")
     p_years.set_defaults(func=cmd_years)
 
+    p_calendar = sub.add_parser("calendar")
+    p_calendar.add_argument("--year", type=int)
+    p_calendar.set_defaults(func=cmd_calendar)
+
     p_latest = sub.add_parser("latest_month")
     p_latest.set_defaults(func=cmd_latest_month)
 
@@ -885,6 +964,8 @@ def build_parser():
     p_update.add_argument("--new-link", type=str)
     p_update.add_argument("--new-downloaded", type=int, choices=[0, 1])
     p_update.add_argument("--new-nyaa-name", type=str)
+    p_update.add_argument("--new-submitted-115", type=int, choices=[0, 1], dest="new_submitted_115")
+    p_update.add_argument("--new-submitted-pick-code", type=str, dest="new_submitted_pick_code")
     p_update.set_defaults(func=cmd_update_game)
 
     p_delete = sub.add_parser("delete_game")
