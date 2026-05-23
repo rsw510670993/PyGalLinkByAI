@@ -389,8 +389,9 @@ def _normalize_for_comparison(name):
     name = re.split(r'\s*\+\s*', name)[0]
     name = name.lower()
     name = name.replace('・', '').replace('♡', '').replace('❤', '').replace('♥', '')
-    name = name.replace('~', '').replace('～', '').replace('！', '').replace('：', '')
+    name = name.replace('~', '').replace('～', '').replace('〜', '').replace('！', '').replace('：', '')
     name = re.sub(r'\(\s*mdf\s*\+\s*mds\s*\)', '', name)
+    name = re.sub(r'\(\s*mdf\+mds\s*\)', '', name)
     name = re.sub(r'\b(disc|disk)\s*\d+\b', '', name)
     name = re.sub(r'\[(\d{7,})\]', '', name)
     name = re.sub(r'\[\s*\d[\d.,]*(?:\.\d+)?\s*(?:k|m|g|t)i?b\s*\]', '', name)
