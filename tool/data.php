@@ -146,7 +146,10 @@
         <div class="card">
             <div class="card-header d-flex align-items-center justify-content-between">
                 <div class="fw-semibold">游戏列表</div>
-                <div id="page-info" class="text-muted small">第1页</div>
+                <div class="d-flex align-items-center gap-2">
+                    <span id="month-all-downloaded-badge" class="badge bg-success" style="display:none;">全部已下载</span>
+                    <div id="page-info" class="text-muted small">第1页</div>
+                </div>
             </div>
             <div class="table-responsive">
                 <table class="table table-striped table-hover align-middle mb-0" id="gamesTable">
@@ -329,8 +332,17 @@ function showEmptyMessage(message) {
     const tbody = document.querySelector('#gamesTable tbody');
     tbody.innerHTML = `<tr><td colspan="5" class="text-center text-muted py-4">${message}</td></tr>`;
     document.getElementById('page-info').textContent = '';
+    updateMonthAllDownloadedBadge(null, null);
     document.getElementById('prev-page').disabled = true;
     document.getElementById('next-page').disabled = true;
+}
+
+function updateMonthAllDownloadedBadge(monthValue, monthStats) {
+    const badge = document.getElementById('month-all-downloaded-badge');
+    if (!badge) return;
+    const hasMonth = !!(monthValue && parseMonthValue(monthValue));
+    const ok = !!(hasMonth && monthStats && monthStats.all_magnet_downloaded);
+    badge.style.display = ok ? '' : 'none';
 }
 
 function loadPage(page) {
@@ -363,6 +375,7 @@ function loadPage(page) {
 
             updateTable(res.data);
             updateToggleButtonText();
+            updateMonthAllDownloadedBadge(monthValue, res.month_stats);
 
             currentPage = res.current_page;
             document.getElementById('page-info').textContent =
