@@ -797,6 +797,26 @@ def cmd_auto_idle_run(args):
         _print({"skipped": True, "reason": "busy"})
         return
 
+    idle_status_path = os.path.join(paths["status_dir"], "idle_run_status.json")
+    idle_status = read_json(idle_status_path, {"last_run_week": None, "last_run_at": None})
+    try:
+        iso = now.isocalendar()
+        week_key = f"{int(iso.year)}-W{int(iso.week):02d}"
+    except Exception:
+        week_key = None
+    if week_key and idle_status.get("last_run_week") == week_key and not getattr(args, "force", False):
+        _print(
+            {
+                "skipped": True,
+                "reason": "already_ran_this_week",
+                "timezone": tz_name,
+                "now": now.strftime("%Y-%m-%d %H:%M:%S"),
+                "week": week_key,
+                "last_run_at": idle_status.get("last_run_at"),
+            }
+        )
+        return
+
     year = int(getattr(args, "year", None) or now.year)
     default_end_month = now.month - 1
     current_month = int(getattr(args, "end_month", None) or default_end_month)
@@ -852,6 +872,23 @@ def cmd_auto_idle_run(args):
             check_res = _check_year_downloaded(year)
         except Exception as e:
             check_res = {"success": False, "message": str(e)}
+
+    if week_key:
+        try:
+            os.makedirs(paths["status_dir"], exist_ok=True)
+            write_json_atomic(
+                idle_status_path,
+                {
+                    "last_run_week": week_key,
+                    "last_run_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+                    "year": year,
+                    "start_month": start_month,
+                    "end_month": current_month,
+                    "p115_logged_in": bool(login.get("logged_in") is True),
+                },
+            )
+        except Exception:
+            pass
 
     _print(
         {

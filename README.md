@@ -50,9 +50,11 @@
 ### cron 示例
 由你在服务器上自行配置 cron。命令本身会判断是否在闲时，不在闲时会自动退出（输出 JSON 便于日志排查）。
 
-例如每小时执行一次（00:00-09:00 期间会真正跑，其余时间会跳过）：
+另外，`idle_run` 会记录“本周是否已运行”，同一自然周内重复触发会自动跳过（除非加 `--force`）。
+
+例如每周执行一次（周日 00:00 执行）：
 ```cron
-0 * * * * cd /path/to/repo && /path/to/repo/.venv/bin/python tool/cli.py auto idle_run >> logs/idle_run.log 2>&1
+0 0 * * 0 cd /path/to/repo && /path/to/repo/.venv/bin/python tool/cli.py auto idle_run >> logs/idle_run.log 2>&1
 ```
 
 ## 磁链校验测试页
