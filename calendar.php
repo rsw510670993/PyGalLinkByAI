@@ -8,7 +8,7 @@
         .calendar-table td, .calendar-table th {
             vertical-align: top;
             padding: 8px;
-            min-width: 86px;
+            min-width: 72px;
         }
         .month-cell .badges {
             margin-top: 4px;
@@ -75,7 +75,7 @@ const basePath = <?= json_encode($base, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_
 
 function buildHeader() {
     const headRow = document.getElementById('calendar-head-row');
-    headRow.innerHTML = '<th style="width:96px;">年份</th>' + Array.from({length: 12}).map((_, i) => `<th class="text-center">${i + 1}月</th>`).join('');
+    headRow.innerHTML = '<th style="width:96px;">年份</th>' + Array.from({length: 6}).map((_, i) => `<th class="text-center">${i + 1}</th>`).join('');
 }
 
 function cellClass(m) {
@@ -103,13 +103,14 @@ function cellHtml(m) {
 function renderCalendar(res) {
     const body = document.getElementById('calendar-body');
     if (!res || !Array.isArray(res.years)) {
-        body.innerHTML = '<tr><td colspan="13" class="text-center text-muted py-4">加载失败</td></tr>';
+        body.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-4">加载失败</td></tr>';
         return;
     }
 
     body.innerHTML = res.years.map(y => {
-        const tds = y.months.map(m => `<td class="${cellClass(m)}">${cellHtml(m)}</td>`).join('');
-        return `<tr><th class="text-center">${y.year}</th>${tds}</tr>`;
+        const first = y.months.slice(0, 6).map(m => `<td class="${cellClass(m)}">${cellHtml(m)}</td>`).join('');
+        const second = y.months.slice(6, 12).map(m => `<td class="${cellClass(m)}">${cellHtml(m)}</td>`).join('');
+        return `<tr><th class="text-center" rowspan="2">${y.year}</th>${first}</tr><tr>${second}</tr>`;
     }).join('');
 }
 
@@ -151,4 +152,3 @@ document.addEventListener('DOMContentLoaded', () => {
     </script>
 </body>
 </html>
-

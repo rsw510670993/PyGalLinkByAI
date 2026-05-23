@@ -393,7 +393,7 @@ def _normalize_for_comparison(name):
     name = re.sub(r'\(\s*mdf\s*\+\s*mds\s*\)', '', name)
     name = re.sub(r'\b(disc|disk)\s*\d+\b', '', name)
     name = re.sub(r'\[(\d{7,})\]', '', name)
-    name = re.sub(r'\[\s*\d+(?:\.\d+)?\s*(?:kb|mb|gb|tb)\s*\]', '', name)
+    name = re.sub(r'\[\s*\d[\d.,]*(?:\.\d+)?\s*(?:k|m|g|t)i?b\s*\]', '', name)
     name = re.sub(r'\b(?:crack|patch|update)\b', '', name)
     name = re.sub(r'(?:パッケージ版|ダウンロード版|dl\s*版|通常版)', '', name)
     name = re.sub(r'\bmini\s*adv\b', '', name)
@@ -417,7 +417,7 @@ def _search_keyword_from_dn(dn):
             continue
         if re.fullmatch(r'\d{7,}', v):
             continue
-        if re.fullmatch(r'\s*\d+(?:\.\d+)?\s*(?:kb|mb|gb|tb)\s*', v.lower()):
+        if re.fullmatch(r'\s*\d[\d.,]*(?:\.\d+)?\s*(?:k|m|g|t)i?b\s*', v.lower()):
             continue
         rest.append(v)
     if date_bracket and rest:
