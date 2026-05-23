@@ -798,12 +798,26 @@ def cmd_auto_idle_run(args):
         return
 
     year = int(getattr(args, "year", None) or now.year)
-    current_month = int(getattr(args, "end_month", None) or now.month)
+    default_end_month = now.month - 1
+    current_month = int(getattr(args, "end_month", None) or default_end_month)
     start_month = int(getattr(args, "start_month", None) or 1)
     if start_month < 1:
         start_month = 1
     if current_month > 12:
         current_month = 12
+    if current_month < 1:
+        _print(
+            {
+                "skipped": True,
+                "reason": "no_months_to_process",
+                "timezone": tz_name,
+                "now": now.strftime("%Y-%m-%d %H:%M:%S"),
+                "year": year,
+                "start_month": start_month,
+                "end_month": current_month,
+            }
+        )
+        return
     if start_month > current_month:
         start_month = current_month
 
