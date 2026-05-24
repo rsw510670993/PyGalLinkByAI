@@ -387,6 +387,7 @@ def _normalize_for_comparison(name):
     if first_bracket > 0:
         name = name[first_bracket:]
     name = re.split(r'\s*\+\s*', name)[0]
+    name = re.sub(r'\]\s+\[', '][', name)
     name = name.lower()
     name = name.replace('・', '').replace('♡', '').replace('❤', '').replace('♥', '')
     name = name.replace('~', '').replace('～', '').replace('〜', '').replace('！', '').replace('：', '')

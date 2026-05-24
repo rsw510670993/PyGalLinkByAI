@@ -447,21 +447,33 @@ function initMonthPicker() {
 window.addEventListener('DOMContentLoaded', () => {
     initMonthPicker();
     data115CheckLoginStatus();
-    fetch(`${basePath}/tool/api.php?action=latest_month`)
-        .then(r => r.json())
-        .then((res) => {
-            const y = res && res.year ? parseInt(res.year, 10) : null;
-            const m = res && res.month ? parseInt(res.month, 10) : null;
-            if (y && m) {
-                suppressDateChangeLoad = true;
-                $('#month-picker').datepicker('setDate', new Date(y, m - 1, 1));
-                suppressDateChangeLoad = false;
-            }
-            loadPage(1);
-        })
-        .catch(() => {
-            loadPage(1);
-        });
+
+    const params = new URLSearchParams(window.location.search);
+    const paramYear = params.get('year');
+    const paramMonth = params.get('month');
+
+    if (paramYear && paramMonth) {
+        suppressDateChangeLoad = true;
+        $('#month-picker').datepicker('setDate', new Date(parseInt(paramYear, 10), parseInt(paramMonth, 10) - 1, 1));
+        suppressDateChangeLoad = false;
+        loadPage(1);
+    } else {
+        fetch(`${basePath}/tool/api.php?action=latest_month`)
+            .then(r => r.json())
+            .then((res) => {
+                const y = res && res.year ? parseInt(res.year, 10) : null;
+                const m = res && res.month ? parseInt(res.month, 10) : null;
+                if (y && m) {
+                    suppressDateChangeLoad = true;
+                    $('#month-picker').datepicker('setDate', new Date(y, m - 1, 1));
+                    suppressDateChangeLoad = false;
+                }
+                loadPage(1);
+            })
+            .catch(() => {
+                loadPage(1);
+            });
+    }
 });
 
 document.getElementById('prev-page').addEventListener('click', () => {

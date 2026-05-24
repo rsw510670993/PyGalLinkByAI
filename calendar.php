@@ -22,6 +22,10 @@
             opacity: 0.9;
             white-space: nowrap;
         }
+        .month-cell a:hover {
+            background-color: rgba(13, 110, 253, 0.06);
+            border-radius: 4px;
+        }
     </style>
 </head>
 <body style="padding-top: 56px;">
@@ -75,7 +79,7 @@ const basePath = <?= json_encode($base, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_
 
 function buildHeader() {
     const headRow = document.getElementById('calendar-head-row');
-    headRow.innerHTML = '<th style="width:96px;">年份</th>' + Array.from({length: 6}).map((_, i) => `<th class="text-center">${i + 1}</th>`).join('');
+    headRow.innerHTML = '<th class="text-center" style="width:96px;">年份</th>' + Array.from({length: 6}).map((_, i) => `<th class="text-center">${i + 1}</th>`).join('');
 }
 
 function cellClass(m) {
@@ -85,17 +89,20 @@ function cellClass(m) {
     return 'table-warning';
 }
 
-function cellHtml(m) {
+function cellHtml(year, m) {
     if (!m.has_data) return '<div class="month-cell"><div class="small">-</div></div>';
     const badges = [];
     badges.push('<span class="badge bg-secondary">有数据</span>');
     if (m.all_magnet_submitted) badges.push('<span class="badge bg-light text-dark">全提交</span>');
     if (m.all_magnet_downloaded) badges.push('<span class="badge bg-light text-dark">全下载</span>');
+    const href = `${basePath}/tool/data.php?year=${year}&month=${String(m.month).padStart(2, '0')}`;
     return `
         <div class="month-cell">
-            <div class="fw-semibold text-center">${String(m.month).padStart(2, '0')}</div>
-            <div class="badges">${badges.join('')}</div>
-            <div class="counts">磁链 S:${m.magnet_submitted}/${m.magnet_total} D:${m.magnet_downloaded}/${m.magnet_total}</div>
+            <a href="${href}" class="text-decoration-none d-block text-reset">
+                <div class="fw-semibold text-center">${String(m.month).padStart(2, '0')}</div>
+                <div class="badges">${badges.join('')}</div>
+                <div class="counts">磁链 S:${m.magnet_submitted}/${m.magnet_total} D:${m.magnet_downloaded}/${m.magnet_total}</div>
+            </a>
         </div>
     `;
 }
@@ -108,8 +115,8 @@ function renderCalendar(res) {
     }
 
     body.innerHTML = res.years.map(y => {
-        const first = y.months.slice(0, 6).map(m => `<td class="${cellClass(m)}">${cellHtml(m)}</td>`).join('');
-        const second = y.months.slice(6, 12).map(m => `<td class="${cellClass(m)}">${cellHtml(m)}</td>`).join('');
+        const first = y.months.slice(0, 6).map(m => `<td class="${cellClass(m)}">${cellHtml(y.year, m)}</td>`).join('');
+        const second = y.months.slice(6, 12).map(m => `<td class="${cellClass(m)}">${cellHtml(y.year, m)}</td>`).join('');
         return `<tr><th class="text-center" rowspan="2">${y.year}</th>${first}</tr><tr>${second}</tr>`;
     }).join('');
 }

@@ -818,7 +818,15 @@ def cmd_auto_idle_run(args):
         return
 
     year = int(getattr(args, "year", None) or now.year)
-    default_end_month = now.month - 1
+
+    # 重新获取当前时间用于月份范围计算，避免与闲时窗口的 now 混淆
+    try:
+        from zoneinfo import ZoneInfo
+        _now = datetime.now(ZoneInfo(tz_name))
+    except Exception:
+        _now = datetime.now()
+
+    default_end_month = _now.month - 1
     current_month = int(getattr(args, "end_month", None) or default_end_month)
     start_month = int(getattr(args, "start_month", None) or 1)
     if start_month < 1:
