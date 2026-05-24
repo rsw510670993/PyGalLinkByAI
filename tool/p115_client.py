@@ -413,6 +413,10 @@ def _names_match(norm_dn, norm_fname):
         return False
     if norm_dn in norm_fname or norm_fname in norm_dn:
         return True
+    dn_compact = norm_dn.replace(" ", "")
+    fn_compact = norm_fname.replace(" ", "")
+    if dn_compact and fn_compact and (dn_compact in fn_compact or fn_compact in dn_compact):
+        return True
     m_dn = _DATE_PREFIX_RE.match(norm_dn)
     m_fn = _DATE_PREFIX_RE.match(norm_fname)
     if not m_dn or not m_fn:
