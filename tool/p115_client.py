@@ -389,8 +389,9 @@ def _normalize_for_comparison(name):
     name = re.split(r'\s*\+\s*', name)[0]
     name = re.sub(r'\]\s+\[', '][', name)
     name = name.lower()
+    name = name.translate(str.maketrans('０１２３４５６７８９', '0123456789'))
     name = name.replace('・', '').replace('♡', '').replace('❤', '').replace('♥', '')
-    name = name.replace('~', '').replace('～', '').replace('〜', '').replace('！', '').replace('：', '')
+    name = name.replace('~', '').replace('～', '').replace('〜', '').replace('！', '').replace('：', '').replace(':', '')
     name = re.sub(r'\(\s*mdf\s*\+\s*mds\s*\)', '', name)
     name = re.sub(r'\(\s*mdf\+mds\s*\)', '', name)
     name = re.sub(r'\b(disc|disk)\s*\d+\b', '', name)
@@ -401,6 +402,28 @@ def _normalize_for_comparison(name):
     name = re.sub(r'\bmini\s*adv\b', '', name)
     name = re.sub(r'[\s\-_.]+', ' ', name).strip()
     return name
+
+
+_DATE_PREFIX_RE = re.compile(r'^\[(\d{6})\]')
+_DATE_BRACKET_RE = re.compile(r'^\[\d{6}\]\s*')
+
+
+def _names_match(norm_dn, norm_fname):
+    if not norm_dn or not norm_fname:
+        return False
+    if norm_dn in norm_fname or norm_fname in norm_dn:
+        return True
+    m_dn = _DATE_PREFIX_RE.match(norm_dn)
+    m_fn = _DATE_PREFIX_RE.match(norm_fname)
+    if not m_dn or not m_fn:
+        return False
+    if m_dn.group(1) == m_fn.group(1):
+        return False
+    dn_no_date = _DATE_BRACKET_RE.sub('', norm_dn, count=1)
+    fn_no_date = _DATE_BRACKET_RE.sub('', norm_fname, count=1)
+    if dn_no_date and fn_no_date:
+        return dn_no_date in fn_no_date or fn_no_date in dn_no_date
+    return False
 
 
 def _search_keyword_from_dn(dn):
@@ -569,7 +592,7 @@ def check_magnet_exists(magnet, save_path, debug=False):
                 for f in files:
                     fname = f.get("n", "") if isinstance(f, dict) else ""
                     norm_fname = _normalize_for_comparison(fname)
-                    if norm_dn and norm_fname and (norm_dn in norm_fname or norm_fname in norm_dn):
+                    if _names_match(norm_dn, norm_fname):
                         matched_files.append({
                             "name": fname,
                             "size": f.get("s") if isinstance(f, dict) else None,
@@ -601,7 +624,7 @@ def check_magnet_exists(magnet, save_path, debug=False):
                         for f in files:
                             fname = f.get("n", "") if isinstance(f, dict) else ""
                             norm_fname = _normalize_for_comparison(fname)
-                            if norm_dn and norm_fname and (norm_dn in norm_fname or norm_fname in norm_dn):
+                            if _names_match(norm_dn, norm_fname):
                                 matched_files.append({
                                     "name": fname,
                                     "size": f.get("s") if isinstance(f, dict) else None,
@@ -635,7 +658,7 @@ def check_magnet_exists(magnet, save_path, debug=False):
                     for f in files:
                         fname = f.get("n", "") if isinstance(f, dict) else ""
                         norm_fname = _normalize_for_comparison(fname)
-                        if norm_dn and norm_fname and (norm_dn in norm_fname or norm_fname in norm_dn):
+                        if _names_match(norm_dn, norm_fname):
                             matched_files.append({
                                 "name": fname,
                                 "size": f.get("s") if isinstance(f, dict) else None,
@@ -662,7 +685,7 @@ def check_magnet_exists(magnet, save_path, debug=False):
                 for f in broad:
                     fname = f.get("n", "") if isinstance(f, dict) else ""
                     norm_fname = _normalize_for_comparison(fname)
-                    if norm_dn and norm_fname and (norm_dn in norm_fname or norm_fname in norm_dn):
+                    if _names_match(norm_dn, norm_fname):
                         matched_files.append({
                             "name": fname,
                             "size": f.get("s") if isinstance(f, dict) else None,
