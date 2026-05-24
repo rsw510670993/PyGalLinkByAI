@@ -390,16 +390,19 @@ def _normalize_for_comparison(name):
     name = re.sub(r'\]\s+\[', '][', name)
     name = name.lower()
     name = name.translate(str.maketrans('０１２３４５６７８９', '0123456789'))
-    name = name.replace('・', '').replace('♡', '').replace('❤', '').replace('♥', '')
-    name = name.replace('~', '').replace('～', '').replace('〜', '').replace('！', '').replace('：', '').replace(':', '')
-    name = re.sub(r'\(\s*mdf\s*\+\s*mds\s*\)', '', name)
-    name = re.sub(r'\(\s*mdf\+mds\s*\)', '', name)
-    name = re.sub(r'\b(disc|disk)\s*\d+\b', '', name)
-    name = re.sub(r'\[(\d{7,})\]', '', name)
-    name = re.sub(r'\[\s*\d[\d.,]*(?:\.\d+)?\s*(?:k|m|g|t)i?b\s*\]', '', name)
-    name = re.sub(r'\b(?:crack|patch|update)\b', '', name)
-    name = re.sub(r'(?:パッケージ版|ダウンロード版|dl\s*版|通常版)', '', name)
-    name = re.sub(r'\bmini\s*adv\b', '', name)
+    for ch in '・♡❤♥~～〜！!？?：:':
+        name = name.replace(ch, '')
+    for pattern in (
+        r'\(\s*mdf\s*\+\s*mds\s*\)',
+        r'\(\s*mdf\+mds\s*\)',
+        r'\b(disc|disk)\s*\d+\b',
+        r'\[(\d{7,})\]',
+        r'\[\s*\d[\d.,]*(?:\.\d+)?\s*(?:k|m|g|t)i?b\s*\]',
+        r'\b(?:crack|patch|update)\b',
+        r'(?:パッケージ版|ダウンロード版|dl\s*版|通常版)',
+        r'\bmini\s*adv\b',
+    ):
+        name = re.sub(pattern, '', name)
     name = re.sub(r'[\s\-_.]+', ' ', name).strip()
     return name
 
