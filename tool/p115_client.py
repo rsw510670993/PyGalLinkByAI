@@ -398,7 +398,7 @@ def _normalize_for_comparison(name):
         r'\b(disc|disk)\s*\d+\b',
         r'\[(\d{7,})\]',
         r'\[\s*\d[\d.,]*(?:\.\d+)?\s*(?:k|m|g|t)i?b\s*\]',
-        r'\b(?:crack|patch|update)\b',
+        r'\b(?:crack|patch|update|updated)\b',
         r'(?:パッケージ版|ダウンロード版|dl\s*版|通常版)',
         r'\[\s*\]',
         r'\bmini\s*adv\b',
@@ -412,6 +412,17 @@ _DATE_PREFIX_RE = re.compile(r'^\[(\d{6})\]')
 _DATE_BRACKET_RE = re.compile(r'^\[\d{6}\]\s*')
 
 
+def _leading_date_codes(s):
+    codes = []
+    while True:
+        m = _DATE_PREFIX_RE.match(s or "")
+        if not m:
+            break
+        codes.append(m.group(1))
+        s = (s or "")[m.end():]
+    return codes
+
+
 def _names_match(norm_dn, norm_fname):
     if not norm_dn or not norm_fname:
         return False
@@ -421,17 +432,21 @@ def _names_match(norm_dn, norm_fname):
     fn_compact = norm_fname.replace(" ", "")
     if dn_compact and fn_compact and (dn_compact in fn_compact or fn_compact in dn_compact):
         return True
-    m_dn = _DATE_PREFIX_RE.match(norm_dn)
-    m_fn = _DATE_PREFIX_RE.match(norm_fname)
-    if not m_dn or not m_fn:
+    dn_codes = _leading_date_codes(norm_dn)
+    fn_codes = _leading_date_codes(norm_fname)
+    common = None
+    for c in dn_codes:
+        if c in fn_codes:
+            common = c
+            break
+    if not common:
         return False
-    if m_dn.group(1) != m_fn.group(1):
-        return False
-    dn_no_date = _DATE_BRACKET_RE.sub('', norm_dn, count=1)
-    fn_no_date = _DATE_BRACKET_RE.sub('', norm_fname, count=1)
+
+    dn_no_date = re.sub(r'^\[' + re.escape(common) + r'\]\s*', '', norm_dn, count=1)
+    fn_no_date = re.sub(r'^\[' + re.escape(common) + r'\]\s*', '', norm_fname, count=1)
+    dn_no_date = re.sub(r'^(?:\[[^\]]+\]\s*)+', '', dn_no_date).strip()
+    fn_no_date = re.sub(r'^(?:\[[^\]]+\]\s*)+', '', fn_no_date).strip()
     if dn_no_date and fn_no_date:
-        dn_no_date = re.sub(r'^(?:\[[^\]]+\]\s*)+', '', dn_no_date).strip()
-        fn_no_date = re.sub(r'^(?:\[[^\]]+\]\s*)+', '', fn_no_date).strip()
         if dn_no_date in fn_no_date or fn_no_date in dn_no_date:
             return True
         dn2 = dn_no_date.replace(" ", "")
