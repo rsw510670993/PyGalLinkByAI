@@ -423,6 +423,23 @@ def _leading_date_codes(s):
     return codes
 
 
+def _strip_leading_dates_and_tags(s):
+    s = (s or "").strip()
+    while True:
+        m = _DATE_PREFIX_RE.match(s)
+        if not m:
+            break
+        s = s[m.end():].lstrip()
+    while True:
+        if not s.startswith('['):
+            break
+        end = s.find(']')
+        if end <= 0:
+            break
+        s = s[end + 1:].lstrip()
+    return s.strip()
+
+
 def _names_match(norm_dn, norm_fname):
     if not norm_dn or not norm_fname:
         return False
@@ -440,6 +457,15 @@ def _names_match(norm_dn, norm_fname):
             common = c
             break
     if not common:
+        dn_tail = _strip_leading_dates_and_tags(norm_dn)
+        fn_tail = _strip_leading_dates_and_tags(norm_fname)
+        if dn_tail and fn_tail and (len(dn_tail) >= 8 or len(fn_tail) >= 8):
+            if dn_tail in fn_tail or fn_tail in dn_tail:
+                return True
+            dn2 = dn_tail.replace(" ", "")
+            fn2 = fn_tail.replace(" ", "")
+            if dn2 and fn2 and (dn2 in fn2 or fn2 in dn2):
+                return True
         return False
 
     dn_no_date = re.sub(r'^\[' + re.escape(common) + r'\]\s*', '', norm_dn, count=1)
