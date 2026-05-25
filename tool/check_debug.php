@@ -15,7 +15,24 @@
             right: 16px;
             bottom: 16px;
             z-index: 1050;
-            display: none;
+            width: 44px;
+            height: 44px;
+            border-radius: 999px;
+            padding: 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            visibility: hidden;
+            pointer-events: none;
+            transition: opacity 0.15s ease, visibility 0.15s ease, transform 0.15s ease;
+            transform: translateY(6px);
+        }
+        #back-to-top.show {
+            opacity: 1;
+            visibility: visible;
+            pointer-events: auto;
+            transform: translateY(0);
         }
     </style>
 </head>
@@ -62,7 +79,7 @@
         </div>
     </div>
 
-    <button id="back-to-top" type="button" class="btn btn-dark btn-sm">回到页首</button>
+    <button id="back-to-top" type="button" class="btn btn-dark" aria-label="回到页首">↑</button>
 
     <script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.1/js/bootstrap.bundle.min.js"></script>
     <script>
@@ -101,7 +118,8 @@ document.getElementById('dbg-run').addEventListener('click', () => {
 
 const backBtn = document.getElementById('back-to-top');
 function updateBackBtn() {
-    backBtn.style.display = window.scrollY > 200 ? '' : 'none';
+    const y = window.pageYOffset || document.documentElement.scrollTop || document.body.scrollTop || 0;
+    backBtn.classList.toggle('show', y > 200);
 }
 window.addEventListener('scroll', updateBackBtn, { passive: true });
 updateBackBtn();
