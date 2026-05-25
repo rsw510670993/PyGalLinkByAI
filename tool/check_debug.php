@@ -10,6 +10,13 @@
             word-break: break-all;
             margin: 0;
         }
+        #back-to-top {
+            position: fixed;
+            right: 16px;
+            bottom: 16px;
+            z-index: 1050;
+            display: none;
+        }
     </style>
 </head>
 <body style="padding-top: 56px;">
@@ -55,6 +62,8 @@
         </div>
     </div>
 
+    <button id="back-to-top" type="button" class="btn btn-dark btn-sm">回到页首</button>
+
     <script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.1/js/bootstrap.bundle.min.js"></script>
     <script>
 const basePath = <?= json_encode($base, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?>;
@@ -89,7 +98,16 @@ document.getElementById('dbg-run').addEventListener('click', () => {
         setBadge(false, '失败');
     });
 });
+
+const backBtn = document.getElementById('back-to-top');
+function updateBackBtn() {
+    backBtn.style.display = window.scrollY > 200 ? '' : 'none';
+}
+window.addEventListener('scroll', updateBackBtn, { passive: true });
+updateBackBtn();
+backBtn.addEventListener('click', () => {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+});
     </script>
 </body>
 </html>
-
