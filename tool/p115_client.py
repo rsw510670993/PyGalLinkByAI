@@ -425,12 +425,18 @@ def _names_match(norm_dn, norm_fname):
     m_fn = _DATE_PREFIX_RE.match(norm_fname)
     if not m_dn or not m_fn:
         return False
-    if m_dn.group(1) == m_fn.group(1):
+    if m_dn.group(1) != m_fn.group(1):
         return False
     dn_no_date = _DATE_BRACKET_RE.sub('', norm_dn, count=1)
     fn_no_date = _DATE_BRACKET_RE.sub('', norm_fname, count=1)
     if dn_no_date and fn_no_date:
-        return dn_no_date in fn_no_date or fn_no_date in dn_no_date
+        dn_no_date = re.sub(r'^(?:\[[^\]]+\]\s*)+', '', dn_no_date).strip()
+        fn_no_date = re.sub(r'^(?:\[[^\]]+\]\s*)+', '', fn_no_date).strip()
+        if dn_no_date in fn_no_date or fn_no_date in dn_no_date:
+            return True
+        dn2 = dn_no_date.replace(" ", "")
+        fn2 = fn_no_date.replace(" ", "")
+        return dn2 in fn2 or fn2 in dn2
     return False
 
 
