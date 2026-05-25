@@ -202,6 +202,7 @@
                     <div class="d-flex gap-2 mb-3">
                         <button id="modal-check-btn" class="btn btn-outline-info btn-sm">检查115是否存在</button>
                         <button id="modal-submit-btn" class="btn btn-success btn-sm">提交到115</button>
+                        <a id="modal-debug-link" class="btn btn-outline-secondary btn-sm" target="_blank" rel="noopener">调试</a>
                     </div>
                     <div id="modal-result" class="small" style="white-space:pre-wrap;word-break:break-all;"></div>
                 </div>
@@ -889,6 +890,11 @@ function openCheckModal(magnet, name, year, date) {
     document.getElementById('modal-game-name').textContent = name || '-';
     document.getElementById('modal-magnet').value = magnet;
     document.getElementById('modal-save-path').value = `/GAL/GAL-${year}`;
+    const debugLink = document.getElementById('modal-debug-link');
+    if (debugLink) {
+        const dir = `/GAL/GAL-${year}`;
+        debugLink.href = `${basePath}/tool/check_debug.php?magnet=${encodeURIComponent(magnet)}&dir=${encodeURIComponent(dir)}`;
+    }
     document.getElementById('modal-result').textContent = '';
     document.getElementById('modal-check-btn').disabled = false;
     document.getElementById('modal-submit-btn').disabled = false;

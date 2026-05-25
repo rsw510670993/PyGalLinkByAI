@@ -178,7 +178,10 @@ if ($action === '115_check') {
     $body = read_json_body();
     $magnet = $body['magnet'] ?? '';
     $dir = $body['dir'] ?? '';
-    [$code, $data] = run_cli(['115', 'check', '--magnet', $magnet, '--dir', $dir]);
+    $debug = $body['debug'] ?? null;
+    $args = ['115', 'check', '--magnet', $magnet, '--dir', $dir];
+    if ($debug) { $args[] = '--debug'; }
+    [$code, $data] = run_cli($args);
     json_response($data);
 }
 
