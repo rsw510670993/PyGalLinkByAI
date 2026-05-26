@@ -390,7 +390,7 @@ def _normalize_for_comparison(name):
     name = re.sub(r'\]\s+\[', '][', name)
     name = name.lower()
     name = name.translate(str.maketrans('０１２３４５６７８９', '0123456789'))
-    for ch in '・♡❤♥~～〜！!？?：:『』「」－–—−―ｰ':
+    for ch in '・♡❤♥~～〜！!？?：:『』「」－–—−―ｰ‐‑‒':
         name = name.replace(ch, '')
     for pattern in (
         r'\(\s*mdf\s*\+\s*mds\s*\)',
@@ -398,6 +398,8 @@ def _normalize_for_comparison(name):
         r'\b(disc|disk)\s*\d+\b',
         r'\[(\d{7,})\]',
         r'\[\s*\d[\d.,]*(?:\.\d+)?\s*(?:k|m|g|t)i?b\s*\]',
+        r'(?i)\bdvd\s*version\b',
+        r'(?i)\bdvd\b',
         r'\b(?:crack|patch|update|updated)\b',
         r'(?:パッケージ版|ダウンロード版|dl\s*版|通常版)',
         r'\[\s*\]',
