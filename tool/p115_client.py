@@ -587,7 +587,6 @@ def check_magnet_exists(magnet, save_path, debug=False):
     matched_files = []
     in_offline = False
     confidence = "none"
-    matched_in_other_dir = False
 
     dbg = None
     if debug:
@@ -735,38 +734,6 @@ def check_magnet_exists(magnet, save_path, debug=False):
                             ],
                         })
 
-        matched_in_other_dir = False
-        if not matched_files and cid:
-            for kw in keywords[:8]:
-                files2 = search_files(kw, 0)
-                if dbg is not None:
-                    dbg["steps"].append({"stage": "search_files", "mode": "global_keyword", "query": kw, "cid": 0, "result_len": len(files2)})
-                for f in files2:
-                    fname = f.get("n", "") if isinstance(f, dict) else ""
-                    norm_fname = _normalize_for_comparison(fname)
-                    if _names_match(norm_dn, norm_fname):
-                        matched_in_other_dir = True
-                        matched_files.append({
-                            "name": fname,
-                            "size": f.get("s") if isinstance(f, dict) else None,
-                            "pick_code": f.get("pc") if isinstance(f, dict) else None,
-                            "cid": f.get("cid") if isinstance(f, dict) else None,
-                        })
-                if dbg is not None:
-                    dbg["steps"].append({
-                        "stage": "match_compare",
-                        "mode": "global_keyword",
-                        "query": kw,
-                        "matched_len": len(matched_files),
-                        "sample_files": [
-                            {"name": (it.get("n") or ""), "norm": _normalize_for_comparison(it.get("n") or "")}
-                            for it in (files2[:5] if isinstance(files2, list) else [])
-                            if isinstance(it, dict)
-                        ],
-                    })
-                if matched_files:
-                    break
-
         if not matched_files and not in_offline and infohash_hex:
             try:
                 broad = search_files(infohash_hex[:12], cid or 0)
@@ -806,8 +773,6 @@ def check_magnet_exists(magnet, save_path, debug=False):
         "in_offline_tasks": in_offline,
         "dn": dn,
     }
-    if matched_in_other_dir:
-        out["matched_in_other_dir"] = True
     if dbg is not None:
         dbg["result"] = {"matched_len": len(matched_files), "in_offline": in_offline, "confidence": confidence}
         out["debug"] = dbg
