@@ -494,8 +494,13 @@ function updateToggleButtonText() {
 
 function updateBatchButtons() {
     const anyChecked = Array.from(document.querySelectorAll('#gamesTable tbody input.game-checkbox')).some(cb => cb.checked);
+    const anyNeedCheck = Array.from(document.querySelectorAll('#gamesTable tbody tr')).some((tr) => {
+        const magnet = tr.dataset.magnet ? decodeURIComponent(tr.dataset.magnet) : '';
+        const downloaded = parseInt(tr.dataset.downloaded || '0', 10) === 1;
+        return !!magnet && !downloaded;
+    });
     document.getElementById('batch-115-download').disabled = !anyChecked;
-    document.getElementById('batch-115-check').disabled = !anyChecked;
+    document.getElementById('batch-115-check').disabled = !anyNeedCheck;
 }
 
 function handleCheckboxChange(checkbox) {
