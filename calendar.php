@@ -58,6 +58,32 @@
             </div>
         </div>
 
+        <div class="modal fade" id="yearCheckModal" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-lg modal-dialog-scrollable">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">115 整年校对</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="d-flex align-items-center justify-content-between mb-2">
+                            <div class="fw-semibold" id="yearCheckTitle"></div>
+                            <button type="button" class="btn btn-outline-danger btn-sm" id="yearCheckStopBtn">停止</button>
+                        </div>
+                        <div class="d-flex justify-content-between small text-muted mb-1">
+                            <span id="yearCheckText">准备中...</span>
+                            <span id="yearCheckCount"></span>
+                        </div>
+                        <div class="progress mb-2" style="height: 18px;">
+                            <div class="progress-bar progress-bar-striped progress-bar-animated bg-info" id="yearCheckBar"
+                                role="progressbar" style="width: 0%;" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
+                        </div>
+                        <div id="yearCheckErrors" class="small text-muted" style="white-space:pre-wrap;word-break:break-all;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div class="card">
             <div class="card-header fw-semibold">月度概览</div>
             <div class="table-responsive">
@@ -117,7 +143,7 @@ function renderCalendar(res) {
     body.innerHTML = res.years.map(y => {
         const first = y.months.slice(0, 6).map(m => `<td class="${cellClass(m)}">${cellHtml(y.year, m)}</td>`).join('');
         const second = y.months.slice(6, 12).map(m => `<td class="${cellClass(m)}">${cellHtml(y.year, m)}</td>`).join('');
-        return `<tr><th class="text-center" rowspan="2">${y.year}</th>${first}</tr><tr>${second}</tr>`;
+        return `<tr><th class="text-center" rowspan="2"><div class="fw-semibold">${y.year}</div><button type="button" class="btn btn-outline-info btn-sm mt-2 year-check-btn" data-year="${y.year}">115整年校对</button></th>${first}</tr><tr>${second}</tr>`;
     }).join('');
 }
 
@@ -150,10 +176,107 @@ function initYears() {
         });
 }
 
+let yearCheckIntervalId = null;
+let yearCheckYear = null;
+
+function resetYearCheckUI() {
+    document.getElementById('yearCheckText').textContent = '准备中...';
+    document.getElementById('yearCheckCount').textContent = '';
+    document.getElementById('yearCheckErrors').textContent = '';
+    const bar = document.getElementById('yearCheckBar');
+    bar.style.width = '0%';
+    bar.setAttribute('aria-valuenow', '0');
+}
+
+function openYearCheckModal(year) {
+    yearCheckYear = year;
+    document.getElementById('yearCheckTitle').textContent = `年份：${year}`;
+    resetYearCheckUI();
+    new bootstrap.Modal(document.getElementById('yearCheckModal')).show();
+}
+
+function pollYearCheckStatus() {
+    fetch(`${basePath}/tool/api.php?action=115_check_all_status`)
+        .then(r => r.json())
+        .then(status => {
+            const bar = document.getElementById('yearCheckBar');
+            if (status.running) {
+                const progress = status.total > 0 ? Math.round(status.checked / status.total * 100) : 0;
+                document.getElementById('yearCheckText').textContent = `校对中... (已检查 ${status.checked}/${status.total})`;
+                document.getElementById('yearCheckCount').textContent = `发现 ${status.found_downloaded} 条已下载`;
+                bar.style.width = `${progress}%`;
+                bar.setAttribute('aria-valuenow', `${progress}`);
+                if (status.errors && status.errors.length > 0) {
+                    document.getElementById('yearCheckErrors').textContent = '错误（前10条）:\n' + status.errors.join('\n');
+                }
+                return;
+            }
+
+            if (yearCheckIntervalId) {
+                clearInterval(yearCheckIntervalId);
+                yearCheckIntervalId = null;
+            }
+
+            bootstrap.Modal.getInstance(document.getElementById('yearCheckModal'))?.hide();
+
+            let msg = `校对完成\n\n总记录: ${status.total}\n已检查: ${status.checked}\n发现已下载: ${status.found_downloaded}`;
+            if (status.errors && status.errors.length > 0) {
+                msg += '\n\n错误（前10条）:\n' + status.errors.join('\n');
+            }
+            alert(msg);
+
+            const sel = document.getElementById('calendar-year');
+            loadCalendar(sel.value);
+        })
+        .catch(() => {});
+}
+
+function startYearCheck(year) {
+    openYearCheckModal(year);
+    if (yearCheckIntervalId) {
+        clearInterval(yearCheckIntervalId);
+        yearCheckIntervalId = null;
+    }
+
+    fetch(`${basePath}/tool/api.php?action=115_check_all_start`, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ year: parseInt(year, 10) }),
+    }).then(r => r.json()).then(res => {
+        if (res.status === 'error') {
+            alert('启动失败: ' + (res.message || '未知错误'));
+            bootstrap.Modal.getInstance(document.getElementById('yearCheckModal'))?.hide();
+            return;
+        }
+        yearCheckIntervalId = setInterval(pollYearCheckStatus, 3000);
+    }).catch(err => {
+        alert('启动失败: ' + err.message);
+        bootstrap.Modal.getInstance(document.getElementById('yearCheckModal'))?.hide();
+    });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     initYears();
     document.getElementById('calendar-year').addEventListener('change', (e) => {
         loadCalendar(e.target.value);
+    });
+
+    document.getElementById('calendar-body').addEventListener('click', (e) => {
+        const btn = e.target.closest('.year-check-btn');
+        if (!btn) return;
+        const year = btn.dataset.year;
+        if (!year) return;
+        if (!confirm(`将对 ${year} 年所有有磁链且未标记已下载的记录进行115校对，是否继续？`)) return;
+        startYearCheck(year);
+    });
+
+    document.getElementById('yearCheckStopBtn').addEventListener('click', () => {
+        fetch(`${basePath}/tool/api.php?action=115_check_all_stop`, { method: 'POST' }).catch(() => {});
+        if (yearCheckIntervalId) {
+            clearInterval(yearCheckIntervalId);
+            yearCheckIntervalId = null;
+        }
+        bootstrap.Modal.getInstance(document.getElementById('yearCheckModal'))?.hide();
     });
 });
     </script>
