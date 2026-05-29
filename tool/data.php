@@ -86,6 +86,7 @@
             <div class="navbar-nav">
                 <a class="nav-link" href="<?= $base ?>/index.php">首页</a>
                 <a class="nav-link active" href="<?= $base ?>/tool/data.php">数据展示</a>
+                <a class="nav-link" href="<?= $base ?>/calendar.php">年历</a>
             </div>
         </div>
     </nav>
@@ -146,7 +147,10 @@
         <div class="card">
             <div class="card-header d-flex align-items-center justify-content-between">
                 <div class="fw-semibold">游戏列表</div>
-                <div id="page-info" class="text-muted small">第1页</div>
+                <div class="d-flex align-items-center gap-2">
+                    <span id="month-all-downloaded-badge" class="badge bg-success" style="display:none;">全部已下载</span>
+                    <div id="page-info" class="text-muted small">第1页</div>
+                </div>
             </div>
             <div class="table-responsive">
                 <table class="table table-striped table-hover align-middle mb-0" id="gamesTable">
@@ -198,6 +202,7 @@
                     <div class="d-flex gap-2 mb-3">
                         <button id="modal-check-btn" class="btn btn-outline-info btn-sm">检查115是否存在</button>
                         <button id="modal-submit-btn" class="btn btn-success btn-sm">提交到115</button>
+                        <a id="modal-debug-link" class="btn btn-outline-secondary btn-sm" target="_blank" rel="noopener">调试</a>
                     </div>
                     <div id="modal-result" class="small" style="white-space:pre-wrap;word-break:break-all;"></div>
                 </div>
@@ -278,16 +283,18 @@ function updateTable(data) {
 
     tbody.innerHTML = data.map(game => {
         const isDownloaded = game.downloaded == 1;
-        const rowClass = isDownloaded ? ' class="table-success"' : '';
+        const isSubmitted = game.submitted_115 == 1;
+        const rowClass = isDownloaded ? ' class="table-success"' : isSubmitted ? ' class="table-info"' : '';
         const dateFull = `${game.year}-${String(game.month).padStart(2, '0')}`;
         const magnet = game.download_url || '';
         const encName = encodeURIComponent(game.name);
         const encNyaa = game.nyaa_name ? encodeURIComponent(game.nyaa_name) : '';
         return `
-        <tr${rowClass} data-date="${dateFull}" data-name="${encName}" data-magnet="${encodeURIComponent(magnet)}" data-downloaded="${game.downloaded || 0}" data-nyaa-name="${encNyaa}">
+        <tr${rowClass} data-date="${dateFull}" data-name="${encName}" data-magnet="${encodeURIComponent(magnet)}" data-downloaded="${game.downloaded || 0}" data-submitted-115="${game.submitted_115 || 0}" data-nyaa-name="${encNyaa}">
             <td class="check-col text-center">
                 ${!magnet ? '<span class="text-muted small">-</span>'
                     : isDownloaded ? '<span class="badge bg-success">已下载</span>'
+                    : isSubmitted ? '<span class="badge bg-primary">已提交</span>'
                     : `<input type="checkbox" class="game-checkbox" checked onchange="handleCheckboxChange(this)">`
                 }
             </td>
@@ -297,7 +304,7 @@ function updateTable(data) {
             <td class="actions-col">
                 ${magnet ?
                     `<div class="btn-group actions-group" role="group">
-                        <button type="button" class="btn btn-success btn-sm btn-115-submit"
+                        <button type="button" class="btn btn-success btn-sm btn-115-submit"${isSubmitted ? ' disabled' : ''}
                             data-magnet="${encodeURIComponent(magnet)}"
                             data-year="${game.year}">115云下载</button>
                         <button type="button" class="btn btn-outline-secondary btn-sm magnet-check-btn"
@@ -329,8 +336,17 @@ function showEmptyMessage(message) {
     const tbody = document.querySelector('#gamesTable tbody');
     tbody.innerHTML = `<tr><td colspan="5" class="text-center text-muted py-4">${message}</td></tr>`;
     document.getElementById('page-info').textContent = '';
+    updateMonthAllDownloadedBadge(null, null);
     document.getElementById('prev-page').disabled = true;
     document.getElementById('next-page').disabled = true;
+}
+
+function updateMonthAllDownloadedBadge(monthValue, monthStats) {
+    const badge = document.getElementById('month-all-downloaded-badge');
+    if (!badge) return;
+    const hasMonth = !!(monthValue && parseMonthValue(monthValue));
+    const ok = !!(hasMonth && monthStats && monthStats.all_magnet_downloaded);
+    badge.style.display = ok ? '' : 'none';
 }
 
 function loadPage(page) {
@@ -363,6 +379,7 @@ function loadPage(page) {
 
             updateTable(res.data);
             updateToggleButtonText();
+            updateMonthAllDownloadedBadge(monthValue, res.month_stats);
 
             currentPage = res.current_page;
             document.getElementById('page-info').textContent =
@@ -431,21 +448,33 @@ function initMonthPicker() {
 window.addEventListener('DOMContentLoaded', () => {
     initMonthPicker();
     data115CheckLoginStatus();
-    fetch(`${basePath}/tool/api.php?action=latest_month`)
-        .then(r => r.json())
-        .then((res) => {
-            const y = res && res.year ? parseInt(res.year, 10) : null;
-            const m = res && res.month ? parseInt(res.month, 10) : null;
-            if (y && m) {
-                suppressDateChangeLoad = true;
-                $('#month-picker').datepicker('setDate', new Date(y, m - 1, 1));
-                suppressDateChangeLoad = false;
-            }
-            loadPage(1);
-        })
-        .catch(() => {
-            loadPage(1);
-        });
+
+    const params = new URLSearchParams(window.location.search);
+    const paramYear = params.get('year');
+    const paramMonth = params.get('month');
+
+    if (paramYear && paramMonth) {
+        suppressDateChangeLoad = true;
+        $('#month-picker').datepicker('setDate', new Date(parseInt(paramYear, 10), parseInt(paramMonth, 10) - 1, 1));
+        suppressDateChangeLoad = false;
+        loadPage(1);
+    } else {
+        fetch(`${basePath}/tool/api.php?action=latest_month`)
+            .then(r => r.json())
+            .then((res) => {
+                const y = res && res.year ? parseInt(res.year, 10) : null;
+                const m = res && res.month ? parseInt(res.month, 10) : null;
+                if (y && m) {
+                    suppressDateChangeLoad = true;
+                    $('#month-picker').datepicker('setDate', new Date(y, m - 1, 1));
+                    suppressDateChangeLoad = false;
+                }
+                loadPage(1);
+            })
+            .catch(() => {
+                loadPage(1);
+            });
+    }
 });
 
 document.getElementById('prev-page').addEventListener('click', () => {
@@ -465,8 +494,13 @@ function updateToggleButtonText() {
 
 function updateBatchButtons() {
     const anyChecked = Array.from(document.querySelectorAll('#gamesTable tbody input.game-checkbox')).some(cb => cb.checked);
+    const anyNeedCheck = Array.from(document.querySelectorAll('#gamesTable tbody tr')).some((tr) => {
+        const magnet = tr.dataset.magnet ? decodeURIComponent(tr.dataset.magnet) : '';
+        const downloaded = parseInt(tr.dataset.downloaded || '0', 10) === 1;
+        return !!magnet && !downloaded;
+    });
     document.getElementById('batch-115-download').disabled = !anyChecked;
-    document.getElementById('batch-115-check').disabled = !anyChecked;
+    document.getElementById('batch-115-check').disabled = !anyNeedCheck;
 }
 
 function handleCheckboxChange(checkbox) {
@@ -536,6 +570,20 @@ function batch115Download() {
             if (res.success) {
                 success++;
                 results.push({ ok: true, name });
+                const date = tr.dataset.date || '';
+                const rawName = tr.dataset.name ? decodeURIComponent(tr.dataset.name) : '';
+                if (date && rawName) {
+                    fetch(`${basePath}/tool/api.php?action=update_game`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            date,
+                            old_name: rawName,
+                            new_submitted_115: 1,
+                            new_submitted_pick_code: res.pick_code || '',
+                        }),
+                    }).catch(() => {});
+                }
             } else {
                 fail++;
                 results.push({ ok: false, name, reason: res.message || '未知错误' });
@@ -782,6 +830,7 @@ document.getElementById('data-115-logout-btn').addEventListener('click', () => {
 document.querySelector('#gamesTable tbody').addEventListener('click', (e) => {
     const btn = e.target.closest('.btn-115-submit');
     if (!btn) return;
+    const tr = btn.closest('tr');
     const magnet = decodeURIComponent(btn.dataset.magnet || '');
     const year = btn.dataset.year || '';
     if (!magnet) return;
@@ -795,6 +844,24 @@ document.querySelector('#gamesTable tbody').addEventListener('click', (e) => {
         body: JSON.stringify({magnet, dir: savePath}),
     }).then(r => r.json()).then(res => {
         if (res.success) {
+            const date = tr ? (tr.dataset.date || '') : '';
+            const rawName = tr && tr.dataset.name ? decodeURIComponent(tr.dataset.name) : '';
+            if (date && rawName) {
+                fetch(`${basePath}/tool/api.php?action=update_game`, {
+                    method: 'POST',
+                    headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({
+                        date,
+                        old_name: rawName,
+                        new_submitted_115: 1,
+                        new_submitted_pick_code: res.pick_code || '',
+                    }),
+                }).then(() => {
+                    loadPage(currentPage);
+                }).catch(() => {
+                    loadPage(currentPage);
+                });
+            }
             btn.className = 'btn btn-success btn-sm disabled';
             btn.textContent = '✓已提交';
             setTimeout(() => { btn.disabled = false; btn.className = 'btn btn-success btn-sm btn-115-submit'; btn.textContent = origText; }, 3000);
@@ -828,6 +895,11 @@ function openCheckModal(magnet, name, year, date) {
     document.getElementById('modal-game-name').textContent = name || '-';
     document.getElementById('modal-magnet').value = magnet;
     document.getElementById('modal-save-path').value = `/GAL/GAL-${year}`;
+    const debugLink = document.getElementById('modal-debug-link');
+    if (debugLink) {
+        const dir = `/GAL/GAL-${year}`;
+        debugLink.href = `${basePath}/tool/check_debug.php?magnet=${encodeURIComponent(magnet)}&dir=${encodeURIComponent(dir)}`;
+    }
     document.getElementById('modal-result').textContent = '';
     document.getElementById('modal-check-btn').disabled = false;
     document.getElementById('modal-submit-btn').disabled = false;
@@ -906,7 +978,12 @@ document.getElementById('modal-submit-btn').addEventListener('click', function()
                 fetch(`${basePath}/tool/api.php?action=update_game`, {
                     method: 'POST',
                     headers: {'Content-Type':'application/json'},
-                    body: JSON.stringify({date, old_name: name, new_downloaded: 1}),
+                    body: JSON.stringify({
+                        date,
+                        old_name: name,
+                        new_submitted_115: 1,
+                        new_submitted_pick_code: res.pick_code || '',
+                    }),
                 }).then(() => {
                     bootstrap.Modal.getInstance(document.getElementById('checkModal')).hide();
                     loadPage(currentPage);

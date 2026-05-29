@@ -14,6 +14,7 @@
             <div class="navbar-nav">
                 <a class="nav-link active" href="<?= $base ?>/index.php">首页</a>
                 <a class="nav-link" href="<?= $base ?>/tool/data.php">数据展示</a>
+                <a class="nav-link" href="<?= $base ?>/calendar.php">年历</a>
             </div>
         </div>
     </nav>

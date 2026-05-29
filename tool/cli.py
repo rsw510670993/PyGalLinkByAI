@@ -60,6 +60,76 @@ def cmd_years(args):
     years = tool.get_years_list()
     _print({"years": years})
 
+
+def cmd_calendar(args):
+    import sqlite3
+    from datetime import datetime
+    import tool.core
+
+    paths = runtime_paths()
+    base_year = int(args.year) if getattr(args, "year", None) else datetime.now().year
+    start_year = base_year - 2
+    end_year = base_year
+
+    conn = sqlite3.connect(tool.core.get_db_path())
+    tool.core.ensure_getchu_schema(conn)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT
+            substr(date, 1, 4) as year,
+            CAST(substr(date, 6, 2) AS INTEGER) as month,
+            COUNT(*) as total,
+            SUM(CASE WHEN link IS NOT NULL AND link != '' THEN 1 ELSE 0 END) as magnet_total,
+            SUM(CASE WHEN link IS NOT NULL AND link != '' AND COALESCE(downloaded, 0) = 1 THEN 1 ELSE 0 END) as magnet_downloaded,
+            SUM(CASE WHEN link IS NOT NULL AND link != '' AND COALESCE(submitted_115, 0) = 1 THEN 1 ELSE 0 END) as magnet_submitted
+        FROM getchu_games
+        WHERE CAST(substr(date, 1, 4) AS INTEGER) BETWEEN ? AND ?
+        GROUP BY year, month
+        ORDER BY year DESC, month DESC
+        """,
+        (int(start_year), int(end_year)),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    stats = {}
+    for y, m, total, magnet_total, magnet_downloaded, magnet_submitted in rows:
+        yy = int(y)
+        mm = int(m)
+        total = int(total or 0)
+        magnet_total = int(magnet_total or 0)
+        magnet_downloaded = int(magnet_downloaded or 0)
+        magnet_submitted = int(magnet_submitted or 0)
+        stats[(yy, mm)] = {
+            "has_data": total > 0,
+            "total": total,
+            "magnet_total": magnet_total,
+            "magnet_downloaded": magnet_downloaded,
+            "magnet_submitted": magnet_submitted,
+            "all_magnet_downloaded": bool(magnet_total > 0 and magnet_total == magnet_downloaded),
+            "all_magnet_submitted": bool(magnet_total > 0 and magnet_total == magnet_submitted),
+        }
+
+    years = []
+    for y in range(end_year, start_year - 1, -1):
+        months = []
+        for m in range(1, 13):
+            st = stats.get((y, m)) or {
+                "has_data": False,
+                "total": 0,
+                "magnet_total": 0,
+                "magnet_downloaded": 0,
+                "magnet_submitted": 0,
+                "all_magnet_downloaded": False,
+                "all_magnet_submitted": False,
+            }
+            months.append({"month": m, **st})
+        years.append({"year": y, "months": months})
+
+    _print({"base_year": base_year, "start_year": start_year, "end_year": end_year, "years": years})
+
+
 def cmd_latest_month(args):
     games = tool.get_games_data()
     if not games:
@@ -86,6 +156,17 @@ def cmd_games(args):
     if month:
         all_games = [g for g in all_games if g.month == month]
 
+    month_stats = None
+    if year and month:
+        magnet_games = [g for g in all_games if getattr(g, "link", None)]
+        magnet_total = len(magnet_games)
+        magnet_downloaded = sum(1 for g in magnet_games if int(getattr(g, "downloaded", 0) or 0) == 1)
+        month_stats = {
+            "magnet_total": magnet_total,
+            "magnet_downloaded": magnet_downloaded,
+            "all_magnet_downloaded": bool(magnet_total > 0 and magnet_total == magnet_downloaded),
+        }
+
     total = len(all_games)
     start = (page - 1) * per_page
     end = start + per_page
@@ -103,12 +184,14 @@ def cmd_games(args):
                     "nyaa_name": g.nyaa_name,
                     "comment": g.comment,
                     "downloaded": g.downloaded,
+                    "submitted_115": getattr(g, "submitted_115", 0),
                 }
                 for g in games_data
             ],
             "current_page": page,
             "per_page": per_page,
             "total": total,
+            "month_stats": month_stats,
         }
     )
 
@@ -338,7 +421,7 @@ def cmd_115_check(args):
         from tool.p115_client import check_magnet_exists
         magnet = args.magnet
         save_path = args.dir or ""
-        _print(check_magnet_exists(magnet, save_path))
+        _print(check_magnet_exists(magnet, save_path, debug=bool(getattr(args, "debug", False))))
     except Exception as e:
         _print({"status": "error", "message": f"115模块加载失败: {e}"})
 
@@ -509,6 +592,10 @@ def cmd_update_game(args):
         kwargs["new_downloaded"] = args.new_downloaded
     if args.new_nyaa_name is not None:
         kwargs["new_nyaa_name"] = args.new_nyaa_name
+    if getattr(args, "new_submitted_115", None) is not None:
+        kwargs["new_submitted_115"] = args.new_submitted_115
+    if getattr(args, "new_submitted_pick_code", None) is not None:
+        kwargs["new_submitted_pick_code"] = args.new_submitted_pick_code
     ok = tool.core.update_game_record(**kwargs)
     _print({"success": ok, "message": "更新成功" if ok else "未找到匹配记录"})
 
@@ -544,15 +631,15 @@ def cmd_115_check_all_worker(args):
     conn = sqlite3.connect(tool.core.get_db_path())
     tool.core.ensure_getchu_schema(conn)
     cursor = conn.cursor()
+    base_sql = "SELECT date, name, link FROM getchu_games WHERE link IS NOT NULL AND link != '' AND COALESCE(downloaded, 0) = 0"
+    sql_params = []
     if args.year and args.month:
-        cursor.execute(
-            "SELECT date, name, link FROM getchu_games WHERE substr(date, 1, 4) = ? AND CAST(substr(date, 6) AS INTEGER) = ? AND link IS NOT NULL AND link != ''",
-            (str(args.year), int(args.month)),
-        )
-    else:
-        cursor.execute(
-            "SELECT date, name, link FROM getchu_games WHERE link IS NOT NULL AND link != ''"
-        )
+        base_sql += " AND substr(date, 1, 4) = ? AND CAST(substr(date, 6) AS INTEGER) = ?"
+        sql_params = [str(args.year), int(args.month)]
+    elif args.year:
+        base_sql += " AND substr(date, 1, 4) = ?"
+        sql_params = [str(args.year)]
+    cursor.execute(base_sql, sql_params)
     rows = cursor.fetchall()
     conn.close()
 
@@ -605,12 +692,238 @@ def cmd_115_check_all_worker(args):
     })
 
 
+def _config_int(config, key, default):
+    v = config.get(key)
+    if v is None or v == "":
+        return default
+    try:
+        return int(v)
+    except Exception:
+        return default
+
+
+def _in_idle_window(config):
+    from datetime import datetime
+
+    tz_name = config.get("idle_timezone") or "Asia/Tokyo"
+    start_hour = _config_int(config, "idle_start_hour", 0)
+    end_hour = _config_int(config, "idle_end_hour", 9)
+    now = None
+    try:
+        from zoneinfo import ZoneInfo
+
+        now = datetime.now(ZoneInfo(tz_name))
+    except Exception:
+        now = datetime.now()
+        tz_name = "local"
+
+    ok = start_hour <= int(now.hour) < end_hour
+    return ok, now, tz_name, start_hour, end_hour
+
+
+def _is_running_status(status):
+    pid = status.get("pid")
+    if not status.get("running") or not pid:
+        return False
+    try:
+        return pid_is_running(int(pid))
+    except Exception:
+        return False
+
+
+def _check_year_downloaded(year):
+    import sqlite3
+    import tool.core
+
+    conn = sqlite3.connect(tool.core.get_db_path())
+    tool.core.ensure_getchu_schema(conn)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT date, name, link FROM getchu_games WHERE substr(date, 1, 4) = ? AND link IS NOT NULL AND link != '' AND COALESCE(downloaded, 0) = 0",
+        (str(year),),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    total = len(rows)
+    checked = 0
+    found_downloaded = 0
+    errors = []
+    for date, name, link in rows:
+        checked += 1
+        try:
+            result, err = _check_magnet_exists_with_timeout(link, 60)
+            if err:
+                errors.append(f"{date}/{name}: {err}")
+                continue
+            if isinstance(result, dict) and result.get("exists"):
+                tool.core.set_downloaded_status(date, name, 1, result.get("infohash_hex"))
+                found_downloaded += 1
+        except Exception as e:
+            errors.append(f"{date}/{name}: {e}")
+    return {
+        "success": True,
+        "total": total,
+        "checked": checked,
+        "found_downloaded": found_downloaded,
+        "errors": errors[:10],
+    }
+
+
+def cmd_auto_idle_run(args):
+    from datetime import datetime
+
+    paths = runtime_paths()
+    config = paths["config"]
+
+    ok, now, tz_name, start_hour, end_hour = _in_idle_window(config)
+    if not ok and not getattr(args, "force", False):
+        _print(
+            {
+                "skipped": True,
+                "reason": "not_idle_time",
+                "timezone": tz_name,
+                "idle_start_hour": start_hour,
+                "idle_end_hour": end_hour,
+                "now": now.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        )
+        return
+
+    spider_status = read_json(paths["spider_status_path"], _spider_status_default())
+    download_status = read_json(paths["download_status_path"], _download_status_default())
+    check_all_status = read_json(paths["check_all_status_path"], _check_all_status_default())
+    if _is_running_status(spider_status) or _is_running_status(download_status) or _is_running_status(check_all_status):
+        _print({"skipped": True, "reason": "busy"})
+        return
+
+    idle_status_path = os.path.join(paths["status_dir"], "idle_run_status.json")
+    idle_status = read_json(idle_status_path, {"last_run_week": None, "last_run_at": None})
+    try:
+        iso = now.isocalendar()
+        week_key = f"{int(iso.year)}-W{int(iso.week):02d}"
+    except Exception:
+        week_key = None
+    if week_key and idle_status.get("last_run_week") == week_key and not getattr(args, "force", False):
+        _print(
+            {
+                "skipped": True,
+                "reason": "already_ran_this_week",
+                "timezone": tz_name,
+                "now": now.strftime("%Y-%m-%d %H:%M:%S"),
+                "week": week_key,
+                "last_run_at": idle_status.get("last_run_at"),
+            }
+        )
+        return
+
+    year = int(getattr(args, "year", None) or now.year)
+
+    # 重新获取当前时间用于月份范围计算，避免与闲时窗口的 now 混淆
+    try:
+        from zoneinfo import ZoneInfo
+        _now = datetime.now(ZoneInfo(tz_name))
+    except Exception:
+        _now = datetime.now()
+
+    default_end_month = _now.month - 1
+    current_month = int(getattr(args, "end_month", None) or default_end_month)
+    start_month = int(getattr(args, "start_month", None) or 1)
+    if start_month < 1:
+        start_month = 1
+    if current_month > 12:
+        current_month = 12
+    if current_month < 1:
+        _print(
+            {
+                "skipped": True,
+                "reason": "no_months_to_process",
+                "timezone": tz_name,
+                "now": now.strftime("%Y-%m-%d %H:%M:%S"),
+                "year": year,
+                "start_month": start_month,
+                "end_month": current_month,
+            }
+        )
+        return
+    if start_month > current_month:
+        start_month = current_month
+
+    getchu_ok = False
+    try:
+        getchu_ok = bool(tool.get_all_getchu_games(year, year, start_month, current_month))
+    except Exception:
+        getchu_ok = False
+
+    download_results = []
+    download_ok_all = True
+    for m in range(start_month, current_month + 1):
+        try:
+            ok2 = bool(tool.download_games_by_month(year, m))
+            download_ok_all = download_ok_all and ok2
+            download_results.append({"month": m, "success": ok2})
+        except Exception as e:
+            download_ok_all = False
+            download_results.append({"month": m, "success": False, "error": str(e)})
+
+    login = {"logged_in": False, "user": None, "reason": "not_checked"}
+    check_res = None
+    try:
+        from tool.p115_client import get_login_status
+
+        login = get_login_status()
+    except Exception as e:
+        login = {"logged_in": False, "user": None, "reason": str(e)}
+
+    if login.get("logged_in") is True:
+        try:
+            check_res = _check_year_downloaded(year)
+        except Exception as e:
+            check_res = {"success": False, "message": str(e)}
+
+    if week_key:
+        try:
+            os.makedirs(paths["status_dir"], exist_ok=True)
+            write_json_atomic(
+                idle_status_path,
+                {
+                    "last_run_week": week_key,
+                    "last_run_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+                    "year": year,
+                    "start_month": start_month,
+                    "end_month": current_month,
+                    "p115_logged_in": bool(login.get("logged_in") is True),
+                },
+            )
+        except Exception:
+            pass
+
+    _print(
+        {
+            "success": True,
+            "timezone": tz_name,
+            "now": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "year": year,
+            "start_month": start_month,
+            "end_month": current_month,
+            "getchu": {"success": getchu_ok},
+            "download_links": {"success": download_ok_all, "months": download_results},
+            "p115_login": login,
+            "p115_check": check_res,
+        }
+    )
+
+
 def build_parser():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_years = sub.add_parser("years")
     p_years.set_defaults(func=cmd_years)
+
+    p_calendar = sub.add_parser("calendar")
+    p_calendar.add_argument("--year", type=int)
+    p_calendar.set_defaults(func=cmd_calendar)
 
     p_latest = sub.add_parser("latest_month")
     p_latest.set_defaults(func=cmd_latest_month)
@@ -675,6 +988,7 @@ def build_parser():
     p_115_check = _115_sub.add_parser("check")
     p_115_check.add_argument("--magnet", type=str, required=True)
     p_115_check.add_argument("--dir", type=str, default="")
+    p_115_check.add_argument("--debug", action="store_true")
     p_115_check.set_defaults(func=cmd_115_check)
 
     p_115_submit = _115_sub.add_parser("submit")
@@ -710,12 +1024,24 @@ def build_parser():
     p_update.add_argument("--new-link", type=str)
     p_update.add_argument("--new-downloaded", type=int, choices=[0, 1])
     p_update.add_argument("--new-nyaa-name", type=str)
+    p_update.add_argument("--new-submitted-115", type=int, choices=[0, 1], dest="new_submitted_115")
+    p_update.add_argument("--new-submitted-pick-code", type=str, dest="new_submitted_pick_code")
     p_update.set_defaults(func=cmd_update_game)
 
     p_delete = sub.add_parser("delete_game")
     p_delete.add_argument("--date", type=str, required=True)
     p_delete.add_argument("--name", type=str, required=True)
     p_delete.set_defaults(func=cmd_delete_game)
+
+    p_auto = sub.add_parser("auto")
+    auto_sub = p_auto.add_subparsers(dest="action", required=True)
+
+    p_idle = auto_sub.add_parser("idle_run")
+    p_idle.add_argument("--force", action="store_true")
+    p_idle.add_argument("--year", type=int)
+    p_idle.add_argument("--start-month", type=int, dest="start_month")
+    p_idle.add_argument("--end-month", type=int, dest="end_month")
+    p_idle.set_defaults(func=cmd_auto_idle_run)
 
     return parser
 

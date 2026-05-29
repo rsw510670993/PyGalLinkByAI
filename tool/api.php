@@ -93,6 +93,14 @@ if ($action === 'games') {
     json_response($data);
 }
 
+if ($action === 'calendar') {
+    $year = as_int($_GET['year'] ?? null, null);
+    $args = ['calendar'];
+    if ($year !== null) { $args[] = '--year'; $args[] = strval($year); }
+    [$code, $data] = run_cli($args);
+    json_response($data);
+}
+
 if ($action === 'get_status') {
     [$code, $data] = run_cli(['spider', 'status']);
     json_response($data);
@@ -170,7 +178,10 @@ if ($action === '115_check') {
     $body = read_json_body();
     $magnet = $body['magnet'] ?? '';
     $dir = $body['dir'] ?? '';
-    [$code, $data] = run_cli(['115', 'check', '--magnet', $magnet, '--dir', $dir]);
+    $debug = $body['debug'] ?? null;
+    $args = ['115', 'check', '--magnet', $magnet, '--dir', $dir];
+    if ($debug) { $args[] = '--debug'; }
+    [$code, $data] = run_cli($args);
     json_response($data);
 }
 
@@ -213,6 +224,8 @@ if ($action === 'update_game') {
     $new_link = $body['new_link'] ?? null;
     $new_downloaded = $body['new_downloaded'] ?? null;
     $new_nyaa_name = $body['new_nyaa_name'] ?? null;
+    $new_submitted_115 = $body['new_submitted_115'] ?? null;
+    $new_submitted_pick_code = $body['new_submitted_pick_code'] ?? null;
     if (!$date || !$old_name) {
         json_response(['success' => false, 'message' => '缺少必填字段 date/old_name']);
     }
@@ -223,6 +236,8 @@ if ($action === 'update_game') {
     if ($new_link !== null) { $args[] = '--new-link'; $args[] = $new_link; }
     if ($new_downloaded !== null) { $args[] = '--new-downloaded'; $args[] = strval($new_downloaded); }
     if ($new_nyaa_name !== null) { $args[] = '--new-nyaa-name'; $args[] = $new_nyaa_name; }
+    if ($new_submitted_115 !== null) { $args[] = '--new-submitted-115'; $args[] = strval($new_submitted_115); }
+    if ($new_submitted_pick_code !== null) { $args[] = '--new-submitted-pick-code'; $args[] = strval($new_submitted_pick_code); }
     [$code, $data] = run_cli($args);
     json_response($data);
 }

@@ -387,17 +387,100 @@ def _normalize_for_comparison(name):
     if first_bracket > 0:
         name = name[first_bracket:]
     name = re.split(r'\s*\+\s*', name)[0]
+    name = re.sub(r'\]\s+\[', '][', name)
     name = name.lower()
-    name = name.replace('・', '').replace('♡', '').replace('❤', '').replace('♥', '')
-    name = name.replace('~', '').replace('～', '').replace('！', '').replace('：', '')
-    name = re.sub(r'\(\s*mdf\s*\+\s*mds\s*\)', '', name)
-    name = re.sub(r'\b(disc|disk)\s*\d+\b', '', name)
-    name = re.sub(r'\[(\d{7,})\]', '', name)
-    name = re.sub(r'\[\s*\d+(?:\.\d+)?\s*(?:kb|mb|gb|tb)\s*\]', '', name)
-    name = re.sub(r'\b(?:crack|patch|update)\b', '', name)
-    name = re.sub(r'\bmini\s*adv\b', '', name)
+    name = name.translate(str.maketrans('０１２３４５６７８９', '0123456789'))
+    for ch in '・♡❤♥~～〜！!？?：:『』「」－–—−―ｰ‐‑‒':
+        name = name.replace(ch, '')
+    for pattern in (
+        r'\(\s*mdf\s*\+\s*mds\s*\)',
+        r'\(\s*mdf\+mds\s*\)',
+        r'\b(disc|disk)\s*\d+\b',
+        r'\[(\d{7,})\]',
+        r'\[\s*\d[\d.,]*(?:\.\d+)?\s*(?:k|m|g|t)i?b\s*\]',
+        r'(?i)\bdvd\s*version\b',
+        r'(?i)\bdvd\b',
+        r'\b(?:crack|patch|update|updated)\b',
+        r'(?:パッケージ版|ダウンロード版|dl\s*版|通常版)',
+        r'\[\s*\]',
+        r'\bmini\s*adv\b',
+    ):
+        name = re.sub(pattern, '', name)
     name = re.sub(r'[\s\-_.]+', ' ', name).strip()
     return name
+
+
+_DATE_PREFIX_RE = re.compile(r'^\[(\d{6})\]')
+_DATE_BRACKET_RE = re.compile(r'^\[\d{6}\]\s*')
+
+
+def _leading_date_codes(s):
+    codes = []
+    while True:
+        m = _DATE_PREFIX_RE.match(s or "")
+        if not m:
+            break
+        codes.append(m.group(1))
+        s = (s or "")[m.end():]
+    return codes
+
+
+def _strip_leading_dates_and_tags(s):
+    s = (s or "").strip()
+    while True:
+        m = _DATE_PREFIX_RE.match(s)
+        if not m:
+            break
+        s = s[m.end():].lstrip()
+    while True:
+        if not s.startswith('['):
+            break
+        end = s.find(']')
+        if end <= 0:
+            break
+        s = s[end + 1:].lstrip()
+    return s.strip()
+
+
+def _names_match(norm_dn, norm_fname):
+    if not norm_dn or not norm_fname:
+        return False
+    if norm_dn in norm_fname or norm_fname in norm_dn:
+        return True
+    dn_compact = norm_dn.replace(" ", "")
+    fn_compact = norm_fname.replace(" ", "")
+    if dn_compact and fn_compact and (dn_compact in fn_compact or fn_compact in dn_compact):
+        return True
+    dn_codes = _leading_date_codes(norm_dn)
+    fn_codes = _leading_date_codes(norm_fname)
+    common = None
+    for c in dn_codes:
+        if c in fn_codes:
+            common = c
+            break
+    if not common:
+        dn_tail = _strip_leading_dates_and_tags(norm_dn)
+        fn_tail = _strip_leading_dates_and_tags(norm_fname)
+        if dn_tail and fn_tail and (len(dn_tail) >= 8 or len(fn_tail) >= 8):
+            if dn_tail in fn_tail or fn_tail in dn_tail:
+                return True
+            dn2 = dn_tail.replace(" ", "")
+            fn2 = fn_tail.replace(" ", "")
+            if dn2 and fn2 and (dn2 in fn2 or fn2 in dn2):
+                return True
+        return False
+
+    dn_no_date = re.sub(r'^\[' + re.escape(common) + r'\]\s*', '', norm_dn, count=1)
+    fn_no_date = re.sub(r'^\[' + re.escape(common) + r'\]\s*', '', norm_fname, count=1)
+    dn_no_date = re.sub(r'^(?:\[[^\]]+\]\s*)+', '', dn_no_date).strip()
+    fn_no_date = re.sub(r'^(?:\[[^\]]+\]\s*)+', '', fn_no_date).strip()
+    if dn_no_date and fn_no_date:
+        if dn_no_date in fn_no_date or fn_no_date in dn_no_date:
+            return True
+        dn2 = dn_no_date.replace(" ", "")
+        fn2 = fn_no_date.replace(" ", "")
+        return dn2 in fn2 or fn2 in dn2
+    return False
 
 
 def _search_keyword_from_dn(dn):
@@ -416,7 +499,7 @@ def _search_keyword_from_dn(dn):
             continue
         if re.fullmatch(r'\d{7,}', v):
             continue
-        if re.fullmatch(r'\s*\d+(?:\.\d+)?\s*(?:kb|mb|gb|tb)\s*', v.lower()):
+        if re.fullmatch(r'\s*\d[\d.,]*(?:\.\d+)?\s*(?:k|m|g|t)i?b\s*', v.lower()):
             continue
         rest.append(v)
     if date_bracket and rest:
@@ -429,10 +512,64 @@ def _search_keyword_from_dn(dn):
     return name.strip()[:30]
 
 
-def check_magnet_exists(magnet, save_path):
+def _extra_keywords_from_dn(dn):
+    name = (dn or "").strip()
+    first_bracket = name.find('[')
+    if first_bracket > 0:
+        name = name[first_bracket:]
+
+    brackets = re.findall(r'\[([^\]]+)\]', name)
+    date_code = ""
+    company = ""
+    digits7 = ""
+    for raw in brackets:
+        v = raw.strip()
+        if not date_code and re.fullmatch(r'\d{6}', v):
+            date_code = v
+            continue
+        if not digits7 and re.fullmatch(r'\d{7,}', v):
+            digits7 = v
+            continue
+        if not company and v and not re.fullmatch(r'\s*\d[\d.,]*(?:\.\d+)?\s*(?:k|m|g|t)i?b\s*', v.lower()):
+            company = v
+
+    title = re.sub(r'\[[^\]]+\]', ' ', name)
+    title = re.split(r'\s*\+\s*', title)[0]
+    title = re.sub(r'\[\s*\d[\d.,]*(?:\.\d+)?\s*(?:k|m|g|t)i?b\s*\]', ' ', title, flags=re.I)
+    title = re.sub(r'(?:パッケージ版|ダウンロード版|dl\s*版|通常版)', ' ', title, flags=re.I)
+    title = re.sub(r'[\(\（].*?[\)\）]', ' ', title)
+    title = re.sub(r'[\s\-_.]+', ' ', title).strip()
+    if len(title) > 24:
+        title = title[:24].strip()
+
+    kws = []
+    if digits7:
+        kws.append(f"[{digits7}]")
+    if date_code:
+        kws.append(f"[{date_code}]")
+    if title and date_code:
+        kws.append(f"[{date_code}] {title}")
+        kws.append(f"[{date_code}]{title}")
+    if title and company:
+        kws.append(f"[{company}] {title}")
+        kws.append(f"[{company}]{title}")
+    if title:
+        kws.append(title)
+
+    uniq = []
+    for it in kws:
+        it = (it or "").strip()
+        if not it:
+            continue
+        if it not in uniq:
+            uniq.append(it)
+    return uniq
+
+
+def check_magnet_exists(magnet, save_path, debug=False):
     parsed = parse_magnet_simple(magnet)
     if not parsed.get("ok"):
-        return {
+        out = {
             "exists": False,
             "confidence": "none",
             "infohash_hex": parsed.get("infohash_hex"),
@@ -440,6 +577,9 @@ def check_magnet_exists(magnet, save_path):
             "in_offline_tasks": False,
             "message": "磁链解析失败: " + ", ".join(parsed.get("errors", [])),
         }
+        if debug:
+            out["debug"] = {"stage": "parse_magnet_simple", "parsed": parsed}
+        return out
 
     infohash_hex = parsed.get("infohash_hex")
     dn = parsed.get("dn", "")
@@ -447,6 +587,16 @@ def check_magnet_exists(magnet, save_path):
     matched_files = []
     in_offline = False
     confidence = "none"
+
+    dbg = None
+    if debug:
+        dbg = {
+            "parsed": parsed,
+            "has_cookie_file": bool(_read_cookie_string()),
+            "save_path_input": save_path,
+            "save_path_default": _get_default_save_path(),
+            "steps": [],
+        }
 
     ol = offline_list()
     if ol.get("success"):
@@ -459,38 +609,98 @@ def check_magnet_exists(magnet, save_path):
                 if magnet.lower() in task_url or (infohash_hex and infohash_hex in task_url):
                     in_offline = True
                     break
+        if dbg is not None:
+            dbg["steps"].append({"stage": "offline_list", "success": True, "tasks_len": len(tasks), "in_offline": in_offline})
+    else:
+        if dbg is not None:
+            dbg["steps"].append({"stage": "offline_list", "success": False, "message": ol.get("message")})
 
     if dn:
         actual_save_path = save_path or _get_default_save_path()
         cid = _resolve_path_to_cid(actual_save_path) if actual_save_path else 0
         keyword = _search_keyword_from_dn(dn)
+        keywords = []
+        if keyword:
+            keywords.append(keyword)
+            compact = keyword.replace("] [", "][")
+            if compact != keyword:
+                keywords.append(compact)
+            compact2 = re.sub(r'\s+', ' ', keyword).strip()
+            if compact2 and compact2 not in keywords:
+                keywords.append(compact2)
+        for it in _extra_keywords_from_dn(dn):
+            if it not in keywords:
+                keywords.append(it)
         norm_dn = _normalize_for_comparison(dn)
+        if dbg is not None:
+            dbg["dn"] = dn
+            dbg["norm_dn"] = norm_dn
+            dbg["actual_save_path"] = actual_save_path
+            dbg["cid"] = cid
+            dbg["keyword_primary"] = keyword
+            dbg["keywords"] = keywords
+
         if cid is not None:
-            files = search_files(keyword, cid)
-            for f in files:
-                fname = f.get("n", "") if isinstance(f, dict) else ""
-                norm_fname = _normalize_for_comparison(fname)
-                if norm_dn and norm_fname and (norm_dn in norm_fname or norm_fname in norm_dn):
-                    matched_files.append({
-                        "name": fname,
-                        "size": f.get("s") if isinstance(f, dict) else None,
-                        "pick_code": f.get("pc") if isinstance(f, dict) else None,
+            files = []
+            for kw in keywords:
+                files = search_files(kw, cid)
+                if dbg is not None:
+                    dbg["steps"].append({"stage": "search_files", "mode": "keyword", "query": kw, "cid": cid, "result_len": len(files)})
+                for f in files:
+                    fname = f.get("n", "") if isinstance(f, dict) else ""
+                    norm_fname = _normalize_for_comparison(fname)
+                    if _names_match(norm_dn, norm_fname):
+                        matched_files.append({
+                            "name": fname,
+                            "size": f.get("s") if isinstance(f, dict) else None,
+                            "pick_code": f.get("pc") if isinstance(f, dict) else None,
+                        })
+                if dbg is not None:
+                    dbg["steps"].append({
+                        "stage": "match_compare",
+                        "mode": "keyword",
+                        "query": kw,
+                        "matched_len": len(matched_files),
+                        "sample_files": [
+                            {"name": (it.get("n") or ""), "norm": _normalize_for_comparison(it.get("n") or "")}
+                            for it in (files[:5] if isinstance(files, list) else [])
+                            if isinstance(it, dict)
+                        ],
                     })
+                if matched_files:
+                    break
 
             if not files and not matched_files:
                 brackets = re.findall(r'\[(\d{6})\]', dn)
                 date_code = brackets[0] if brackets else ""
                 if date_code:
-                    files = search_files(date_code, cid or 0)
-                    for f in files:
-                        fname = f.get("n", "") if isinstance(f, dict) else ""
-                        norm_fname = _normalize_for_comparison(fname)
-                        if norm_dn and norm_fname and (norm_dn in norm_fname or norm_fname in norm_dn):
-                            matched_files.append({
-                                "name": fname,
-                                "size": f.get("s") if isinstance(f, dict) else None,
-                                "pick_code": f.get("pc") if isinstance(f, dict) else None,
+                    for kw in (date_code, f"[{date_code}]"):
+                        files = search_files(kw, cid or 0)
+                        if dbg is not None:
+                            dbg["steps"].append({"stage": "search_files", "mode": "date_code", "query": kw, "cid": cid or 0, "result_len": len(files)})
+                        for f in files:
+                            fname = f.get("n", "") if isinstance(f, dict) else ""
+                            norm_fname = _normalize_for_comparison(fname)
+                            if _names_match(norm_dn, norm_fname):
+                                matched_files.append({
+                                    "name": fname,
+                                    "size": f.get("s") if isinstance(f, dict) else None,
+                                    "pick_code": f.get("pc") if isinstance(f, dict) else None,
+                                })
+                        if dbg is not None:
+                            dbg["steps"].append({
+                                "stage": "match_compare",
+                                "mode": "date_code",
+                                "query": kw,
+                                "matched_len": len(matched_files),
+                                "sample_files": [
+                                    {"name": (it.get("n") or ""), "norm": _normalize_for_comparison(it.get("n") or "")}
+                                    for it in (files[:5] if isinstance(files, list) else [])
+                                    if isinstance(it, dict)
+                                ],
                             })
+                        if matched_files:
+                            break
 
             if not files and not matched_files:
                 name_no_bracket = re.split(r'\s*\+\s*', dn)[0]
@@ -500,23 +710,39 @@ def check_magnet_exists(magnet, save_path):
                 name_no_bracket = re.sub(r'\[[^\]]+\]', '', name_no_bracket).strip()
                 if len(name_no_bracket) >= 3:
                     files = search_files(name_no_bracket[:20], cid or 0)
+                    if dbg is not None:
+                        dbg["steps"].append({"stage": "search_files", "mode": "plain_name", "query": name_no_bracket[:20], "cid": cid or 0, "result_len": len(files)})
                     for f in files:
                         fname = f.get("n", "") if isinstance(f, dict) else ""
                         norm_fname = _normalize_for_comparison(fname)
-                        if norm_dn and norm_fname and (norm_dn in norm_fname or norm_fname in norm_dn):
+                        if _names_match(norm_dn, norm_fname):
                             matched_files.append({
                                 "name": fname,
                                 "size": f.get("s") if isinstance(f, dict) else None,
                                 "pick_code": f.get("pc") if isinstance(f, dict) else None,
                             })
+                    if dbg is not None:
+                        dbg["steps"].append({
+                            "stage": "match_compare",
+                            "mode": "plain_name",
+                            "query": name_no_bracket[:20],
+                            "matched_len": len(matched_files),
+                            "sample_files": [
+                                {"name": (it.get("n") or ""), "norm": _normalize_for_comparison(it.get("n") or "")}
+                                for it in (files[:5] if isinstance(files, list) else [])
+                                if isinstance(it, dict)
+                            ],
+                        })
 
         if not matched_files and not in_offline and infohash_hex:
             try:
                 broad = search_files(infohash_hex[:12], cid or 0)
+                if dbg is not None:
+                    dbg["steps"].append({"stage": "search_files", "mode": "infohash_prefix", "query": infohash_hex[:12], "cid": cid or 0, "result_len": len(broad)})
                 for f in broad:
                     fname = f.get("n", "") if isinstance(f, dict) else ""
                     norm_fname = _normalize_for_comparison(fname)
-                    if norm_dn and norm_fname and (norm_dn in norm_fname or norm_fname in norm_dn):
+                    if _names_match(norm_dn, norm_fname):
                         matched_files.append({
                             "name": fname,
                             "size": f.get("s") if isinstance(f, dict) else None,
@@ -531,11 +757,15 @@ def check_magnet_exists(magnet, save_path):
         confidence = "high"
     elif dn and cid:
         keyword = _search_keyword_from_dn(dn)
-        broad = search_files(keyword[:max(8, len(keyword)//3)], cid)
+        broad_kw = keyword[:max(8, len(keyword)//3)] if keyword else ""
+        broad_kw2 = broad_kw.replace("] [", "][") if broad_kw else ""
+        broad = search_files(broad_kw, cid) if broad_kw else []
+        if not broad and broad_kw2 and broad_kw2 != broad_kw:
+            broad = search_files(broad_kw2, cid)
         if broad:
             confidence = "low"
 
-    return {
+    out = {
         "exists": bool(matched_files) or in_offline,
         "confidence": confidence,
         "infohash_hex": infohash_hex,
@@ -543,3 +773,9 @@ def check_magnet_exists(magnet, save_path):
         "in_offline_tasks": in_offline,
         "dn": dn,
     }
+    if dbg is not None:
+        dbg["result"] = {"matched_len": len(matched_files), "in_offline": in_offline, "confidence": confidence}
+        out["debug"] = dbg
+    if dbg is not None and not dbg.get("has_cookie_file"):
+        out["message"] = "cookie文件不存在或为空，可能未登录导致搜索结果为空"
+    return out
