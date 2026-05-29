@@ -84,6 +84,57 @@
             </div>
         </div>
 
+        <div class="modal fade" id="yearDownloadModal" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-lg modal-dialog-scrollable">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">整年获取下载链接</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="d-flex align-items-center justify-content-between mb-2">
+                            <div class="fw-semibold" id="yearDownloadTitle"></div>
+                            <button type="button" class="btn btn-outline-danger btn-sm" id="yearDownloadStopBtn">停止</button>
+                        </div>
+                        <div class="d-flex justify-content-between small text-muted mb-1">
+                            <span id="yearDownloadText">准备中...</span>
+                            <span id="yearDownloadCount"></span>
+                        </div>
+                        <div class="progress mb-2" style="height: 18px;">
+                            <div class="progress-bar progress-bar-striped progress-bar-animated bg-success" id="yearDownloadBar"
+                                role="progressbar" style="width: 0%;" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="modal fade" id="yearPushModal" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-lg modal-dialog-scrollable">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">整年推送115</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="d-flex align-items-center justify-content-between mb-2">
+                            <div class="fw-semibold" id="yearPushTitle"></div>
+                            <button type="button" class="btn btn-outline-danger btn-sm" id="yearPushStopBtn">停止</button>
+                        </div>
+                        <div class="d-flex justify-content-between small text-muted mb-1">
+                            <span id="yearPushText">准备中...</span>
+                            <span id="yearPushCount"></span>
+                        </div>
+                        <div class="progress mb-2" style="height: 18px;">
+                            <div class="progress-bar progress-bar-striped progress-bar-animated bg-success" id="yearPushBar"
+                                role="progressbar" style="width: 0%;" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
+                        </div>
+                        <div id="yearPushErrors" class="small text-muted" style="white-space:pre-wrap;word-break:break-all;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div class="card">
             <div class="card-header fw-semibold">月度概览</div>
             <div class="table-responsive">
@@ -143,7 +194,7 @@ function renderCalendar(res) {
     body.innerHTML = res.years.map(y => {
         const first = y.months.slice(0, 6).map(m => `<td class="${cellClass(m)}">${cellHtml(y.year, m)}</td>`).join('');
         const second = y.months.slice(6, 12).map(m => `<td class="${cellClass(m)}">${cellHtml(y.year, m)}</td>`).join('');
-        return `<tr><th class="text-center" rowspan="2"><div class="fw-semibold">${y.year}</div><button type="button" class="btn btn-outline-info btn-sm mt-2 year-check-btn" data-year="${y.year}">115整年校对</button></th>${first}</tr><tr>${second}</tr>`;
+        return `<tr><th class="text-center align-middle" rowspan="2"><div class="d-flex align-items-center justify-content-center gap-1"><span class="fw-semibold">${y.year}</span><div class="btn-group btn-group-sm" role="group"><button type="button" class="btn btn-outline-info year-check-btn" data-year="${y.year}" title="115校对">校</button><button type="button" class="btn btn-outline-success year-download-btn" data-year="${y.year}" title="获取链接">链</button><button type="button" class="btn btn-outline-primary year-push-btn" data-year="${y.year}" title="推送115">推</button></div></div></th>${first}</tr><tr>${second}</tr>`;
     }).join('');
 }
 
@@ -178,6 +229,8 @@ function initYears() {
 
 let yearCheckIntervalId = null;
 let yearCheckYear = null;
+let yearDownloadIntervalId = null;
+let yearPushStopRequested = false;
 
 function resetYearCheckUI() {
     document.getElementById('yearCheckText').textContent = '准备中...';
@@ -255,6 +308,198 @@ function startYearCheck(year) {
     });
 }
 
+function resetYearDownloadUI() {
+    document.getElementById('yearDownloadText').textContent = '准备中...';
+    document.getElementById('yearDownloadCount').textContent = '';
+    const bar = document.getElementById('yearDownloadBar');
+    bar.style.width = '0%';
+    bar.setAttribute('aria-valuenow', '0');
+}
+
+function openYearDownloadModal(year) {
+    document.getElementById('yearDownloadTitle').textContent = `年份：${year}`;
+    resetYearDownloadUI();
+    new bootstrap.Modal(document.getElementById('yearDownloadModal')).show();
+}
+
+function pollYearDownloadStatus() {
+    fetch(`${basePath}/tool/api.php?action=download_status`)
+        .then(r => r.json())
+        .then(status => {
+            const bar = document.getElementById('yearDownloadBar');
+            if (status.running) {
+                const progress = status.total_months > 0 ? Math.round(status.finished_months / status.total_months * 100) : 0;
+                document.getElementById('yearDownloadText').textContent = `获取中... (${status.finished_months}/${status.total_months})`;
+                bar.style.width = `${progress}%`;
+                bar.setAttribute('aria-valuenow', `${progress}`);
+                return;
+            }
+
+            if (yearDownloadIntervalId) {
+                clearInterval(yearDownloadIntervalId);
+                yearDownloadIntervalId = null;
+            }
+
+            bootstrap.Modal.getInstance(document.getElementById('yearDownloadModal'))?.hide();
+            alert(status && status.message === 'success' ? '完成' : ('失败: ' + (status && status.message ? status.message : 'unknown')));
+
+            const sel = document.getElementById('calendar-year');
+            loadCalendar(sel.value);
+        })
+        .catch(() => {});
+}
+
+function startYearDownload(year) {
+    openYearDownloadModal(year);
+    if (yearDownloadIntervalId) {
+        clearInterval(yearDownloadIntervalId);
+        yearDownloadIntervalId = null;
+    }
+    fetch(`${basePath}/tool/api.php?action=start_download`, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ year: parseInt(year, 10), month: 0 }),
+    }).then(r => r.json()).then(res => {
+        if (res.status === 'error') {
+            alert('启动失败: ' + (res.message || '未知错误'));
+            bootstrap.Modal.getInstance(document.getElementById('yearDownloadModal'))?.hide();
+            return;
+        }
+        yearDownloadIntervalId = setInterval(pollYearDownloadStatus, 3000);
+    }).catch(err => {
+        alert('启动失败: ' + err.message);
+        bootstrap.Modal.getInstance(document.getElementById('yearDownloadModal'))?.hide();
+    });
+}
+
+function resetYearPushUI() {
+    document.getElementById('yearPushText').textContent = '准备中...';
+    document.getElementById('yearPushCount').textContent = '';
+    document.getElementById('yearPushErrors').textContent = '';
+    const bar = document.getElementById('yearPushBar');
+    bar.style.width = '0%';
+    bar.setAttribute('aria-valuenow', '0');
+}
+
+function openYearPushModal(year) {
+    document.getElementById('yearPushTitle').textContent = `年份：${year}`;
+    resetYearPushUI();
+    new bootstrap.Modal(document.getElementById('yearPushModal')).show();
+}
+
+function updateYearPushProgress(done, total, ok, fail) {
+    const bar = document.getElementById('yearPushBar');
+    const progress = total > 0 ? Math.round(done / total * 100) : 0;
+    bar.style.width = `${progress}%`;
+    bar.setAttribute('aria-valuenow', `${progress}`);
+    document.getElementById('yearPushCount').textContent = `${done}/${total} 成功${ok} 失败${fail}`;
+}
+
+async function startYearPush(year) {
+    openYearPushModal(year);
+    yearPushStopRequested = false;
+
+    let login = null;
+    try {
+        login = await fetch(`${basePath}/tool/api.php?action=115_login_status`).then(r => r.json());
+    } catch (e) {
+        login = null;
+    }
+    if (!login || !login.logged_in) {
+        bootstrap.Modal.getInstance(document.getElementById('yearPushModal'))?.hide();
+        alert('未登录115');
+        return;
+    }
+
+    const perPage = 50;
+    let page = 1;
+    let total = 0;
+    let done = 0;
+    let ok = 0;
+    let fail = 0;
+    const errors = [];
+    document.getElementById('yearPushText').textContent = '统计中...';
+
+    while (true) {
+        if (yearPushStopRequested) break;
+        let res = null;
+        try {
+            res = await fetch(`${basePath}/tool/api.php?action=games&page=${page}&year=${encodeURIComponent(year)}`).then(r => r.json());
+        } catch (e) {
+            errors.push(`page ${page}: ${e.message || e}`);
+            break;
+        }
+        if (!res || res.status === 'error') {
+            errors.push(`page ${page}: ${(res && res.message) ? res.message : 'error'}`);
+            break;
+        }
+        if (page === 1) {
+            total = parseInt(res.total || 0, 10) || 0;
+        }
+
+        const list = Array.isArray(res.data) ? res.data : [];
+        if (list.length === 0) break;
+
+        for (const g of list) {
+            if (yearPushStopRequested) break;
+            const magnet = g.download_url || '';
+            const submitted = parseInt(g.submitted_115 || 0, 10) === 1;
+            if (!magnet || submitted) {
+                done += 1;
+                updateYearPushProgress(done, total, ok, fail);
+                continue;
+            }
+            document.getElementById('yearPushText').textContent = g.name || '提交中...';
+            try {
+                const r = await fetch(`${basePath}/tool/api.php?action=115_submit`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ magnet, dir: `/GAL/GAL-${year}` }),
+                }).then(rr => rr.json());
+                if (r && r.success) {
+                    ok += 1;
+                    try {
+                        await fetch(`${basePath}/tool/api.php?action=update_game`, {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                date: `${year}-${String(g.month).padStart(2, '0')}`,
+                                old_name: g.name,
+                                new_submitted_115: 1,
+                                new_submitted_pick_code: r.pick_code || '',
+                            }),
+                        });
+                    } catch (e) {}
+                } else {
+                    fail += 1;
+                    errors.push(`${g.name}: ${(r && r.message) ? r.message : 'failed'}`);
+                }
+            } catch (e) {
+                fail += 1;
+                errors.push(`${g.name}: ${e.message || e}`);
+            }
+            done += 1;
+            updateYearPushProgress(done, total, ok, fail);
+            if (errors.length > 0) {
+                document.getElementById('yearPushErrors').textContent = errors.slice(0, 10).join('\n');
+            }
+        }
+
+        if (yearPushStopRequested) break;
+        if (list.length < perPage) break;
+        page += 1;
+    }
+
+    bootstrap.Modal.getInstance(document.getElementById('yearPushModal'))?.hide();
+    let msg = yearPushStopRequested ? '已停止' : '完成';
+    msg += `\n成功 ${ok} 失败 ${fail}`;
+    if (errors.length > 0) msg += `\n\n错误（前10条）:\n` + errors.slice(0, 10).join('\n');
+    alert(msg);
+
+    const sel = document.getElementById('calendar-year');
+    loadCalendar(sel.value);
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     initYears();
     document.getElementById('calendar-year').addEventListener('change', (e) => {
@@ -262,12 +507,29 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     document.getElementById('calendar-body').addEventListener('click', (e) => {
-        const btn = e.target.closest('.year-check-btn');
-        if (!btn) return;
-        const year = btn.dataset.year;
-        if (!year) return;
-        if (!confirm(`将对 ${year} 年所有有磁链且未标记已下载的记录进行115校对，是否继续？`)) return;
-        startYearCheck(year);
+        const btn1 = e.target.closest('.year-check-btn');
+        if (btn1) {
+            const year = btn1.dataset.year;
+            if (!year) return;
+            if (!confirm(`${year}：115校对？`)) return;
+            startYearCheck(year);
+            return;
+        }
+        const btn2 = e.target.closest('.year-download-btn');
+        if (btn2) {
+            const year = btn2.dataset.year;
+            if (!year) return;
+            if (!confirm(`${year}：获取链接？`)) return;
+            startYearDownload(year);
+            return;
+        }
+        const btn3 = e.target.closest('.year-push-btn');
+        if (btn3) {
+            const year = btn3.dataset.year;
+            if (!year) return;
+            if (!confirm(`${year}：推送115？`)) return;
+            startYearPush(year);
+        }
     });
 
     document.getElementById('yearCheckStopBtn').addEventListener('click', () => {
@@ -277,6 +539,20 @@ document.addEventListener('DOMContentLoaded', () => {
             yearCheckIntervalId = null;
         }
         bootstrap.Modal.getInstance(document.getElementById('yearCheckModal'))?.hide();
+    });
+
+    document.getElementById('yearDownloadStopBtn').addEventListener('click', () => {
+        fetch(`${basePath}/tool/api.php?action=stop_download`, { method: 'POST' }).catch(() => {});
+        if (yearDownloadIntervalId) {
+            clearInterval(yearDownloadIntervalId);
+            yearDownloadIntervalId = null;
+        }
+        bootstrap.Modal.getInstance(document.getElementById('yearDownloadModal'))?.hide();
+    });
+
+    document.getElementById('yearPushStopBtn').addEventListener('click', () => {
+        yearPushStopRequested = true;
+        bootstrap.Modal.getInstance(document.getElementById('yearPushModal'))?.hide();
     });
 });
     </script>
