@@ -2,7 +2,6 @@ import argparse
 import logging
 import os
 import signal
-import sqlite3
 import sys
 import traceback
 
@@ -64,7 +63,7 @@ def main():
         total_months = (end_year - start_year + 1) * 12
         done_months = 0
 
-        conn = sqlite3.connect(paths["db_path"])
+        conn = tool.open_db(db_path=paths["db_path"])
         try:
             tool.ensure_getchu_schema(conn)
             cursor = conn.cursor()

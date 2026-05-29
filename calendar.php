@@ -26,6 +26,12 @@
             background-color: rgba(13, 110, 253, 0.06);
             border-radius: 4px;
         }
+        .top-task-slot .progress {
+            height: 10px;
+        }
+        .top-task-slot .task-title {
+            font-size: 12px;
+        }
     </style>
 </head>
 <body style="padding-top: 56px;">
@@ -52,6 +58,41 @@
                     <div class="col-12 col-lg-6">
                         <div class="small text-muted">
                             颜色说明：绿色=全部已下载，蓝色=全部已提交115，黄色=已采集但未全完成，灰色=无数据
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card mb-3" id="topTasksCard" style="display:none;">
+            <div class="card-body py-2">
+                <div class="row g-2">
+                    <div class="col-12 col-lg-6 top-task-slot" id="topDownloadSlot" style="display:none;">
+                        <div class="d-flex align-items-center justify-content-between">
+                            <div class="task-title fw-semibold">链接：<span id="topDownloadYear"></span></div>
+                            <button type="button" class="btn btn-outline-danger btn-sm" id="topDownloadStopBtn">停止</button>
+                        </div>
+                        <div class="d-flex justify-content-between small text-muted mb-1">
+                            <span id="topDownloadText"></span>
+                            <span id="topDownloadCount"></span>
+                        </div>
+                        <div class="progress">
+                            <div class="progress-bar progress-bar-striped progress-bar-animated bg-success" id="topDownloadBar"
+                                role="progressbar" style="width: 0%;" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
+                        </div>
+                    </div>
+                    <div class="col-12 col-lg-6 top-task-slot" id="topCheckSlot" style="display:none;">
+                        <div class="d-flex align-items-center justify-content-between">
+                            <div class="task-title fw-semibold">校对：<span id="topCheckYear"></span></div>
+                            <button type="button" class="btn btn-outline-danger btn-sm" id="topCheckStopBtn">停止</button>
+                        </div>
+                        <div class="d-flex justify-content-between small text-muted mb-1">
+                            <span id="topCheckText"></span>
+                            <span id="topCheckCount"></span>
+                        </div>
+                        <div class="progress">
+                            <div class="progress-bar progress-bar-striped progress-bar-animated bg-info" id="topCheckBar"
+                                role="progressbar" style="width: 0%;" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
                         </div>
                     </div>
                 </div>
@@ -196,6 +237,7 @@ function renderCalendar(res) {
         const second = y.months.slice(6, 12).map(m => `<td class="${cellClass(m)}">${cellHtml(y.year, m)}</td>`).join('');
         return `<tr><th class="text-center align-middle" rowspan="2"><div class="fw-semibold">${y.year}</div><div class="d-grid gap-1 mt-2"><button type="button" class="btn btn-outline-success btn-sm year-download-btn" data-year="${y.year}">链接</button><button type="button" class="btn btn-outline-info btn-sm year-check-btn" data-year="${y.year}">校对</button><button type="button" class="btn btn-outline-primary btn-sm year-push-btn" data-year="${y.year}">下载</button></div></th>${first}</tr><tr>${second}</tr>`;
     }).join('');
+    updateYearActionButtons();
 }
 
 function loadCalendar(year) {
@@ -231,6 +273,74 @@ let yearCheckIntervalId = null;
 let yearCheckYear = null;
 let yearDownloadIntervalId = null;
 let yearPushStopRequested = false;
+let lastDownloadStatus = null;
+let lastCheckStatus = null;
+let topTasksIntervalId = null;
+
+function runningBackendTasksCount() {
+    const a = lastDownloadStatus && lastDownloadStatus.running ? 1 : 0;
+    const b = lastCheckStatus && lastCheckStatus.running ? 1 : 0;
+    return a + b;
+}
+
+function updateYearActionButtons() {
+    const downloadRunning = lastDownloadStatus && lastDownloadStatus.running;
+    const checkRunning = lastCheckStatus && lastCheckStatus.running;
+    document.querySelectorAll('.year-download-btn').forEach(btn => {
+        btn.disabled = !!downloadRunning;
+    });
+    document.querySelectorAll('.year-check-btn').forEach(btn => {
+        btn.disabled = !!checkRunning;
+    });
+}
+
+function renderTopTasks() {
+    const hasDownload = lastDownloadStatus && lastDownloadStatus.running;
+    const hasCheck = lastCheckStatus && lastCheckStatus.running;
+    const card = document.getElementById('topTasksCard');
+    card.style.display = (hasDownload || hasCheck) ? '' : 'none';
+
+    const downloadSlot = document.getElementById('topDownloadSlot');
+    if (hasDownload) {
+        downloadSlot.style.display = '';
+        document.getElementById('topDownloadYear').textContent = lastDownloadStatus.year ? String(lastDownloadStatus.year) : '';
+        const progress = lastDownloadStatus.total_months > 0 ? Math.round(lastDownloadStatus.finished_months / lastDownloadStatus.total_months * 100) : 0;
+        document.getElementById('topDownloadText').textContent = `获取中... (${lastDownloadStatus.finished_months}/${lastDownloadStatus.total_months})`;
+        document.getElementById('topDownloadCount').textContent = lastDownloadStatus.current_month ? `月:${lastDownloadStatus.current_month}` : '';
+        const bar = document.getElementById('topDownloadBar');
+        bar.style.width = `${progress}%`;
+        bar.setAttribute('aria-valuenow', `${progress}`);
+    } else {
+        downloadSlot.style.display = 'none';
+    }
+
+    const checkSlot = document.getElementById('topCheckSlot');
+    if (hasCheck) {
+        checkSlot.style.display = '';
+        document.getElementById('topCheckYear').textContent = lastCheckStatus.year ? String(lastCheckStatus.year) : '';
+        const progress = lastCheckStatus.total > 0 ? Math.round(lastCheckStatus.checked / lastCheckStatus.total * 100) : 0;
+        document.getElementById('topCheckText').textContent = `校对中... (${lastCheckStatus.checked}/${lastCheckStatus.total})`;
+        document.getElementById('topCheckCount').textContent = `已下载:${lastCheckStatus.found_downloaded || 0}`;
+        const bar = document.getElementById('topCheckBar');
+        bar.style.width = `${progress}%`;
+        bar.setAttribute('aria-valuenow', `${progress}`);
+    } else {
+        checkSlot.style.display = 'none';
+    }
+
+    updateYearActionButtons();
+}
+
+function pollTopTasks() {
+    Promise.all([
+        fetch(`${basePath}/tool/api.php?action=download_status`).then(r => r.json()).catch(() => null),
+        fetch(`${basePath}/tool/api.php?action=115_check_all_status`).then(r => r.json()).catch(() => null),
+    ]).then(([d, c]) => {
+        if (d) lastDownloadStatus = d;
+        if (c) lastCheckStatus = c;
+        renderTopTasks();
+    }).catch(() => {});
+}
 
 function resetYearCheckUI() {
     document.getElementById('yearCheckText').textContent = '准备中...';
@@ -285,6 +395,14 @@ function pollYearCheckStatus() {
 }
 
 function startYearCheck(year) {
+    if (lastCheckStatus && lastCheckStatus.running) {
+        alert('校对任务已在运行中');
+        return;
+    }
+    if (runningBackendTasksCount() >= 2) {
+        alert('最多同时运行2个后端任务');
+        return;
+    }
     openYearCheckModal(year);
     if (yearCheckIntervalId) {
         clearInterval(yearCheckIntervalId);
@@ -350,6 +468,14 @@ function pollYearDownloadStatus() {
 }
 
 function startYearDownload(year) {
+    if (lastDownloadStatus && lastDownloadStatus.running) {
+        alert('获取链接任务已在运行中');
+        return;
+    }
+    if (runningBackendTasksCount() >= 2) {
+        alert('最多同时运行2个后端任务');
+        return;
+    }
     openYearDownloadModal(year);
     if (yearDownloadIntervalId) {
         clearInterval(yearDownloadIntervalId);
@@ -502,6 +628,9 @@ async function startYearPush(year) {
 
 document.addEventListener('DOMContentLoaded', () => {
     initYears();
+    pollTopTasks();
+    if (topTasksIntervalId) clearInterval(topTasksIntervalId);
+    topTasksIntervalId = setInterval(pollTopTasks, 3000);
     document.getElementById('calendar-year').addEventListener('change', (e) => {
         loadCalendar(e.target.value);
     });
@@ -548,6 +677,14 @@ document.addEventListener('DOMContentLoaded', () => {
             yearDownloadIntervalId = null;
         }
         bootstrap.Modal.getInstance(document.getElementById('yearDownloadModal'))?.hide();
+    });
+
+    document.getElementById('topCheckStopBtn').addEventListener('click', () => {
+        fetch(`${basePath}/tool/api.php?action=115_check_all_stop`, { method: 'POST' }).catch(() => {});
+    });
+
+    document.getElementById('topDownloadStopBtn').addEventListener('click', () => {
+        fetch(`${basePath}/tool/api.php?action=stop_download`, { method: 'POST' }).catch(() => {});
     });
 
     document.getElementById('yearPushStopBtn').addEventListener('click', () => {

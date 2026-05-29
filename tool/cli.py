@@ -62,7 +62,6 @@ def cmd_years(args):
 
 
 def cmd_calendar(args):
-    import sqlite3
     from datetime import datetime
     import tool.core
 
@@ -71,7 +70,7 @@ def cmd_calendar(args):
     start_year = base_year - 2
     end_year = base_year
 
-    conn = sqlite3.connect(tool.core.get_db_path())
+    conn = tool.core.open_db()
     tool.core.ensure_getchu_schema(conn)
     cursor = conn.cursor()
     cursor.execute(
@@ -440,6 +439,8 @@ def _check_all_status_default():
     return {
         "running": False,
         "pid": None,
+        "year": None,
+        "month": None,
         "total": 0,
         "checked": 0,
         "found_downloaded": 0,
@@ -608,7 +609,6 @@ def cmd_delete_game(args):
 
 
 def cmd_115_check_all_worker(args):
-    import sqlite3
     import tool.core
 
     paths = runtime_paths()
@@ -617,6 +617,8 @@ def cmd_115_check_all_worker(args):
     status = {
         "running": True,
         "pid": os.getpid(),
+        "year": int(args.year) if getattr(args, "year", None) else None,
+        "month": int(args.month) if getattr(args, "month", None) else None,
         "total": 0,
         "checked": 0,
         "found_downloaded": 0,
@@ -628,7 +630,7 @@ def cmd_115_check_all_worker(args):
     }
     write_json_atomic(status_path, status)
 
-    conn = sqlite3.connect(tool.core.get_db_path())
+    conn = tool.core.open_db()
     tool.core.ensure_getchu_schema(conn)
     cursor = conn.cursor()
     base_sql = "SELECT date, name, link FROM getchu_games WHERE link IS NOT NULL AND link != '' AND COALESCE(downloaded, 0) = 0"
@@ -732,10 +734,9 @@ def _is_running_status(status):
 
 
 def _check_year_downloaded(year):
-    import sqlite3
     import tool.core
 
-    conn = sqlite3.connect(tool.core.get_db_path())
+    conn = tool.core.open_db()
     tool.core.ensure_getchu_schema(conn)
     cursor = conn.cursor()
     cursor.execute(

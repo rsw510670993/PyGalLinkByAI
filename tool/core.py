@@ -102,8 +102,16 @@ def get_db_path(default=None):
     return paths["db_path"] if paths.get("db_path") else default
 
 
+def open_db(db_path=None, timeout_s=30):
+    conn = sqlite3.connect(db_path or get_db_path(), timeout=timeout_s)
+    conn.execute("PRAGMA busy_timeout = 30000")
+    conn.execute("PRAGMA journal_mode = WAL")
+    return conn
+
+
 def ensure_getchu_schema(conn):
     cursor = conn.cursor()
+    changed = False
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS getchu_games (
@@ -126,20 +134,35 @@ def ensure_getchu_schema(conn):
     cols = {row[1] for row in cursor.fetchall()}
     if "nyaa_name" not in cols:
         cursor.execute("ALTER TABLE getchu_games ADD COLUMN nyaa_name TEXT")
+        changed = True
     if "downloaded" not in cols:
         cursor.execute("ALTER TABLE getchu_games ADD COLUMN downloaded INTEGER DEFAULT 0")
+        changed = True
     if "infohash_hex" not in cols:
         cursor.execute("ALTER TABLE getchu_games ADD COLUMN infohash_hex TEXT")
+        changed = True
     if "submitted_115" not in cols:
         cursor.execute("ALTER TABLE getchu_games ADD COLUMN submitted_115 INTEGER DEFAULT 0")
+        changed = True
     if "submitted_pick_code" not in cols:
         cursor.execute("ALTER TABLE getchu_games ADD COLUMN submitted_pick_code TEXT")
-    cursor.execute("UPDATE getchu_games SET submitted_115 = 1 WHERE COALESCE(downloaded, 0) = 1 AND COALESCE(submitted_115, 0) = 0")
-    conn.commit()
+        changed = True
+
+    cursor.execute("PRAGMA user_version")
+    user_version = int(cursor.fetchone()[0] or 0)
+    if user_version < 1:
+        cursor.execute(
+            "UPDATE getchu_games SET submitted_115 = 1 WHERE COALESCE(downloaded, 0) = 1 AND COALESCE(submitted_115, 0) = 0"
+        )
+        cursor.execute("PRAGMA user_version = 1")
+        changed = True
+
+    if changed:
+        conn.commit()
 
 
 def set_downloaded_status(date, name, downloaded=1, infohash_hex=None, db_path=None):
-    conn = sqlite3.connect(db_path or get_db_path())
+    conn = open_db(db_path=db_path)
     ensure_getchu_schema(conn)
     cursor = conn.cursor()
     if infohash_hex:
@@ -157,7 +180,7 @@ def set_downloaded_status(date, name, downloaded=1, infohash_hex=None, db_path=N
 
 
 def set_submitted_status(date, name, submitted_115=1, submitted_pick_code=None, db_path=None):
-    conn = sqlite3.connect(db_path or get_db_path())
+    conn = open_db(db_path=db_path)
     ensure_getchu_schema(conn)
     cursor = conn.cursor()
     if submitted_pick_code is not None:
@@ -175,7 +198,7 @@ def set_submitted_status(date, name, submitted_115=1, submitted_pick_code=None, 
 
 
 def update_game_record(date, name, new_date=None, new_name=None, new_company=None, new_link=None, new_downloaded=None, new_nyaa_name=None, new_submitted_115=None, new_submitted_pick_code=None, db_path=None):
-    conn = sqlite3.connect(db_path or get_db_path())
+    conn = open_db(db_path=db_path)
     ensure_getchu_schema(conn)
     cursor = conn.cursor()
     fields = {}
@@ -208,7 +231,7 @@ def update_game_record(date, name, new_date=None, new_name=None, new_company=Non
 
 
 def delete_game_record(date, name, db_path=None):
-    conn = sqlite3.connect(db_path or get_db_path())
+    conn = open_db(db_path=db_path)
     ensure_getchu_schema(conn)
     cursor = conn.cursor()
     cursor.execute("DELETE FROM getchu_games WHERE date = ? AND name = ?", (date, name))
@@ -221,7 +244,7 @@ def delete_game_record(date, name, db_path=None):
 def get_all_getchu_games(start_year, end_year, start_month, end_month, db_path=None):
     logger.info("开始获取%s年%s月至%s年%s月的数据", start_year, start_month, end_year, end_month)
     try:
-        conn = sqlite3.connect(db_path or get_db_path())
+        conn = open_db(db_path=db_path)
         ensure_getchu_schema(conn)
         cursor = conn.cursor()
         success_count = 0
@@ -302,7 +325,7 @@ def download_games_by_month(year, month):
     try:
         logger.info("开始获取%s年%s月的游戏下载链接", year, month)
 
-        conn = sqlite3.connect(get_db_path())
+        conn = open_db()
         ensure_getchu_schema(conn)
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM getchu_games WHERE date LIKE ?", (f"{year}-{month:02d}",))
@@ -352,6 +375,7 @@ def download_games_by_month(year, month):
                         (selected_data.size, selected_data.link, selected_data.name, game_date, game_name),
                     )
                     success_count += 1
+                    conn.commit()
                 else:
                     cursor.execute(
                         """
@@ -361,9 +385,9 @@ def download_games_by_month(year, month):
                         """,
                         (game_date, game_name),
                     )
+                    conn.commit()
             time.sleep(2)
 
-        conn.commit()
         conn.close()
 
         logger.info("成功更新%s年%s月%s个游戏的下载链接", year, month, success_count)
@@ -374,7 +398,7 @@ def download_games_by_month(year, month):
 
 
 def get_years_list():
-    conn = sqlite3.connect(get_db_path())
+    conn = open_db()
     ensure_getchu_schema(conn)
     cursor = conn.cursor()
     cursor.execute("SELECT DISTINCT substr(date, 1, 4) FROM getchu_games ORDER BY date DESC")
@@ -385,7 +409,7 @@ def get_years_list():
 
 def get_download_link(year=None, month=None):
     logger.info("开始获取下载链接")
-    conn = sqlite3.connect(get_db_path())
+    conn = open_db()
     ensure_getchu_schema(conn)
     cursor = conn.cursor()
 
@@ -443,7 +467,7 @@ def get_download_link(year=None, month=None):
 
 
 def get_games_data():
-    conn = sqlite3.connect(get_db_path())
+    conn = open_db()
     ensure_getchu_schema(conn)
     cursor = conn.cursor()
     cursor.execute(
