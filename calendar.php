@@ -194,7 +194,7 @@ function renderCalendar(res) {
     body.innerHTML = res.years.map(y => {
         const first = y.months.slice(0, 6).map(m => `<td class="${cellClass(m)}">${cellHtml(y.year, m)}</td>`).join('');
         const second = y.months.slice(6, 12).map(m => `<td class="${cellClass(m)}">${cellHtml(y.year, m)}</td>`).join('');
-        return `<tr><th class="text-center align-middle" rowspan="2"><div class="d-flex align-items-center justify-content-center gap-1"><span class="fw-semibold">${y.year}</span><div class="btn-group btn-group-sm" role="group"><button type="button" class="btn btn-outline-info year-check-btn" data-year="${y.year}" title="115校对">校</button><button type="button" class="btn btn-outline-success year-download-btn" data-year="${y.year}" title="获取链接">链</button><button type="button" class="btn btn-outline-primary year-push-btn" data-year="${y.year}" title="推送115">推</button></div></div></th>${first}</tr><tr>${second}</tr>`;
+        return `<tr><th class="text-center align-middle" rowspan="2"><div class="fw-semibold">${y.year}</div><div class="d-grid gap-1 mt-2"><button type="button" class="btn btn-outline-info btn-sm year-check-btn" data-year="${y.year}">校对</button><button type="button" class="btn btn-outline-success btn-sm year-download-btn" data-year="${y.year}">下载</button><button type="button" class="btn btn-outline-primary btn-sm year-push-btn" data-year="${y.year}">推送</button></div></th>${first}</tr><tr>${second}</tr>`;
     }).join('');
 }
 
