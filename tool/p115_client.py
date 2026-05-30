@@ -390,7 +390,7 @@ def _normalize_for_comparison(name):
     name = re.sub(r'\]\s+\[', '][', name)
     name = name.lower()
     name = name.translate(str.maketrans('０１２３４５６７８９', '0123456789'))
-    for ch in '・♡❤♥~～〜！!？?：:『』「」－–—−―ｰ‐‑‒':
+    for ch in '・♡❤♥~～〜！!？?：:『』「」－–—−―ｰ‐‑‒♀♂':
         name = name.replace(ch, '')
     for pattern in (
         r'\(\s*mdf\s*\+\s*mds\s*\)',
