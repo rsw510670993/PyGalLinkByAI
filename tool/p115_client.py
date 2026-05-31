@@ -398,6 +398,7 @@ def _normalize_for_comparison(name):
         r'\b(disc|disk)\s*\d+\b',
         r'<[^>]*>',
         r'＜[^＞]*＞',
+        r'\[[^\]]*(?:汉化|漢化|中文|简体|繁体|硬盘|硬碟|硬盤)[^\]]*\]',
         r'\[(\d{7,})\]',
         r'\[\s*\d[\d.,]*(?:\.\d+)?\s*(?:k|m|g|t)i?b\s*\]',
         r'(?i)\bdvd\s*version\b',
