@@ -156,6 +156,12 @@ def ensure_getchu_schema(conn):
         )
         cursor.execute("PRAGMA user_version = 1")
         changed = True
+    if user_version < 2:
+        cursor.execute(
+            "UPDATE getchu_games SET submitted_115 = 1 WHERE COALESCE(downloaded, 0) = 1 AND COALESCE(submitted_115, 0) = 0"
+        )
+        cursor.execute("PRAGMA user_version = 2")
+        changed = True
 
     if changed:
         conn.commit()
@@ -166,15 +172,27 @@ def set_downloaded_status(date, name, downloaded=1, infohash_hex=None, db_path=N
     ensure_getchu_schema(conn)
     cursor = conn.cursor()
     if infohash_hex:
-        cursor.execute(
-            "UPDATE getchu_games SET downloaded = ?, infohash_hex = ? WHERE date = ? AND name = ?",
-            (downloaded, infohash_hex, date, name),
-        )
+        if downloaded:
+            cursor.execute(
+                "UPDATE getchu_games SET downloaded = ?, infohash_hex = ?, submitted_115 = 1 WHERE date = ? AND name = ?",
+                (downloaded, infohash_hex, date, name),
+            )
+        else:
+            cursor.execute(
+                "UPDATE getchu_games SET downloaded = ?, infohash_hex = ? WHERE date = ? AND name = ?",
+                (downloaded, infohash_hex, date, name),
+            )
     else:
-        cursor.execute(
-            "UPDATE getchu_games SET downloaded = ? WHERE date = ? AND name = ?",
-            (downloaded, date, name),
-        )
+        if downloaded:
+            cursor.execute(
+                "UPDATE getchu_games SET downloaded = ?, submitted_115 = 1 WHERE date = ? AND name = ?",
+                (downloaded, date, name),
+            )
+        else:
+            cursor.execute(
+                "UPDATE getchu_games SET downloaded = ? WHERE date = ? AND name = ?",
+                (downloaded, date, name),
+            )
     conn.commit()
     conn.close()
 
@@ -212,6 +230,8 @@ def update_game_record(date, name, new_date=None, new_name=None, new_company=Non
         fields["link"] = new_link
     if new_downloaded is not None:
         fields["downloaded"] = 1 if new_downloaded else 0
+        if new_downloaded and new_submitted_115 is None:
+            fields["submitted_115"] = 1
     if new_nyaa_name is not None:
         fields["nyaa_name"] = new_nyaa_name
     if new_submitted_115 is not None:

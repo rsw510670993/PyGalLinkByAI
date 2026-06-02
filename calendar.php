@@ -570,7 +570,8 @@ async function startYearPush(year) {
             if (yearPushStopRequested) break;
             const magnet = g.download_url || '';
             const submitted = parseInt(g.submitted_115 || 0, 10) === 1;
-            if (!magnet || submitted) {
+            const downloaded = parseInt(g.downloaded || 0, 10) === 1;
+            if (!magnet || submitted || downloaded) {
                 done += 1;
                 updateYearPushProgress(done, total, ok, fail);
                 continue;
