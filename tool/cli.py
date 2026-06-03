@@ -12,7 +12,7 @@ import multiprocessing as mp
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
 import tool
-from tool.runtime import now_ts, pid_is_running, read_json, runtime_paths, terminate_pid, write_json_atomic
+from tool.runtime import cleanup_old_logs, now_ts, pid_is_running, read_json, runtime_paths, terminate_pid, write_json_atomic
 
 
 def _print(obj):
@@ -220,9 +220,11 @@ def cmd_spider_start(args):
         start_year, end_year = end_year, start_year
 
     os.makedirs(paths["status_dir"], exist_ok=True)
-    os.makedirs(os.path.dirname(paths["log_path"]) or ".", exist_ok=True)
+    os.makedirs(paths["log_dir"], exist_ok=True)
+    if paths.get("log_auto_cleanup"):
+        cleanup_old_logs(retention_days=paths.get("log_retention_days"))
 
-    spider_launch_log = os.path.join(os.path.dirname(paths["log_path"]) or ".", "spider_launch.log")
+    spider_launch_log = os.path.join(paths["log_dir"], "spider_launch.log")
     launch_fp = open(spider_launch_log, "ab", buffering=0)
 
     p = subprocess.Popen(
@@ -305,9 +307,11 @@ def cmd_download_start(args):
     month = int(args.month) if args.month is not None else 0
 
     os.makedirs(paths["status_dir"], exist_ok=True)
-    os.makedirs(os.path.dirname(paths["log_path"]) or ".", exist_ok=True)
+    os.makedirs(paths["log_dir"], exist_ok=True)
+    if paths.get("log_auto_cleanup"):
+        cleanup_old_logs(retention_days=paths.get("log_retention_days"))
 
-    download_launch_log = os.path.join(os.path.dirname(paths["log_path"]) or ".", "download_launch.log")
+    download_launch_log = os.path.join(paths["log_dir"], "download_launch.log")
     launch_fp = open(download_launch_log, "ab", buffering=0)
 
     p = subprocess.Popen(
