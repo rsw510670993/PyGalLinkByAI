@@ -12,7 +12,7 @@ import multiprocessing as mp
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
 import tool
-from tool.runtime import cleanup_old_logs, now_ts, pid_is_running, read_json, runtime_paths, terminate_pid, write_json_atomic
+from tool.runtime import cleanup_old_logs, daily_log_path, now_ts, pid_is_running, read_json, runtime_paths, terminate_pid, write_json_atomic
 
 
 def _print(obj):
@@ -224,7 +224,7 @@ def cmd_spider_start(args):
     if paths.get("log_auto_cleanup"):
         cleanup_old_logs(retention_days=paths.get("log_retention_days"))
 
-    spider_launch_log = os.path.join(paths["log_dir"], "spider_launch.log")
+    spider_launch_log = daily_log_path("spider_launch")
     launch_fp = open(spider_launch_log, "ab", buffering=0)
 
     p = subprocess.Popen(
@@ -311,7 +311,7 @@ def cmd_download_start(args):
     if paths.get("log_auto_cleanup"):
         cleanup_old_logs(retention_days=paths.get("log_retention_days"))
 
-    download_launch_log = os.path.join(paths["log_dir"], "download_launch.log")
+    download_launch_log = daily_log_path("download_launch")
     launch_fp = open(download_launch_log, "ab", buffering=0)
 
     p = subprocess.Popen(
