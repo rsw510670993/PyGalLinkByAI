@@ -37,6 +37,50 @@ function ends_with($s, $suffix) {
     return substr($s, -$len) === $suffix;
 }
 
+function list_log_files($dir) {
+    $files = [];
+    if (!is_dir($dir)) return $files;
+    foreach (scandir($dir) as $name) {
+        if ($name === '.' || $name === '..') continue;
+        if (!ends_with($name, '.log')) continue;
+        $p = $dir . DIRECTORY_SEPARATOR . $name;
+        if (!is_file($p)) continue;
+        $files[] = $name;
+    }
+    usort($files, function($a, $b) use ($dir) {
+        $pa = $dir . DIRECTORY_SEPARATOR . $a;
+        $pb = $dir . DIRECTORY_SEPARATOR . $b;
+        return (@filemtime($pb) ?: 0) <=> (@filemtime($pa) ?: 0);
+    });
+    return $files;
+}
+
+function pick_logs_dir($primary) {
+    $root = realpath(__DIR__ . '/..');
+    $candidates = [$primary];
+    if ($root) $candidates[] = $root . DIRECTORY_SEPARATOR . 'logs';
+    $candidates[] = __DIR__ . DIRECTORY_SEPARATOR . 'logs';
+
+    $uniq = [];
+    foreach ($candidates as $d) {
+        if (!$d) continue;
+        $key = rtrim($d, DIRECTORY_SEPARATOR);
+        if (!$key) continue;
+        $uniq[$key] = $key;
+    }
+
+    $bestDir = $primary;
+    $bestCount = -1;
+    foreach ($uniq as $d) {
+        $count = count(list_log_files($d));
+        if ($count > $bestCount) {
+            $bestCount = $count;
+            $bestDir = $d;
+        }
+    }
+    return $bestDir;
+}
+
 function cleanup_logs($dir, $days) {
     if (!is_dir($dir)) return 0;
     $cutoff = time() - $days * 86400;
@@ -74,7 +118,7 @@ function tail_lines($filePath, $maxLines = 400, $maxBytes = 400000) {
 }
 
 $config = load_tool_config();
-$dir = logs_dir($config);
+$dir = pick_logs_dir(logs_dir($config));
 $days = intval($config['log_retention_days'] ?? 14);
 if ($days <= 0) $days = 14;
 $auto = ($config['log_auto_cleanup'] ?? true) ? true : false;
@@ -83,22 +127,7 @@ if ($auto) {
     $removed = cleanup_logs($dir, $days);
 }
 
-$files = [];
-if (is_dir($dir)) {
-    foreach (scandir($dir) as $name) {
-        if ($name === '.' || $name === '..') continue;
-        if (!ends_with($name, '.log')) continue;
-        $p = $dir . DIRECTORY_SEPARATOR . $name;
-        if (!is_file($p)) continue;
-        $files[] = $name;
-    }
-}
-sort($files);
-usort($files, function($a, $b) use ($dir) {
-    $pa = $dir . DIRECTORY_SEPARATOR . $a;
-    $pb = $dir . DIRECTORY_SEPARATOR . $b;
-    return (@filemtime($pb) ?: 0) <=> (@filemtime($pa) ?: 0);
-});
+$files = list_log_files($dir);
 
 $selected = $_GET['file'] ?? '';
 if (!$selected && count($files) > 0) $selected = $files[0];
@@ -138,6 +167,7 @@ $content = $safe ? tail_lines($selectedPath, 600, 600000) : '';
                     </div>
                     <div class="col-12 col-lg-4 text-lg-end">
                         <div class="small text-muted">
+                            日志目录：<?= htmlspecialchars($dir) ?><br>
                             自动清理：超过 <?= intval($days) ?> 天的 .log 已清理 <?= intval($removed) ?> 个
                         </div>
                     </div>
