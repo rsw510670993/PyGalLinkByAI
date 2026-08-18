@@ -12,7 +12,7 @@ import multiprocessing as mp
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
 import tool
-from tool.runtime import now_ts, pid_is_running, read_json, runtime_paths, terminate_pid, write_json_atomic
+from tool.runtime import cleanup_old_logs, daily_log_path, now_ts, pid_is_running, read_json, runtime_paths, terminate_pid, write_json_atomic
 
 
 def _print(obj):
@@ -62,7 +62,6 @@ def cmd_years(args):
 
 
 def cmd_calendar(args):
-    import sqlite3
     from datetime import datetime
     import tool.core
 
@@ -71,7 +70,7 @@ def cmd_calendar(args):
     start_year = base_year - 2
     end_year = base_year
 
-    conn = sqlite3.connect(tool.core.get_db_path())
+    conn = tool.core.open_db()
     tool.core.ensure_getchu_schema(conn)
     cursor = conn.cursor()
     cursor.execute(
@@ -221,9 +220,11 @@ def cmd_spider_start(args):
         start_year, end_year = end_year, start_year
 
     os.makedirs(paths["status_dir"], exist_ok=True)
-    os.makedirs(os.path.dirname(paths["log_path"]) or ".", exist_ok=True)
+    os.makedirs(paths["log_dir"], exist_ok=True)
+    if paths.get("log_auto_cleanup"):
+        cleanup_old_logs(retention_days=paths.get("log_retention_days"))
 
-    spider_launch_log = os.path.join(os.path.dirname(paths["log_path"]) or ".", "spider_launch.log")
+    spider_launch_log = daily_log_path("spider_launch")
     launch_fp = open(spider_launch_log, "ab", buffering=0)
 
     p = subprocess.Popen(
@@ -306,9 +307,11 @@ def cmd_download_start(args):
     month = int(args.month) if args.month is not None else 0
 
     os.makedirs(paths["status_dir"], exist_ok=True)
-    os.makedirs(os.path.dirname(paths["log_path"]) or ".", exist_ok=True)
+    os.makedirs(paths["log_dir"], exist_ok=True)
+    if paths.get("log_auto_cleanup"):
+        cleanup_old_logs(retention_days=paths.get("log_retention_days"))
 
-    download_launch_log = os.path.join(os.path.dirname(paths["log_path"]) or ".", "download_launch.log")
+    download_launch_log = daily_log_path("download_launch")
     launch_fp = open(download_launch_log, "ab", buffering=0)
 
     p = subprocess.Popen(
@@ -440,6 +443,8 @@ def _check_all_status_default():
     return {
         "running": False,
         "pid": None,
+        "year": None,
+        "month": None,
         "total": 0,
         "checked": 0,
         "found_downloaded": 0,
@@ -608,7 +613,6 @@ def cmd_delete_game(args):
 
 
 def cmd_115_check_all_worker(args):
-    import sqlite3
     import tool.core
 
     paths = runtime_paths()
@@ -617,6 +621,8 @@ def cmd_115_check_all_worker(args):
     status = {
         "running": True,
         "pid": os.getpid(),
+        "year": int(args.year) if getattr(args, "year", None) else None,
+        "month": int(args.month) if getattr(args, "month", None) else None,
         "total": 0,
         "checked": 0,
         "found_downloaded": 0,
@@ -628,7 +634,7 @@ def cmd_115_check_all_worker(args):
     }
     write_json_atomic(status_path, status)
 
-    conn = sqlite3.connect(tool.core.get_db_path())
+    conn = tool.core.open_db()
     tool.core.ensure_getchu_schema(conn)
     cursor = conn.cursor()
     base_sql = "SELECT date, name, link FROM getchu_games WHERE link IS NOT NULL AND link != '' AND COALESCE(downloaded, 0) = 0"
@@ -732,10 +738,9 @@ def _is_running_status(status):
 
 
 def _check_year_downloaded(year):
-    import sqlite3
     import tool.core
 
-    conn = sqlite3.connect(tool.core.get_db_path())
+    conn = tool.core.open_db()
     tool.core.ensure_getchu_schema(conn)
     cursor = conn.cursor()
     cursor.execute(

@@ -50,16 +50,52 @@ def runtime_paths(config_path=None):
     db_path = _abs_from_root(config.get("db_path", "getchu.db"))
     status_dir = _abs_from_root(config.get("status_dir", "status"))
     log_path = _abs_from_root(config.get("log_path", os.path.join("logs", "app.log")))
+    log_dir = _abs_from_root(config.get("log_dir", os.path.dirname(log_path) or "logs"))
+    log_retention_days = int(config.get("log_retention_days", 14) or 14)
+    log_auto_cleanup = bool(config.get("log_auto_cleanup", True))
 
     return {
         "config": config,
         "db_path": db_path,
         "status_dir": status_dir,
         "log_path": log_path,
+        "log_dir": log_dir,
+        "log_retention_days": log_retention_days,
+        "log_auto_cleanup": log_auto_cleanup,
         "spider_status_path": os.path.join(status_dir, "spider_status.json"),
         "download_status_path": os.path.join(status_dir, "download_status.json"),
         "check_all_status_path": os.path.join(status_dir, "check_all_status.json"),
     }
+
+
+def daily_log_path(prefix, config_path=None):
+    paths = runtime_paths(config_path)
+    d = time.strftime("%Y%m%d", time.localtime())
+    return os.path.join(paths["log_dir"], f"{prefix}_{d}.log")
+
+
+def cleanup_old_logs(config_path=None, retention_days=None):
+    paths = runtime_paths(config_path)
+    days = paths["log_retention_days"] if retention_days is None else int(retention_days)
+    if days <= 0:
+        return 0
+    log_dir = paths["log_dir"]
+    if not log_dir or not os.path.isdir(log_dir):
+        return 0
+    cutoff = time.time() - days * 86400
+    removed = 0
+    for name in os.listdir(log_dir):
+        if not name.endswith(".log"):
+            continue
+        p = os.path.join(log_dir, name)
+        try:
+            st = os.stat(p)
+            if st.st_mtime < cutoff:
+                os.remove(p)
+                removed += 1
+        except Exception:
+            pass
+    return removed
 
 
 def ensure_parent_dir(path):
@@ -108,4 +144,3 @@ def pid_is_running(pid):
 
 def terminate_pid(pid, sig=signal.SIGTERM):
     os.kill(pid, sig)
-
