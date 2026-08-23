@@ -169,3 +169,9 @@ getchu.db
 status/
 logs/
 tool/115-cookies.txt
+
+# AI API key files (phpAiAPI style)
+tool/config/key/
+
+# Local documentation (kept out of git)
+docs/
