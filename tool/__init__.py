@@ -13,3 +13,10 @@ from .core import (
     get_years_list,
     open_db,
 )
+from .ai_matcher import (
+    Aigc2dClient,
+    Aigc2dConfig,
+    fallback_rule_match,
+    judge_nyaa_match,
+    parse_match_response,
+)

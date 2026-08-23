@@ -32,3 +32,44 @@ class NyaaData:
 
     def __repr__(self):
         return self.__str__()
+
+
+class MatchResult:
+    def __init__(
+        self,
+        date=None,
+        name=None,
+        company=None,
+        selected_index=-1,
+        matched_name=None,
+        link=None,
+        size=None,
+        confidence=0.0,
+        source="none",
+        reason=None,
+        candidate_count=0,
+    ):
+        self.date = date
+        self.name = name
+        self.company = company
+        self.selected_index = selected_index
+        self.matched_name = matched_name
+        self.link = link
+        self.size = size
+        self.confidence = confidence
+        self.source = source
+        self.reason = reason
+        self.candidate_count = candidate_count
+
+    def has_match(self):
+        return self.selected_index is not None and self.selected_index >= 0
+
+    def __str__(self):
+        return (
+            f"MatchResult(date={self.date}, name='{self.name}', "
+            f"selected_index={self.selected_index}, matched_name='{self.matched_name}', "
+            f"confidence={self.confidence}, source='{self.source}')"
+        )
+
+    def __repr__(self):
+        return self.__str__()
