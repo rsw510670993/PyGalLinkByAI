@@ -88,6 +88,9 @@ class BuildPromptTest(unittest.TestCase):
         self.assertIn("[1]", user)
         self.assertIn("matched_index", user)
         self.assertTrue(system.strip())
+        self.assertIn("发布来源偏好", system)
+        self.assertIn("girlcelly", system)
+        self.assertIn("2D.G.F.", system)
 
 
 class FallbackRuleMatchTest(unittest.TestCase):
@@ -174,6 +177,18 @@ class JudgeNyaaMatchTest(unittest.TestCase):
         self.assertEqual(result.verdict, "matched")
         self.assertEqual(result.selected_index, 0)
         self.assertEqual(len(client.calls), 0)
+
+    def test_protected_publishers_are_not_filtered_out(self):
+        candidates = [
+            NyaaData("2026-08-01 12:00", "1.2 GiB", "[girlcelly] SampleGame [202608]", "magnet:?one"),
+            NyaaData("2026-08-02 12:00", "1.1 GiB", "│2D.G.F.│ SampleGame [202608]", "magnet:?two"),
+        ]
+        bad_rules = [
+            {"keyword": "girlcelly", "rule_type": "duplicate"},
+            {"keyword": "2D.G.F.", "rule_type": "discard"},
+        ]
+        filtered = filter_candidates_by_keyword_rules(candidates, bad_rules)
+        self.assertEqual(len(filtered), 2)
 
 
 if __name__ == "__main__":

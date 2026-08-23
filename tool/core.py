@@ -8,7 +8,7 @@ from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
 
-from .ai_matcher import judge_nyaa_match
+from .ai_matcher import PROTECTED_PUBLISHERS, judge_nyaa_match
 from .models import GetchuGame, NyaaData
 from .runtime import read_config, runtime_paths
 
@@ -248,6 +248,9 @@ def save_match_keyword_rules(conn, keywords):
         keyword = str(item.get("keyword") or "").strip()
         rule_type = str(item.get("rule_type") or "review").strip().lower()
         if not keyword or rule_type not in {"include", "discard", "duplicate", "review"}:
+            continue
+        # girlcelly / 2D.G.F. 是发布来源标记，不能作为排除要素
+        if keyword.lower() in PROTECTED_PUBLISHERS and rule_type != "include":
             continue
         try:
             confidence = float(item.get("confidence", 0.5))

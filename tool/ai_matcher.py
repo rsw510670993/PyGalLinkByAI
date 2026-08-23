@@ -28,6 +28,7 @@ DEFAULT_REVIEW_THRESHOLD = 0.4
 
 VERDICTS = {"matched", "unmatched", "duplicate", "discarded", "review"}
 KEYWORD_RULE_TYPES = {"include", "discard", "duplicate", "review"}
+PROTECTED_PUBLISHERS = {"girlcelly", "2d.g.f."}
 
 
 class Aigc2dError(Exception):
@@ -165,8 +166,17 @@ def _normalize_for_match(text):
     return re.sub(r"\s+", "", str(text or "").lower())
 
 
+def _load_soul_prompt():
+    soul_path = os.path.join(_tool_dir(), "soul.md")
+    try:
+        return Path(soul_path).read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+
 def build_match_prompt(game, candidates):
     """Return (system_prompt, user_prompt) for a Getchu game and Nyaa candidates."""
+    soul_text = _load_soul_prompt()
     system_prompt = (
         "你是成人游戏（美少女ゲーム/エロゲ）磁力链接匹配专家。"
         "用户会给出 Getchu 游戏信息和若干 Nyaa 候选。"
@@ -175,6 +185,8 @@ def build_match_prompt(game, candidates):
         "注意：候选名常包含 限定版/特典/自炊/自购/罗马音/缩写/下载站命名 等变化。"
         "只返回 JSON，不要输出其他内容。"
     )
+    if soul_text:
+        system_prompt += "\n\n【固定约束】\n" + soul_text
 
     lines = [
         "Getchu 信息：",
@@ -375,7 +387,9 @@ def filter_candidates_by_keyword_rules(nyaa_data_list, keyword_rules=None):
     exclude_keywords = [
         str(r.get("keyword") or "").strip()
         for r in rules
-        if r.get("rule_type") in ("discard", "duplicate") and str(r.get("keyword") or "").strip()
+        if r.get("rule_type") in ("discard", "duplicate")
+        and str(r.get("keyword") or "").strip()
+        and str(r.get("keyword") or "").strip().lower() not in PROTECTED_PUBLISHERS
     ]
     if not exclude_keywords:
         return list(nyaa_data_list)
