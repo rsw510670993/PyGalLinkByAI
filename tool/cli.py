@@ -582,6 +582,46 @@ def cmd_115_check_all_stop(args):
     _print({"status": "success", "message": "已停止校验任务"})
 
 
+def cmd_match_month(args):
+    import tool.core
+
+    result = tool.core.match_games_by_month(
+        args.year,
+        args.month,
+        dry_run=bool(args.dry_run),
+        force=bool(args.force),
+        limit=args.limit,
+        only_missing=bool(args.only_missing),
+    )
+    _print(result)
+
+
+def cmd_match_status(args):
+    import tool.core
+
+    conn = tool.core.open_db()
+    tool.core.ensure_match_schema(conn)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT verdict, COUNT(*) FROM match_judgements GROUP BY verdict ORDER BY verdict"
+    )
+    verdict_counts = {row[0]: row[1] for row in cursor.fetchall()}
+    cursor.execute("SELECT COUNT(*) FROM match_keyword_rules")
+    keyword_count = int(cursor.fetchone()[0] or 0)
+    conn.close()
+    _print({
+        "judgements": verdict_counts,
+        "total_judgements": sum(verdict_counts.values()),
+        "keyword_rules": keyword_count,
+    })
+
+
+def cmd_match_rules(args):
+    import tool.core
+
+    _print({"rules": tool.core.load_match_keyword_rules()})
+
+
 def cmd_update_game(args):
     import tool.core
     kwargs = {"date": args.date, "name": args.old_name}
@@ -1019,6 +1059,24 @@ def build_parser():
     p_115_check_all_worker.add_argument("--year", type=int)
     p_115_check_all_worker.add_argument("--month", type=int)
     p_115_check_all_worker.set_defaults(func=cmd_115_check_all_worker)
+
+    p_match = sub.add_parser("match")
+    match_sub = p_match.add_subparsers(dest="match_action", required=True)
+
+    p_match_month = match_sub.add_parser("month")
+    p_match_month.add_argument("--year", type=int, required=True)
+    p_match_month.add_argument("--month", type=int, required=True)
+    p_match_month.add_argument("--dry-run", action="store_true", dest="dry_run")
+    p_match_month.add_argument("--force", action="store_true")
+    p_match_month.add_argument("--limit", type=int)
+    p_match_month.add_argument("--only-missing", action="store_true", dest="only_missing")
+    p_match_month.set_defaults(func=cmd_match_month)
+
+    p_match_status = match_sub.add_parser("status")
+    p_match_status.set_defaults(func=cmd_match_status)
+
+    p_match_rules = match_sub.add_parser("rules")
+    p_match_rules.set_defaults(func=cmd_match_rules)
 
     p_update = sub.add_parser("update_game")
     p_update.add_argument("--date", type=str, required=True)

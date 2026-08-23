@@ -48,6 +48,8 @@ class MatchResult:
         source="none",
         reason=None,
         candidate_count=0,
+        verdict="none",
+        keywords=None,
     ):
         self.date = date
         self.name = name
@@ -60,6 +62,8 @@ class MatchResult:
         self.source = source
         self.reason = reason
         self.candidate_count = candidate_count
+        self.verdict = verdict
+        self.keywords = keywords or []
 
     def has_match(self):
         return self.selected_index is not None and self.selected_index >= 0
@@ -68,7 +72,7 @@ class MatchResult:
         return (
             f"MatchResult(date={self.date}, name='{self.name}', "
             f"selected_index={self.selected_index}, matched_name='{self.matched_name}', "
-            f"confidence={self.confidence}, source='{self.source}')"
+            f"confidence={self.confidence}, source='{self.source}', verdict='{self.verdict}')"
         )
 
     def __repr__(self):

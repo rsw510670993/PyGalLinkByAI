@@ -5,6 +5,7 @@ from tool.ai_matcher import (
     Aigc2dError,
     build_match_prompt,
     fallback_rule_match,
+    filter_candidates_by_keyword_rules,
     judge_nyaa_match,
     parse_match_response,
 )
@@ -57,6 +58,19 @@ class ParseMatchResponseTest(unittest.TestCase):
             '{"matched_index": 0, "confidence": 5.0, "reason": "", "matched_name": "x"}'
         )
         self.assertEqual(data["confidence"], 1.0)
+
+    def test_verdict_and_keywords(self):
+        data = parse_match_response(
+            '{"matched_index": -1, "verdict": "discarded", "confidence": 0.8, '
+            '"reason": "廉価版", "matched_name": "", '
+            '"keywords": [{"keyword": "廉価版", "rule_type": "discard"}]}'
+        )
+        self.assertEqual(data["verdict"], "discarded")
+        self.assertEqual(data["keywords"], [{
+            "keyword": "廉価版",
+            "rule_type": "discard",
+            "confidence": 0.5,
+        }])
 
     def test_invalid_index_raises(self):
         with self.assertRaises(Exception):
@@ -139,6 +153,27 @@ class JudgeNyaaMatchTest(unittest.TestCase):
         result = judge_nyaa_match(make_game(), make_candidates(), client=client)
         self.assertEqual(result.source, "rule")
         self.assertTrue(result.has_match())
+
+    def test_empty_original_candidates_returns_unmatched(self):
+        result = judge_nyaa_match(make_game(), [], client=FakeClient())
+        self.assertEqual(result.verdict, "unmatched")
+        self.assertEqual(result.source, "none")
+
+    def test_keyword_filter_discards_candidates(self):
+        candidates = [
+            NyaaData("2026-08-01 12:00", "1.2 GiB", "サンプルゲーム 廉価版 [202608]", "magnet:?one"),
+            NyaaData("2026-08-02 12:00", "1.1 GiB", "[girlcelly] SampleGame [202608]", "magnet:?two"),
+        ]
+        rules = [{"keyword": "廉価版", "rule_type": "discard", "confidence": 0.9}]
+        filtered = filter_candidates_by_keyword_rules(candidates, rules)
+        self.assertEqual(len(filtered), 1)
+        self.assertIn("girlcelly", filtered[0].name)
+
+        client = FakeClient(content='{"matched_index": 0, "verdict": "matched"}')
+        result = judge_nyaa_match(make_game(), candidates, client=client, keyword_rules=rules)
+        self.assertEqual(result.verdict, "matched")
+        self.assertEqual(result.selected_index, 0)
+        self.assertEqual(len(client.calls), 0)
 
 
 if __name__ == "__main__":

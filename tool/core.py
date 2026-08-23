@@ -8,6 +8,7 @@ from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
 
+from .ai_matcher import judge_nyaa_match
 from .models import GetchuGame, NyaaData
 from .runtime import read_config, runtime_paths
 
@@ -165,6 +166,161 @@ def ensure_getchu_schema(conn):
 
     if changed:
         conn.commit()
+
+    ensure_match_schema(conn)
+
+
+def ensure_match_schema(conn):
+    """Create AI matching judgement and keyword-memory tables."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS match_judgements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL,
+            game_name TEXT NOT NULL,
+            company TEXT,
+            verdict TEXT NOT NULL,
+            confidence REAL DEFAULT 0,
+            source TEXT DEFAULT 'ai',
+            need_retry INTEGER DEFAULT 0,
+            retry_count INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now', 'localtime')),
+            UNIQUE(date, game_name)
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS match_keyword_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            keyword TEXT NOT NULL,
+            rule_type TEXT NOT NULL,
+            source TEXT DEFAULT 'ai',
+            confidence REAL DEFAULT 0.5,
+            hit_count INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now', 'localtime')),
+            updated_at TEXT DEFAULT (datetime('now', 'localtime')),
+            UNIQUE(keyword, rule_type)
+        )
+        """
+    )
+    conn.commit()
+
+
+def save_match_judgement(conn, result):
+    """Insert or update a single match judgement row."""
+    ensure_match_schema(conn)
+    cursor = conn.cursor()
+    verdict = getattr(result, "verdict", None) or "review"
+    confidence = float(getattr(result, "confidence", 0.0) or 0.0)
+    source = getattr(result, "source", None) or "ai"
+    need_retry = 1 if verdict == "review" or confidence < 0.4 else 0
+    cursor.execute(
+        """
+        INSERT INTO match_judgements (date, game_name, company, verdict, confidence, source, need_retry, retry_count)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+        ON CONFLICT(date, game_name) DO UPDATE SET
+            verdict = excluded.verdict,
+            confidence = excluded.confidence,
+            source = excluded.source,
+            need_retry = excluded.need_retry,
+            retry_count = match_judgements.retry_count + 1
+        """,
+        (
+            getattr(result, "date", None),
+            getattr(result, "name", None),
+            getattr(result, "company", None),
+            verdict,
+            confidence,
+            source,
+            need_retry,
+        ),
+    )
+    conn.commit()
+
+
+def save_match_keyword_rules(conn, keywords):
+    """Insert or update AI-extracted keyword memory rules."""
+    ensure_match_schema(conn)
+    cursor = conn.cursor()
+    for item in keywords or []:
+        keyword = str(item.get("keyword") or "").strip()
+        rule_type = str(item.get("rule_type") or "review").strip().lower()
+        if not keyword or rule_type not in {"include", "discard", "duplicate", "review"}:
+            continue
+        try:
+            confidence = float(item.get("confidence", 0.5))
+        except (TypeError, ValueError):
+            confidence = 0.5
+        confidence = max(0.0, min(1.0, confidence))
+        cursor.execute(
+            """
+            INSERT INTO match_keyword_rules (keyword, rule_type, source, confidence, hit_count)
+            VALUES (?, ?, ?, ?, 1)
+            ON CONFLICT(keyword, rule_type) DO UPDATE SET
+                source = excluded.source,
+                confidence = excluded.confidence,
+                hit_count = match_keyword_rules.hit_count + 1,
+                updated_at = datetime('now', 'localtime')
+            """,
+            (keyword, rule_type, "ai", confidence),
+        )
+    conn.commit()
+
+
+def load_match_keyword_rules(conn=None):
+    """Return all memory keyword rules as dicts."""
+    own_conn = conn is None
+    if own_conn:
+        conn = open_db()
+    try:
+        ensure_match_schema(conn)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT keyword, rule_type, source, confidence, hit_count
+            FROM match_keyword_rules
+            ORDER BY hit_count DESC, id ASC
+            """
+        )
+        rows = [
+            {
+                "keyword": row[0],
+                "rule_type": row[1],
+                "source": row[2],
+                "confidence": row[3],
+                "hit_count": row[4],
+            }
+            for row in cursor.fetchall()
+        ]
+        return rows
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def load_match_judgement(conn, date, game_name):
+    """Return one judgement row or None."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT verdict, confidence, source, need_retry, retry_count
+        FROM match_judgements
+        WHERE date = ? AND game_name = ?
+        """,
+        (date, game_name),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "verdict": row[0],
+        "confidence": row[1],
+        "source": row[2],
+        "need_retry": row[3],
+        "retry_count": row[4],
+    }
 
 
 def set_downloaded_status(date, name, downloaded=1, infohash_hex=None, db_path=None):
@@ -341,76 +497,114 @@ def get_nyaa_data(game_name, company):
     return nyaa_data_list
 
 
+def match_games_by_month(year, month, dry_run=False, force=False, limit=None, only_missing=False):
+    """Run the AI matching pipeline for one month.
+
+    dry_run=True only reports results without changing getchu_games.
+    Normal mode also writes match_judgements and learned keyword rules.
+    """
+    conn = open_db()
+    ensure_getchu_schema(conn)
+    cursor = conn.cursor()
+
+    sql = "SELECT date, name, company, link FROM getchu_games WHERE date = ?"
+    params = [f"{year}-{month:02d}"]
+    if only_missing:
+        sql += " AND (link IS NULL OR link = '')"
+    sql += " ORDER BY name"
+    cursor.execute(sql, params)
+    rows = cursor.fetchall()
+
+    keyword_rules = load_match_keyword_rules(conn)
+    summary = {
+        "year": year,
+        "month": month,
+        "total": len(rows),
+        "processed": 0,
+        "skipped_existing": 0,
+        "ai_calls": 0,
+        "rule_hits": 0,
+        "matched": 0,
+        "unmatched": 0,
+        "duplicate": 0,
+        "discarded": 0,
+        "review": 0,
+        "errors": [],
+        "results": [] if dry_run else None,
+    }
+
+    for index, row in enumerate(rows):
+        if limit and index >= limit:
+            break
+        game_date, game_name, company, old_link = row
+        game = GetchuGame(game_date, game_name, company or "")
+
+        if not force:
+            previous = load_match_judgement(conn, game_date, game_name)
+            if previous and not previous.get("need_retry"):
+                summary["skipped_existing"] += 1
+                continue
+
+        try:
+            nyaa_data_list = get_nyaa_data(game_name, company or "")
+            result = judge_nyaa_match(
+                game,
+                nyaa_data_list,
+                keyword_rules=keyword_rules,
+            )
+        except Exception as e:
+            logger.exception("匹配失败: %s / %s", game_date, game_name)
+            summary["errors"].append(f"{game_date} {game_name}: {e}")
+            continue
+
+        if result.source == "ai":
+            summary["ai_calls"] += 1
+        elif result.source == "rule":
+            summary["rule_hits"] += 1
+
+        verdict = result.verdict
+        summary[verdict if verdict in summary else "review"] += 1
+        summary["processed"] += 1
+
+        if dry_run:
+            summary["results"].append({
+                "date": game_date,
+                "name": game_name,
+                "company": company,
+                "verdict": verdict,
+                "confidence": result.confidence,
+                "source": result.source,
+                "matched_name": result.matched_name,
+                "reason": result.reason,
+            })
+            continue
+
+        save_match_judgement(conn, result)
+        if result.keywords:
+            save_match_keyword_rules(conn, result.keywords)
+
+        # Update getchu_games only when a real link is available.
+        if result.has_match() and result.link and verdict in ("matched", "duplicate", "review"):
+            cursor.execute(
+                "UPDATE getchu_games SET size = ?, link = ?, nyaa_name = ? WHERE date = ? AND name = ?",
+                (result.size, result.link, result.matched_name, game_date, game_name),
+            )
+            conn.commit()
+
+        time.sleep(1)
+
+    conn.close()
+    return summary
+
+
 def download_games_by_month(year, month):
     try:
         logger.info("开始获取%s年%s月的游戏下载链接", year, month)
-
-        conn = open_db()
-        ensure_getchu_schema(conn)
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM getchu_games WHERE date LIKE ?", (f"{year}-{month:02d}",))
-        total_count = int(cursor.fetchone()[0] or 0)
-        if total_count <= 0:
-            logger.info("%s年%s月没有游戏数据，跳过", year, month)
-            conn.close()
-            return True
-
-        cursor.execute(
-            "SELECT * FROM getchu_games WHERE date LIKE ? AND (link IS NULL OR link = '')",
-            (f"{year}-{month:02d}",),
+        result = match_games_by_month(year, month, dry_run=False, only_missing=True)
+        logger.info(
+            "完成%s年%s月，处理%s条，匹配%s条，待复核%s条",
+            year, month, result["processed"], result["matched"], result["review"],
         )
-        games = cursor.fetchall()
-
-        if not games:
-            logger.info("%s年%s月所有游戏都已有下载链接，跳过", year, month)
-            conn.close()
-            return True
-
-        success_count = 0
-        for game in games:
-            game_date = game[0]
-            game_name = game[1]
-            company = game[2]
-            nyaa_data_list = get_nyaa_data(game_name, company)
-
-            if nyaa_data_list:
-                current_month = f"{str(year)[-2:]}{month:02d}"
-                selected_data = next(
-                    (d for d in nyaa_data_list if "girlcelly" in d.name and current_month in d.name),
-                    next(
-                        (d for d in nyaa_data_list if "2D.G.F." in d.name and current_month in d.name),
-                        next((d for d in nyaa_data_list if current_month in d.name), None),
-                    ),
-                )
-
-                if selected_data is None and nyaa_data_list:
-                    selected_data = clear_link(nyaa_data_list[0])
-                    logger.warning(
-                        "未找到包含%s的下载链接，记录第一条数据: %s", current_month, selected_data.name
-                    )
-
-                if selected_data:
-                    cursor.execute(
-                        "UPDATE getchu_games SET size = ?, link = ?, nyaa_name = ? WHERE date = ? AND name = ?",
-                        (selected_data.size, selected_data.link, selected_data.name, game_date, game_name),
-                    )
-                    success_count += 1
-                    conn.commit()
-                else:
-                    cursor.execute(
-                        """
-                        UPDATE getchu_games
-                        SET size = NULL, link = NULL, nyaa_name = NULL, comment = NULL
-                        WHERE date = ? AND name = ?
-                        """,
-                        (game_date, game_name),
-                    )
-                    conn.commit()
-            time.sleep(2)
-
-        conn.close()
-
-        logger.info("成功更新%s年%s月%s个游戏的下载链接", year, month, success_count)
         return True
     except Exception as e:
         logger.error("获取%s年%s月游戏下载链接时出错: %s", year, month, str(e))
@@ -428,62 +622,28 @@ def get_years_list():
 
 
 def get_download_link(year=None, month=None):
-    logger.info("开始获取下载链接")
+    """Unified download-link matching entry (fixes old missing-company bug)."""
+    if year and month:
+        logger.info("开始获取%s年%s月的下载链接", year, month)
+        result = match_games_by_month(year, month, dry_run=False, only_missing=False)
+        logger.info("已完成%s年%s月，处理%s条", year, month, result.get("processed", 0))
+        return result
+
+    logger.info("开始获取所有月份的下载链接")
     conn = open_db()
     ensure_getchu_schema(conn)
     cursor = conn.cursor()
-
-    if year and month:
-        cursor.execute("SELECT * FROM getchu_games WHERE date = ?", f"{year}-{month:02d}")
-    else:
-        cursor.execute("SELECT * FROM getchu_games")
-
-    games = cursor.fetchall()
-    for index, game in enumerate(games):
-        game_date = game[0]
-        game_name = game[1]
-        nyaa_data_list = get_nyaa_data(game_name)
-        yymm_format = game_date.replace("-", "")[2:]
-        current_list = [data for data in nyaa_data_list if yymm_format in data.name]
-        current_list.sort(key=lambda x: yymm_format in x.name, reverse=True)
-        if current_list:
-            nyaa_data_list = current_list
-        selected_data = None
-        if nyaa_data_list:
-            for data in nyaa_data_list:
-                if "girlcelly" in data.name:
-                    selected_data = data
-                    break
-            else:
-                selected_data = nyaa_data_list[0]
-            if selected_data:
-                try:
-                    selected_data_date = datetime.strptime(selected_data.date, "%Y-%m-%d %H:%M")
-                except (ValueError, TypeError):
-                    selected_data_date = None
-                try:
-                    game_date_dt = datetime.strptime(game_date, "%Y-%m")
-                except ValueError:
-                    logger.warning("无效的日期格式: %s", game_date)
-                    continue
-                if selected_data_date and selected_data_date < game_date_dt:
-                    cursor.execute(
-                        "UPDATE getchu_games SET comment = ? WHERE date = ? AND name = ?",
-                        (str(selected_data.date), game[0], game[1]),
-                    )
-                cursor.execute(
-                    "UPDATE getchu_games SET size = ?, link = ? WHERE date = ? AND name = ?",
-                    (str(selected_data.size), str(selected_data.link), game[0], game[1]),
-                )
-                conn.commit()
-                logger.info("已更新游戏 %s 的下载链接和大小信息，当前进度: %s/%s", game_name, index + 1, len(games))
-        time.sleep(2)
+    cursor.execute("SELECT DISTINCT date FROM getchu_games ORDER BY date")
+    dates = [row[0] for row in cursor.fetchall()]
     conn.close()
 
-    if year and month:
-        logger.info("已完成%s年%s月的下载链接获取", year, month)
-    else:
-        logger.info("已完成所有下载链接获取")
+    results = []
+    for date in dates:
+        year, month = map(int, date.split("-"))
+        result = match_games_by_month(year, month, dry_run=False, only_missing=False)
+        results.append(result)
+    logger.info("已完成所有月份的下载链接获取")
+    return {"success": True, "months": results}
 
 
 def get_games_data():

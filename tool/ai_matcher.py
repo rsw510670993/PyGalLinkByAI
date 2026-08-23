@@ -26,6 +26,9 @@ DEFAULT_MAX_CANDIDATES = 10
 DEFAULT_CONFIDENCE_THRESHOLD = 0.7
 DEFAULT_REVIEW_THRESHOLD = 0.4
 
+VERDICTS = {"matched", "unmatched", "duplicate", "discarded", "review"}
+KEYWORD_RULE_TYPES = {"include", "discard", "duplicate", "review"}
+
 
 class Aigc2dError(Exception):
     """Base error for aigc2d API communication."""
@@ -168,7 +171,7 @@ def build_match_prompt(game, candidates):
         "你是成人游戏（美少女ゲーム/エロゲ）磁力链接匹配专家。"
         "用户会给出 Getchu 游戏信息和若干 Nyaa 候选。"
         "请根据标题、公司、发售日期、文件大小和候选命名习惯，"
-        "判断哪个候选最可能是该游戏本体的下载链接。"
+        "判断候选是匹配、重复、应弃置还是不匹配。"
         "注意：候选名常包含 限定版/特典/自炊/自购/罗马音/缩写/下载站命名 等变化。"
         "只返回 JSON，不要输出其他内容。"
     )
@@ -188,9 +191,22 @@ def build_match_prompt(game, candidates):
     lines.extend(
         [
             "",
-            "请返回严格 JSON：",
-            '{"matched_index": 0, "confidence": 0.0, "reason": "简短说明", "matched_name": "候选名称"}',
-            "无匹配时 matched_index = -1，confidence = 0。",
+            "请返回严格 JSON，格式如下：",
+            "{",
+            '  "matched_index": 0,',
+            '  "verdict": "matched|unmatched|duplicate|discarded|review",',
+            '  "confidence": 0.0,',
+            '  "reason": "简短说明",',
+            '  "matched_name": "候选名称",',
+            '  "keywords": [{"keyword": "廉价版", "rule_type": "discard"}]',
+            "}",
+            "verdict 取值说明：",
+            "- matched: 候选与 Getchu 游戏本体匹配",
+            "- unmatched: 没有候选匹配",
+            "- duplicate: 候选是同一资源的重复发布",
+            "- discarded: 候选应弃置，如廉价版/特典/OST/补丁等",
+            "- review: 无法确定，需要人工复核",
+            "keywords 只总结这次判断中值得记忆的筛选关键字，rule_type 取 include/discard/duplicate/review。",
         ]
     )
     return system_prompt, "\n".join(lines)
@@ -234,11 +250,40 @@ def parse_match_response(content):
         raise MatchResponseError(f"confidence 不是数字: {data.get('confidence')!r}") from e
     confidence = max(0.0, min(1.0, confidence))
 
+    verdict = str(data.get("verdict") or "").strip().lower()
+    allowed_verdicts = {"matched", "unmatched", "duplicate", "discarded", "review"}
+    if verdict not in allowed_verdicts:
+        verdict = "matched" if matched_index >= 0 else "unmatched"
+
+    keywords = []
+    raw_keywords = data.get("keywords") or []
+    if isinstance(raw_keywords, list):
+        allowed_rule_types = {"include", "discard", "duplicate", "review"}
+        for item in raw_keywords:
+            if not isinstance(item, dict):
+                continue
+            keyword = str(item.get("keyword") or item.get("name") or "").strip()
+            rule_type = str(item.get("rule_type") or item.get("type") or "review").strip().lower()
+            if not keyword or rule_type not in allowed_rule_types:
+                continue
+            try:
+                kw_confidence = float(item.get("confidence", 0.5))
+            except (TypeError, ValueError):
+                kw_confidence = 0.5
+            kw_confidence = max(0.0, min(1.0, kw_confidence))
+            keywords.append({
+                "keyword": keyword,
+                "rule_type": rule_type,
+                "confidence": kw_confidence,
+            })
+
     return {
         "matched_index": matched_index,
+        "verdict": verdict,
         "confidence": confidence,
         "reason": str(data.get("reason") or "").strip(),
         "matched_name": str(data.get("matched_name") or "").strip(),
+        "keywords": keywords,
     }
 
 
@@ -258,6 +303,8 @@ def fallback_rule_match(game, nyaa_data_list):
             confidence=0.0,
             source="none",
             reason="no candidates",
+            verdict="unmatched",
+            keywords=[],
         )
 
     yymm = str(game.date).replace("-", "")[2:]
@@ -290,6 +337,8 @@ def fallback_rule_match(game, nyaa_data_list):
             confidence=0.2,
             source="rule",
             reason="rule: no YYMM candidate, first result link cleared",
+            verdict="review",
+            keywords=[],
         )
 
     candidate = nyaa_data_list[index]
@@ -302,6 +351,8 @@ def fallback_rule_match(game, nyaa_data_list):
         confidence=0.5,
         source="rule",
         reason=reason,
+        verdict="matched",
+        keywords=[],
     )
 
 
@@ -318,14 +369,49 @@ def _strong_rule_hit(game, nyaa_data_list):
     return None
 
 
-def judge_nyaa_match(game, nyaa_data_list, config=None, client=None):
+def filter_candidates_by_keyword_rules(nyaa_data_list, keyword_rules=None):
+    """Remove candidates that match discard/duplicate memory rules."""
+    rules = keyword_rules or []
+    exclude_keywords = [
+        str(r.get("keyword") or "").strip()
+        for r in rules
+        if r.get("rule_type") in ("discard", "duplicate") and str(r.get("keyword") or "").strip()
+    ]
+    if not exclude_keywords:
+        return list(nyaa_data_list)
+
+    filtered = []
+    for candidate in nyaa_data_list:
+        if any(k in candidate.name for k in exclude_keywords):
+            continue
+        filtered.append(candidate)
+    return filtered
+
+
+def judge_nyaa_match(game, nyaa_data_list, config=None, client=None, keyword_rules=None):
     """Unified entry point for Getchu × Nyaa matching.
 
-    Uses strong rules to skip AI when possible, calls aigc2d otherwise,
-    and falls back to the old rule matcher on any AI failure.
+    Uses memory keyword rules and strong rules to skip AI when possible,
+    calls aigc2d otherwise, and falls back to the old rule matcher on any
+    AI failure.
     """
     config = config or Aigc2dConfig.from_config()
-    candidates = list(nyaa_data_list)[: max(1, config.max_candidates)]
+    original_candidates = list(nyaa_data_list)[: max(1, config.max_candidates)]
+    if not original_candidates:
+        return MatchResult(
+            date=getattr(game, "date", None),
+            name=getattr(game, "name", None),
+            company=getattr(game, "company", None),
+            selected_index=-1,
+            confidence=0.0,
+            source="none",
+            reason="no candidates",
+            candidate_count=0,
+            verdict="unmatched",
+            keywords=[],
+        )
+
+    candidates = filter_candidates_by_keyword_rules(original_candidates, keyword_rules)
     base = {
         "date": getattr(game, "date", None),
         "name": getattr(game, "name", None),
@@ -338,8 +424,10 @@ def judge_nyaa_match(game, nyaa_data_list, config=None, client=None):
             **base,
             selected_index=-1,
             confidence=0.0,
-            source="none",
-            reason="no candidates",
+            source="rule",
+            reason="all candidates filtered by memory keyword rules",
+            verdict="discarded",
+            keywords=[],
         )
 
     # Very small candidate sets do not need AI.
@@ -358,6 +446,8 @@ def judge_nyaa_match(game, nyaa_data_list, config=None, client=None):
             confidence=0.95,
             source="rule",
             reason="strong rule: exact title + YYMM",
+            verdict="matched",
+            keywords=[],
         )
 
     if client is None:
@@ -396,6 +486,8 @@ def judge_nyaa_match(game, nyaa_data_list, config=None, client=None):
             confidence=0.0,
             source="ai",
             reason=parsed.get("reason") or "AI no match",
+            verdict=parsed.get("verdict") or "unmatched",
+            keywords=parsed.get("keywords") or [],
         )
 
     if index < 0 or index >= len(candidates):
@@ -412,6 +504,8 @@ def judge_nyaa_match(game, nyaa_data_list, config=None, client=None):
         confidence=parsed["confidence"],
         source="ai",
         reason=parsed.get("reason") or "AI match",
+        verdict=parsed.get("verdict") or "matched",
+        keywords=parsed.get("keywords") or [],
     )
 
 
@@ -423,6 +517,7 @@ __all__ = [
     "build_match_prompt",
     "default_key_path",
     "fallback_rule_match",
+    "filter_candidates_by_keyword_rules",
     "judge_nyaa_match",
     "load_api_key",
     "parse_match_response",

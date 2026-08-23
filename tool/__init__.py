@@ -3,6 +3,7 @@ from .core import (
     deduplicate_games,
     download_games_by_month,
     ensure_getchu_schema,
+    ensure_match_schema,
     get_all_getchu_games,
     get_db_path,
     get_download_link,
@@ -11,12 +12,18 @@ from .core import (
     get_nyaa_data,
     get_raw_getchu_games,
     get_years_list,
+    load_match_keyword_rules,
+    load_match_judgement,
+    match_games_by_month,
     open_db,
+    save_match_judgement,
+    save_match_keyword_rules,
 )
 from .ai_matcher import (
     Aigc2dClient,
     Aigc2dConfig,
     fallback_rule_match,
+    filter_candidates_by_keyword_rules,
     judge_nyaa_match,
     parse_match_response,
 )

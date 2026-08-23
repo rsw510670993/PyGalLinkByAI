@@ -138,6 +138,33 @@ if ($action === 'download_status') {
     json_response($data);
 }
 
+if ($action === 'match_status') {
+    [$code, $data] = run_cli(['match', 'status']);
+    json_response($data);
+}
+
+if ($action === 'match_rules') {
+    [$code, $data] = run_cli(['match', 'rules']);
+    json_response($data);
+}
+
+if ($action === 'match_month') {
+    $body = read_json_body();
+    $year = as_int($body['year'] ?? null, null);
+    $month = as_int($body['month'] ?? null, null);
+    if ($year === null || $month === null) {
+        json_response(['status' => 'error', 'message' => '参数错误']);
+    }
+    $args = ['match', 'month', '--year', strval($year), '--month', strval($month)];
+    if (!empty($body['dry_run'])) $args[] = '--dry-run';
+    if (!empty($body['force'])) $args[] = '--force';
+    if (isset($body['limit'])) $args[] = '--limit';
+    if (isset($body['limit'])) $args[] = strval(as_int($body['limit'], 0));
+    if (!empty($body['only_missing'])) $args[] = '--only-missing';
+    [$code, $data] = run_cli($args);
+    json_response($data);
+}
+
 if ($action === 'stop_download') {
     [$code, $data] = run_cli(['download', 'stop']);
     json_response($data);
