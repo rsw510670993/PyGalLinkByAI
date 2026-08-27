@@ -381,15 +381,34 @@ def _strong_rule_hit(game, nyaa_data_list):
     return None
 
 
+def _is_effective_exclude_rule(rule):
+    """Only use trusted/high-confidence discard/duplicate memory rules.
+
+    One-off AI suggestions with default confidence 0.5 are too noisy to apply
+    as hard filters; manual rules are always trusted.
+    """
+    if rule.get("rule_type") not in ("discard", "duplicate"):
+        return False
+    keyword = str(rule.get("keyword") or "").strip()
+    if not keyword or keyword.lower() in PROTECTED_PUBLISHERS:
+        return False
+    if rule.get("source") == "manual":
+        return True
+    try:
+        hit_count = int(rule.get("hit_count") or 0)
+        confidence = float(rule.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    return hit_count >= 2 and confidence >= 0.7
+
+
 def filter_candidates_by_keyword_rules(nyaa_data_list, keyword_rules=None):
-    """Remove candidates that match discard/duplicate memory rules."""
+    """Remove candidates that match trusted discard/duplicate memory rules."""
     rules = keyword_rules or []
     exclude_keywords = [
-        str(r.get("keyword") or "").strip()
-        for r in rules
-        if r.get("rule_type") in ("discard", "duplicate")
-        and str(r.get("keyword") or "").strip()
-        and str(r.get("keyword") or "").strip().lower() not in PROTECTED_PUBLISHERS
+        str(rule.get("keyword") or "").strip()
+        for rule in rules
+        if _is_effective_exclude_rule(rule)
     ]
     if not exclude_keywords:
         return list(nyaa_data_list)

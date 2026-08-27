@@ -167,7 +167,7 @@ class JudgeNyaaMatchTest(unittest.TestCase):
             NyaaData("2026-08-01 12:00", "1.2 GiB", "サンプルゲーム 廉価版 [202608]", "magnet:?one"),
             NyaaData("2026-08-02 12:00", "1.1 GiB", "[girlcelly] SampleGame [202608]", "magnet:?two"),
         ]
-        rules = [{"keyword": "廉価版", "rule_type": "discard", "confidence": 0.9}]
+        rules = [{"keyword": "廉価版", "rule_type": "discard", "confidence": 0.9, "source": "manual"}]
         filtered = filter_candidates_by_keyword_rules(candidates, rules)
         self.assertEqual(len(filtered), 1)
         self.assertIn("girlcelly", filtered[0].name)
@@ -184,8 +184,8 @@ class JudgeNyaaMatchTest(unittest.TestCase):
             NyaaData("2026-08-02 12:00", "1.1 GiB", "│2D.G.F.│ SampleGame [202608]", "magnet:?two"),
         ]
         bad_rules = [
-            {"keyword": "girlcelly", "rule_type": "duplicate"},
-            {"keyword": "2D.G.F.", "rule_type": "discard"},
+            {"keyword": "girlcelly", "rule_type": "duplicate", "source": "manual"},
+            {"keyword": "2D.G.F.", "rule_type": "discard", "source": "manual"},
         ]
         filtered = filter_candidates_by_keyword_rules(candidates, bad_rules)
         self.assertEqual(len(filtered), 2)
