@@ -174,7 +174,7 @@ def _dedup_key(name, aggressive=False):
     return key
 
 
-def phase_dedupe(conn, dry_run=False):
+def phase_dedupe(conn, dry_run=False, start_date=None, end_date=None):
     """
     DB端合并补丁对应版重复记录（如：X 和 X if エロパッチ対応、X＆Y if エロパッチ対応）
 
@@ -190,7 +190,18 @@ def phase_dedupe(conn, dry_run=False):
     from pathlib import Path
 
     cursor = conn.cursor()
-    cursor.execute("SELECT rowid, * FROM getchu_games WHERE name LIKE '%ifエロパッチ対応%' ORDER BY rowid")
+    where = ["name LIKE '%ifエロパッチ対応%'"]
+    params = []
+    if start_date:
+        where.append("date >= ?")
+        params.append(start_date)
+    if end_date:
+        where.append("date <= ?")
+        params.append(end_date)
+    cursor.execute(
+        f"SELECT rowid, * FROM getchu_games WHERE {' AND '.join(where)} ORDER BY rowid",
+        tuple(params),
+    )
     cols = [d[0] for d in cursor.description]
     patch_rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
 
@@ -379,7 +390,7 @@ def phase_analyze(conn):
     return {"groups": len(candidate_groups), "rows": total_rows, "rows_with_115_secondary": rows_with_115_secondary}
 
 
-def phase_purge_platform_editions(conn):
+def phase_purge_platform_editions(conn, start_date=None, end_date=None):
     """
     排除主机平台版记录（对收集GALGAME不属于目标）
 
@@ -398,7 +409,19 @@ def phase_purge_platform_editions(conn):
     from pathlib import Path
 
     cursor = conn.cursor()
-    cursor.execute("SELECT rowid, * FROM getchu_games ORDER BY date, company")
+    where = []
+    params = []
+    if start_date:
+        where.append("date >= ?")
+        params.append(start_date)
+    if end_date:
+        where.append("date <= ?")
+        params.append(end_date)
+    sql = "SELECT rowid, * FROM getchu_games"
+    if where:
+        sql += f" WHERE {' AND '.join(where)}"
+    sql += " ORDER BY date, company"
+    cursor.execute(sql, tuple(params))
     cols = [d[0] for d in cursor.description]
     rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
 
@@ -752,8 +775,8 @@ def main():
     parser.add_argument("--start-year", type=int, default=2008)
     parser.add_argument("--end-year", type=int, default=2026)
     parser.add_argument("--sleep", type=float, default=0.25, help="缩略图下载限速秒数")
-    parser.add_argument("--start-date", default=None, help="dedupe_editions 日期过滤起点(YYYY-MM)")
-    parser.add_argument("--end-date", default=None, help="dedupe_editions 日期过滤终点(YYYY-MM)")
+    parser.add_argument("--start-date", default=None, help="清理阶段日期过滤起点(YYYY-MM)")
+    parser.add_argument("--end-date", default=None, help="清理阶段日期过滤终点(YYYY-MM)")
     args = parser.parse_args()
 
     paths = runtime_paths()
@@ -769,7 +792,7 @@ def main():
         print_summary(conn, "merge后")
     elif args.phase == "dedupe":
         print_summary(conn, "dedupe前")
-        stats = phase_dedupe(conn)
+        stats = phase_dedupe(conn, start_date=args.start_date, end_date=args.end_date)
         logger.info("补丁变体去重统计: %s", stats)
         print_summary(conn, "dedupe后")
     elif args.phase == "analyze":
@@ -777,7 +800,7 @@ def main():
         logger.info("分析完成: %s", stats)
     elif args.phase == "purge_platform":
         print_summary(conn, "purge前")
-        stats = phase_purge_platform_editions(conn)
+        stats = phase_purge_platform_editions(conn, start_date=args.start_date, end_date=args.end_date)
         logger.info("主机平台版排除统计: %s", stats)
         print_summary(conn, "purge后")
     elif args.phase == "dedupe_cross_month":
