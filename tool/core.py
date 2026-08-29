@@ -743,8 +743,7 @@ def get_games_data():
     cursor.execute(
         """
         SELECT
-            substr(date, 1, 4) as year,
-            substr(date, 6, 2) as month,
+            date,
             name,
             company,
             link as download_url,
@@ -753,24 +752,32 @@ def get_games_data():
             COALESCE(downloaded, 0) as downloaded,
             infohash_hex,
             COALESCE(submitted_115, 0) as submitted_115,
-            submitted_pick_code
+            submitted_pick_code,
+            getchu_id,
+            thumb_url,
+            thumb_path
         FROM getchu_games
-        ORDER BY year DESC, month DESC
+        ORDER BY date DESC
         """
     )
     games = [
         GetchuGame(
-            f"{row[0]}-{row[1]}",
+            row[0],
+            row[1],
             row[2],
-            row[3],
             None,
+            row[3],
             row[4],
             row[5],
             row[6],
             row[7],
             row[8],
             row[9],
-            row[10],
+            extra={
+                "getchu_id": row[10],
+                "thumb_url": row[11],
+                "thumb_path": row[12]
+            }
         )
         for row in cursor.fetchall()
     ]

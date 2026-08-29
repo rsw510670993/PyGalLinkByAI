@@ -179,17 +179,20 @@ def cmd_games(args):
         {
             "data": [
                 {
-                    "year": g.year,
-                    "month": g.month,
-                    "name": g.name,
-                    "company": g.company,
-                    "download_url": g.link,
-                    "nyaa_name": g.nyaa_name,
-                    "comment": g.comment,
-                    "downloaded": g.downloaded,
-                    "submitted_115": getattr(g, "submitted_115", 0),
+                    "year": game.date.split('-')[0],
+                    "month": game.date.split('-')[1],
+                    "name": game.name,
+                    "company": game.company,
+                    "download_url": game.link,
+                    "nyaa_name": game.nyaa_name,
+                    "comment": game.comment,
+                    "downloaded": game.downloaded,
+                    "submitted_115": getattr(game, "submitted_115", 0),
+                    "getchu_id": getattr(game, "extra", {}).get("getchu_id"),
+                    "thumb_url": getattr(game, "extra", {}).get("thumb_url"),
+                    "thumb_path": getattr(game, "extra", {}).get("thumb_path"),
                 }
-                for g in games_data
+                for game in games_data
             ],
             "current_page": page,
             "per_page": per_page,
