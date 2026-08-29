@@ -5,7 +5,16 @@ import re
 import sys
 from pathlib import Path
 
-from .runtime import ensure_home_env, repo_root
+_TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
+
+try:
+    # 作为 tool 包的一部分被导入时使用相对导入（保持原有行为）
+    from .runtime import ensure_home_env, repo_root
+except ImportError:
+    # 独立脚本方式运行时的回退导入
+    if _TOOL_DIR not in sys.path:
+        sys.path.insert(0, _TOOL_DIR)
+    from runtime import ensure_home_env, repo_root
 
 
 def _tool_dir():
@@ -337,6 +346,237 @@ def search_files(keyword, cid=0):
         return data
     except Exception:
         return []
+
+
+def _crumbs_to_path(crumbs, tail_name=None):
+    """把 fs_files 返回的面包屑 path 数组拼成完整路径字符串"""
+    parts = []
+    for c in crumbs or []:
+        name = (c or {}).get("name")
+        if name and name not in ("根目录", "回收站"):
+            parts.append(name)
+    if tail_name:
+        parts.append(tail_name)
+    return "/" + "/".join(parts) if parts else "/"
+
+
+def locate_file(keyword, prefer_dir=True, verify_tokens=None):
+    """按关键词全盘搜索文件/目录，返回其真实完整路径。
+
+    verify_tokens: 可选校验词列表（如磁链dn中的[YYMMDD]日期码、规范游戏名）。
+        给出时，在候选中按"包含校验词数量"选最佳；同分时目录优先。
+        dir_matches: 达到最高分的目录数量（>1 表示有歧义，调用方应跳过改名）。
+
+    返回: {"found": bool, "path": str, "name": str, "pick_code": str,
+           "parent_path": str, "is_dir": bool, "candidates": [...],
+           "verified": bool, "cid": str, "pid": str, "dir_matches": int}
+    """
+    result = {
+        "found": False,
+        "path": None,
+        "name": None,
+        "pick_code": None,
+        "parent_path": None,
+        "is_dir": False,
+        "candidates": [],
+        "verified": False,
+        "cid": None,
+        "pid": None,
+        "dir_matches": 0,
+    }
+    client = load_client()
+    if client is None:
+        result["message"] = "未登录"
+        return result
+    try:
+        _, check_response = _import_p115client()
+
+        # 1) 全盘搜索
+        resp = check_response(client.fs_search(keyword))
+        items = resp if isinstance(resp, list) else (resp.get("data") or []) if isinstance(resp, dict) else []
+        if not items:
+            return result
+
+        # 2) 收集候选（最多前5个）
+        candidates = []
+        for it in items[:5]:
+            if isinstance(it, dict):
+                candidates.append(
+                    {
+                        "name": it.get("n") or it.get("name"),
+                        "cid": it.get("cid"),
+                        "pid": it.get("pid"),
+                        "pick_code": it.get("pc") or it.get("pick_code"),
+                    }
+                )
+        result["candidates"] = candidates
+
+        # 3) 选择目标候选
+        def _is_dir(it):
+            return str(it.get("fc", "")) == "0"
+
+        target = None
+        if verify_tokens:
+            # 按"包含校验词数量"选最佳，同分时目录优先
+            best, best_score, best_dir, dir_top = None, 0, False, 0
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                n = it.get("n") or it.get("name") or ""
+                s = sum(1 for t in verify_tokens if t and t in n)
+                if s == 0:
+                    continue
+                d = _is_dir(it)
+                if s > best_score:
+                    best, best_score, best_dir = it, s, d
+                    dir_top = 1 if d else 0
+                elif s == best_score and d:
+                    dir_top += 1
+                    if not best_dir:
+                        best, best_dir = it, True
+            if best is not None:
+                target = best
+                result["verified"] = True
+                result["dir_matches"] = dir_top
+        if target is None:
+            if prefer_dir:
+                for it in items:
+                    if isinstance(it, dict) and _is_dir(it):
+                        target = it
+                        break
+            if target is None:
+                for it in items:
+                    if isinstance(it, dict) and it.get("pid"):
+                        target = it
+                        break
+
+        if not target:
+            return result
+
+        # 4) 用父目录cid获取面包屑，拼出完整路径
+        parent_path = None
+        pid = target.get("pid")
+        if pid:
+            try:
+                resp2 = check_response(client.fs_files({"cid": str(pid), "limit": 1, "show_dir": 1}))
+                parent_path = _crumbs_to_path(resp2.get("path"))
+            except Exception:
+                parent_path = None
+
+        name = target.get("n") or target.get("name") or ""
+        result["found"] = True
+        result["name"] = name
+        result["pick_code"] = target.get("pc") or target.get("pick_code")
+        result["cid"] = target.get("cid")
+        result["pid"] = pid
+        result["parent_path"] = parent_path
+        result["path"] = (parent_path.rstrip("/") + "/" + name) if parent_path else name
+        # fc=="0" 为目录（搜索结果无type字段时以fc判断）
+        result["is_dir"] = _is_dir(target)
+        return result
+    except Exception as e:
+        result["message"] = str(e)
+        return result
+
+
+def rename_item(file_id, new_name):
+    """重命名115文件/目录（web端点 batch_rename）"""
+    client = load_client()
+    if client is None:
+        return {"success": False, "message": "未登录"}
+    try:
+        _, check_response = _import_p115client()
+        resp = check_response(client.fs_rename({f"files_new_name[{file_id}]": new_name}))
+        return {"success": True, "response": resp}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+def get_item_name(file_id):
+    """按file_id查询名称（用于精确校验目录是否存在）"""
+    client = load_client()
+    if client is None:
+        return None
+    try:
+        _, check_response = _import_p115client()
+        resp = check_response(client.fs_file_skim({"file_id": str(file_id)}))
+        data = resp.get("data") or []
+        if data and isinstance(data[0], dict):
+            return data[0].get("file_name")
+    except Exception:
+        pass
+    return None
+
+
+def list_dir_children_names(cid, max_pages=20):
+    """列出目录下所有子项名称（分页），用于重名冲突检查。失败返回None"""
+    client = load_client()
+    if client is None:
+        return None
+    names = []
+    try:
+        _, check_response = _import_p115client()
+        offset = 0
+        for _ in range(max_pages):
+            resp = check_response(
+                client.fs_files({"cid": str(cid), "limit": 200, "offset": offset, "show_dir": 1})
+            )
+            data = resp.get("data") or []
+            for it in data:
+                if isinstance(it, dict) and it.get("n"):
+                    names.append(it["n"])
+            if len(data) < 200:
+                break
+            offset += len(data)
+        return names
+    except Exception:
+        return None
+
+
+def parent_crumbs_path(pid):
+    """获取指定目录cid的面包屑完整路径（不含自身名）"""
+    client = load_client()
+    if client is None:
+        return None
+    try:
+        _, check_response = _import_p115client()
+        resp = check_response(client.fs_files({"cid": str(pid), "limit": 1, "show_dir": 1}))
+        return _crumbs_to_path(resp.get("path"))
+    except Exception:
+        return None
+
+
+def locate_game_folder(magnet=None, name=None):
+    """定位游戏文件夹（整理115专用）。
+
+    定位顺序:
+      1. 规范游戏名（手动修正过/已重命名的文件夹名都包含游戏名）
+         校验词=完整游戏名，排除同系列其他章节
+      2. 磁链dn（原始下载文件夹名）
+         校验词=dn中的[YYMMDD]日期码
+
+    返回 locate_file 的结果，未找到返回 None。
+    """
+    dn = None
+    if magnet:
+        try:
+            info = parse_magnet_simple(magnet)
+            dn = (info or {}).get("dn")
+        except Exception:
+            dn = None
+
+    if name and str(name).strip():
+        r = locate_file(str(name).strip(), prefer_dir=True, verify_tokens=[str(name).strip()])
+        if r.get("found") and r.get("path"):
+            return r
+
+    if dn and str(dn).strip():
+        date_codes = re.findall(r"\[(\d{6})\]", dn)
+        r = locate_file(str(dn).strip(), prefer_dir=True, verify_tokens=date_codes or None)
+        if r.get("found") and r.get("path"):
+            return r
+
+    return None
 
 
 def _get_default_save_path():

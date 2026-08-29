@@ -1211,6 +1211,13 @@ def build_parser():
     p_115_check_all_worker.add_argument("--month", type=int)
     p_115_check_all_worker.set_defaults(func=cmd_115_check_all_worker)
 
+    p_115_organize = _115_sub.add_parser("organize")
+    p_115_organize.add_argument("--year", type=int, required=True, help="年份")
+    p_115_organize.add_argument("--month", type=int, help="月份（不填=整年）")
+    p_115_organize.add_argument("--name", type=str, help="仅处理指定游戏")
+    p_115_organize.add_argument("--dry-run", action="store_true", dest="dry_run", help="预览模式，不实际重命名")
+    p_115_organize.set_defaults(func=cmd_115_organize)
+
     p_match = sub.add_parser("match")
     match_sub = p_match.add_subparsers(dest="match_action", required=True)
 
@@ -1264,6 +1271,21 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
     args.func(args)
+
+# 整理115: 定位游戏文件夹并重命名为 [发布年月日][公司]游戏名
+def cmd_115_organize(args):
+    try:
+        from tool.organize_115 import organize_batch
+
+        result = organize_batch(
+            year=args.year,
+            month=args.month,
+            name=args.name,
+            dry_run=bool(args.dry_run),
+        )
+        _print(result)
+    except Exception as e:
+        _print({"status": "error", "message": f"整理失败: {str(e)}"})
 
 
 if __name__ == "__main__":
