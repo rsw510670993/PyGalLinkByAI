@@ -160,12 +160,15 @@ def _dedup_key(name, aggressive=False):
     if aggressive:
         # 额外剥离常见版本/店铺特典尾缀（仅用于精确匹配已有基底时）
         key = _re.sub(
-            r"\s*(?:TREASURE BOX|プレミアム版|プレミアムエディション|プレミアム\s*$|4版|5版|DL版|ダウンロード版|"
-            r"パッケージ版|版$|特別版.*$|通常版|初回版|限定版|豪華版|同梱版|セット版|"
-            r"げっちゅ屋限定.*|Getchu.com限定.*|描き下ろし.*|抱き枕カバー付.*|"
-            r"ドラマCDセット.*|B2タペストリーセット.*|B2タペストリー.*|タペストリー.*|"
-            r"アクリルパネル付き|＋アクリルパネル付き|初回特典版.*|早期予約.*|"
-            r"シークレットBOX.*|Wスエード.*|アクアヴェール.*)$",
+            r"\s*(?:TREASURE BOX.*|プレミアム版|プレミアムエディション|プレミアム\s*$|4版|5版|2版|"
+            r"DL版|ダウンロード版|パッケージ版|版$|特別版.*$|通常版|初回版|限定版|豪華版|同梱版|"
+            r"セット版|人妻セット|メモリアル特装版.*|げっちゅ屋限定.*|Getchu.com限定.*|"
+            r"描き下ろし.*|抱き枕カバー付.*|ドラマCDセット.*|B2タペストリーセット.*|"
+            r"B2タペストリー.*|タペストリー.*|アクリルパネル付き|＋アクリルパネル付き|"
+            r"アクリルジオラマつき|特製痛DVDドライブ付き|初回特典版.*|早期予約.*|"
+            r"シークレットBOX.*|Wスエード.*|アクアヴェール.*|＜.*予約＞|"
+            r"「.*」WスエードB2タペストリー付.*|森山しじみ.*|さいとうつかさ.*|noyF先生.*|"
+            r"＋(?:noyF先生|.*描き下ろし).*)$",
             "", key,
         ).strip()
     return key
@@ -376,13 +379,13 @@ def phase_analyze(conn):
     return {"groups": len(candidate_groups), "rows": total_rows, "rows_with_115_secondary": rows_with_115_secondary}
 
 
-def phase_dedupe_editions(conn):
+def phase_dedupe_editions(conn, start_date=None, end_date=None):
     """
     DB端合并店铺特典/版本变体重复记录（保守规则：同月同公司剥后缀后同名）
 
     与 phase_dedupe（if エロパッチ対応）互补，覆盖 TREASURE BOX/早期予約/抱き枕カバー等。
     - 只合并组内存在明显基底（最短名）的情况
-    - 主记录优先115数据，其次短名称
+    - 主记录优先115数据，其次短名称；同gid多行以新记录(rowid最大)为准
     - 从记录115数据并入主记录；独立磁链归档到主记录备注
     - 被删行写JSON侧车（非DB备份）
     """
@@ -391,7 +394,22 @@ def phase_dedupe_editions(conn):
     from collections import defaultdict
 
     cursor = conn.cursor()
-    cursor.execute("SELECT rowid, * FROM getchu_games ORDER BY date, company")
+    cursor = conn.cursor()
+    if start_date or end_date:
+        where = []
+        params = []
+        if start_date:
+            where.append("date >= ?")
+            params.append(start_date)
+        if end_date:
+            where.append("date <= ?")
+            params.append(end_date)
+        cursor.execute(
+            f"SELECT rowid, * FROM getchu_games WHERE {' AND '.join(where)} ORDER BY date, company",
+            tuple(params),
+        )
+    else:
+        cursor.execute("SELECT rowid, * FROM getchu_games ORDER BY date, company")
     cols = [d[0] for d in cursor.description]
     rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
 
@@ -545,6 +563,8 @@ def main():
     parser.add_argument("--start-year", type=int, default=2008)
     parser.add_argument("--end-year", type=int, default=2026)
     parser.add_argument("--sleep", type=float, default=0.25, help="缩略图下载限速秒数")
+    parser.add_argument("--start-date", default=None, help="dedupe_editions 日期过滤起点(YYYY-MM)")
+    parser.add_argument("--end-date", default=None, help="dedupe_editions 日期过滤终点(YYYY-MM)")
     args = parser.parse_args()
 
     paths = runtime_paths()
@@ -568,7 +588,7 @@ def main():
         logger.info("分析完成: %s", stats)
     elif args.phase == "dedupe_editions":
         print_summary(conn, "dedupe_editions前")
-        stats = phase_dedupe_editions(conn)
+        stats = phase_dedupe_editions(conn, start_date=args.start_date, end_date=args.end_date)
         logger.info("版本变体去重统计: %s", stats)
         print_summary(conn, "dedupe_editions后")
     elif args.phase == "crawl":
