@@ -13,6 +13,7 @@
             <a class="navbar-brand" href="#">游戏链接采集</a>
             <div class="navbar-nav">
                 <a class="nav-link active" href="<?= $base ?>/index.php">首页</a>
+                  
                 <a class="nav-link" href="<?= $base ?>/tool/data.php">数据展示</a>
                 <a class="nav-link" href="<?= $base ?>/calendar.php">年历</a>
                 <a class="nav-link" href="<?= $base ?>/tool/logs.php">日志</a>
@@ -31,19 +32,19 @@
                     <div class="card-body">
                         <div class="row g-2 align-items-end">
                             <div class="col-6">
-                                <label for="start_year" class="form-label mb-1">起始年份</label>
-                                <input type="number" id="start_year" class="form-control" min="1980" max="3000" value="2018">
+                                <label for="spider_start_year" class="form-label mb-1">开始年</label>
+                                <input type="number" id="spider_start_year" class="form-control" min="1980" max="3000" value="2018">
                             </div>
                             <div class="col-6">
-                                <label for="end_year" class="form-label mb-1">结束年份</label>
-                                <input type="number" id="end_year" class="form-control" min="1980" max="3000" value="2020">
+                                <label for="spider_end_year" class="form-label mb-1">结束年</label>
+                                <input type="number" id="spider_end_year" class="form-control" min="1980" max="3000" value="2020">
                             </div>
                             <div class="col-12 d-flex gap-2">
                                 <button id="start_btn" class="btn btn-primary">开始爬取</button>
                                 <button id="stop_btn" class="btn btn-danger" disabled>停止爬取</button>
                             </div>
                         </div>
-                        <div class="small text-muted mt-2">重复爬取不会删除旧数据，已存在记录会被自动跳过。</div>
+                        <div class="small text-muted mt-2">爬取Getchu游戏清单（按年获取），重复爬取不会删除旧数据，已存在记录会被自动跳过。</div>
                     </div>
                 </div>
             </div>
@@ -54,33 +55,33 @@
                     <div class="card-body">
                         <div class="row g-2 align-items-end">
                             <div class="col-6">
-                                <label for="download_year" class="form-label mb-1">下载年份</label>
-                                <input type="number" id="download_year" class="form-control" min="1980" max="3000" value="2020">
+                                <label for="download_start_date" class="form-label mb-1">开始年月</label>
+                                <input type="month" id="download_start_date" class="form-control" min="1980-01" max="2100-12" value="2020-01">
                             </div>
                             <div class="col-6">
-                                <label for="download_month" class="form-label mb-1">月份</label>
-                                <select id="download_month" class="form-select">
-                                    <option value="0">全部月份</option>
-                                    <option value="1">1月</option>
-                                    <option value="2">2月</option>
-                                    <option value="3">3月</option>
-                                    <option value="4">4月</option>
-                                    <option value="5">5月</option>
-                                    <option value="6">6月</option>
-                                    <option value="7">7月</option>
-                                    <option value="8">8月</option>
-                                    <option value="9">9月</option>
-                                    <option value="10">10月</option>
-                                    <option value="11">11月</option>
-                                    <option value="12">12月</option>
-                                </select>
+                                <label for="download_end_date" class="form-label mb-1">结束年月</label>
+                                <input type="month" id="download_end_date" class="form-control" min="1980-01" max="2100-12" value="2020-12">
+                                    
+                                    
+                                    
+                                    
+                                    
+                                    
+                                    
+                                    
+                                    
+                                    
+                                    
+                                    
+                                    
+                                
                             </div>
                             <div class="col-12 d-flex gap-2">
-                                <button id="download_btn" class="btn btn-success">获取下载链接</button>
+                                <button id="download_btn" class="btn btn-success">获取Nyaa磁链</button>
                                 <button id="download_stop_btn" class="btn btn-outline-danger" disabled>停止下载</button>
                             </div>
                         </div>
-                        <div class="small text-muted mt-2">下载任务会更新数据库中的链接与 nyaa_name。</div>
+                        <div class="small text-muted mt-2">下载任务会获取Nyaa磁链并更新数据库中的链接与 nyaa_name。</div>
                     </div>
                 </div>
             </div>
@@ -164,8 +165,14 @@
         }
 
         downloadBtn.addEventListener('click', async () => {
-            const year = document.getElementById('download_year').value;
-            const month = document.getElementById('download_month').value;
+            const startDate = document.getElementById('download_start_date').value;
+            const endDate = document.getElementById('download_end_date').value;
+              
+              // 将日期转换为年份和月份参数，处理日期范围
+              const startYear = new Date(startDate).getFullYear();
+              const startMonth = new Date(startDate).getMonth() + 1;
+              const endYear = new Date(endDate).getFullYear();
+              const endMonth = new Date(endDate).getMonth() + 1;
 
             try {
                 const response = await fetch(`${basePath}/tool/api.php?action=start_download`, {
@@ -174,8 +181,10 @@
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
-                        year: year,
-                        month: month
+                        start_year: startYear,
+                        start_month: startMonth,
+                          end_year: endYear,
+                          end_month: endMonth
                     })
                 });
 
@@ -212,8 +221,8 @@
         });
 
         startBtn.addEventListener('click', async () => {
-            const startYear = document.getElementById('start_year').value;
-            const endYear = document.getElementById('end_year').value;
+            const startYear = document.getElementById('spider_start_year').value;
+            const endYear = document.getElementById('spider_end_year').value;
 
             try {
                 const response = await fetch(`${basePath}/tool/api.php?action=start_spider`, {

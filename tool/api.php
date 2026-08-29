@@ -124,12 +124,30 @@ if ($action === 'stop_spider') {
 
 if ($action === 'start_download') {
     $body = read_json_body();
-    $year = as_int($body['year'] ?? null, null);
-    $month = as_int($body['month'] ?? 0, 0);
-    if ($year === null) {
+    $startYear = as_int($body['start_year'] ?? null, null);
+    $startMonth = as_int($body['start_month'] ?? null, null);
+    $endYear = as_int($body['end_year'] ?? null, null);
+    $endMonth = as_int($body['end_month'] ?? null, null);
+    
+    if ($startYear === null || $endYear === null || $startMonth === null || $endMonth === null) {
         json_response(['status' => 'error', 'message' => '参数错误']);
     }
-    [$code, $data] = run_cli(['download', 'start', '--year', strval($year), '--month', strval($month)]);
+    
+    // 处理日期范围，每个月都运行一次下载
+    $args = ['download', 'start'];
+    for ($year = $startYear; $year <= $endYear; $year++) {
+        $startMonthOfYear = ($year == $startYear) ? $startMonth : 1;
+        $endMonthOfYear = ($year == $endYear) ? $endMonth : 12;
+        
+        for ($month = $startMonthOfYear; $month <= $endMonthOfYear; $month++) {
+            $args[] = '--year';
+            $args[] = strval($year);
+            $args[] = '--month';
+            $args[] = strval($month);
+        }
+    }
+    
+    [$code, $data] = run_cli($args);
     json_response($data);
 }
 
