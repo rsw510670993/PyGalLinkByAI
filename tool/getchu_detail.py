@@ -220,6 +220,12 @@ def _download_thumbnail(gid, url, headers):
         with open(local_path, 'wb') as f:
             f.write(response.content)
         
+        # 设置全局可读权限（Web服务器以www-data用户运行，需要能读取）
+        try:
+            os.chmod(local_path, 0o644)
+        except OSError:
+            pass
+        
         # 验证文件
         if os.path.getsize(local_path) < 1000:  # 小于1KB可能是错误页面
             logger.warning("⚠️ 下载的缩略图过小: %s (%d bytes)", local_path, os.path.getsize(local_path))

@@ -16,12 +16,24 @@
             min-width: 250px;
         }
 
-        .thumb-col img {
+        .game-thumb {
             width: 250px;
             height: auto;
-            object-fit: cover;
+            display: block;
             border-radius: 4px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .thumb-placeholder {
+            width: 250px;
+            height: 140px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #f8f9fa;
+            border: 1px dashed #ced4da;
+            border-radius: 4px;
+            color: #adb5bd;
         }
 
         .game-name-cell {
@@ -278,78 +290,66 @@
                         <button class="btn btn-sm btn-primary" id="edit-save-btn">保存</button>
                         <button class="btn btn-sm btn-secondary" data-bs-dismiss="modal">取消</button>
                     </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.bootcdn.net/ajax/libs/jquery/3.6.4/jquery.min.js"></script>
+    <script src="https://cdn.bootcdn.net/ajax/libs/bootstrap-datepicker/1.9.0/js/bootstrap-datepicker.min.js"></script>
+    <script src="https://cdn.bootcdn.net/ajax/libs/bootstrap-datepicker/1.9.0/locales/bootstrap-datepicker.zh-CN.min.js"></script>
+    <script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.1/js/bootstrap.bundle.min.js"></script>
+
+    <script>
+const basePath = <?= json_encode($base, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?>;
+let currentPage = 1;
+let suppressDateChangeLoad = false;
+
 function updateTable(data) {
 
-    const tbody = document.querySelector("#gamesTable tbody");
+    const tbody = document.querySelector('#gamesTable tbody');
 
     tbody.innerHTML = data.map(game => {
         const isDownloaded = game.downloaded == 1;
         const isSubmitted = game.submitted_115 == 1;
-        const rowClass = isDownloaded ? " class="table-success"" : isSubmitted ? " class="table-info"" : "";
-        const dateParts = game.date.split("-");
-        const year = dateParts[0];
-        const month = dateParts[1];
-        const magnet = game.download_url || "";
+        const rowClass = isDownloaded ? ' class="table-success"' : isSubmitted ? ' class="table-info"' : '';
+        const dateFull = `${game.year}-${String(game.month).padStart(2, '0')}`;
+        const magnet = game.download_url || '';
         const encName = encodeURIComponent(game.name);
-        const encNyaa = game.nyaa_name ? encodeURIComponent(game.nyaa_name) : "";
-        const thumbUrl = game.thumb_url || "";
-        const thumbPath = game.thumb_path || "";
-        
-        let thumbHtml = "";
-        if (thumbUrl || thumbPath) {
-            const imgSrc = thumbUrl || thumbPath;
-            thumbHtml = `<img src="${imgSrc}" alt="${game.name}" class="img-fluid" style="width: 250px; height: auto; object-fit: cover; border-radius: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">`;
-        } else {
-            thumbHtml = "<span class="text-muted small">无缩略图</span>";
+        const encNyaa = game.nyaa_name ? encodeURIComponent(game.nyaa_name) : '';
+
+        // 缩略图：优先本地文件（按 gid 约定路径），其次远程 URL；未搬迁数据可能没有图片，显示占位符
+        const gid = game.getchu_id || '';
+        const thumbUrl = game.thumb_url || '';
+        const localThumb = gid ? `${basePath}/thumbnails/${encodeURIComponent(gid)}.jpg` : '';
+        const imgSrc = localThumb || thumbUrl;
+        const placeholder = '<div class="thumb-placeholder">无图片</div>';
+
+        let thumbHtml = placeholder;
+        if (imgSrc) {
+            thumbHtml = `<img src="${imgSrc}" alt="${encName}" class="game-thumb" loading="lazy" onerror="thumbFallback(this)">`;
         }
-        
+
         return `
-        <tr${rowClass} data-date="${game.date}" data-name="${encName}" data-magnet="${encodeURIComponent(magnet)}" data-downloaded="${game.downloaded || 0}" data-submitted-115="${game.submitted_115 || 0}" data-nyaa-name="${encNyaa}">
+        <tr${rowClass} data-date="${dateFull}" data-name="${encName}" data-magnet="${encodeURIComponent(magnet)}" data-downloaded="${game.downloaded || 0}" data-submitted-115="${game.submitted_115 || 0}" data-nyaa-name="${encNyaa}">
             <td class="check-col text-center">
-                ${!magnet ? "<span class="text-muted small">-</span>"
-                    : isDownloaded ? "<span class="badge bg-success">已下载</span>"
-                    : isSubmitted ? "<span class="badge bg-primary">已提交</span>"
+                ${!magnet ? '<span class="text-muted small">-</span>'
+                    : isDownloaded ? '<span class="badge bg-success">已下载</span>'
+                    : isSubmitted ? '<span class="badge bg-primary">已提交</span>'
                     : `<input type="checkbox" class="game-checkbox" checked onchange="handleCheckboxChange(this)">`
                 }
             </td>
-            <td class="ym-col">${year}/${month}</td>
+            <td class="ym-col">${game.year}/${game.month}</td>
             <td class="thumb-col">${thumbHtml}</td>
-            <td class="game-name-cell editable-cell" data-field="name">${game.name}${game.nyaa_name ? `<div class="text-muted small" style="display:${magnet ? "none" : ""}">${game.nyaa_name}</div>` : ""}</td>
+            <td class="game-name-cell editable-cell" data-field="name">${game.name}${game.nyaa_name ? `<div class="text-muted small" style="display:${magnet ? 'none' : ''}">${game.nyaa_name}</div>` : ''}</td>
             <td class="company-col editable-cell" data-field="company">${game.company}</td>
             <td class="actions-col">
                 ${magnet ?
                     `<div class="btn-group actions-group" role="group">
-                        <button type="button" class="btn btn-success btn-sm btn-115-submit"${isSubmitted ? " disabled" : ""}
+                        <button type="button" class="btn btn-success btn-sm btn-115-submit"${isSubmitted ? ' disabled' : ''}
                             data-magnet="${encodeURIComponent(magnet)}"
-                            data-year="${year}">115云下载</button>
+                            data-year="${game.year}">115云下载</button>
                         <button type="button" class="btn btn-outline-secondary btn-sm magnet-check-btn"
-                            data-magnet="${encodeURIComponent(magnet)}"
-                            data-name="${encName}"
-                            data-year="${year}"
-                            data-date="${game.date}">校验</button>
-                    </div>`
-                    : "<span class="text-muted small">暂无可编辑</span>"
-                }
-            </td>
-        </tr>
-        `;
-    }).join("");
-
-    updateBatchButtons();
-    updateToggleButtonText();
-}
-                            data-date="${dateFull}">校验</button>
-                    </div>`
-                    : "<span class="text-muted small">暂无可编辑</span>"
-                }
-            </td>
-        </tr>
-        `;
-    }).join("");
-
-    updateBatchButtons();
-    updateToggleButtonText();
-}
                             data-magnet="${encodeURIComponent(magnet)}"
                             data-name="${encName}"
                             data-year="${game.year}"
@@ -366,6 +366,14 @@ function updateTable(data) {
     updateToggleButtonText();
 }
 
+// 缩略图加载失败（404/防盗链）时替换为占位符
+function thumbFallback(img) {
+    const placeholder = document.createElement('div');
+    placeholder.className = 'thumb-placeholder';
+    placeholder.textContent = '无图片';
+    img.replaceWith(placeholder);
+}
+
 function parseMonthValue(value) {
     const raw = (value || '').trim();
     if (!raw) return null;
@@ -376,7 +384,7 @@ function parseMonthValue(value) {
 
 function showEmptyMessage(message) {
     const tbody = document.querySelector('#gamesTable tbody');
-    tbody.innerHTML = `<tr><td colspan="5" class="text-center text-muted py-4">${message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-4">${message}</td></tr>`;
     document.getElementById('page-info').textContent = '';
     updateMonthAllDownloadedBadge(null, null);
     document.getElementById('prev-page').disabled = true;
