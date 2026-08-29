@@ -41,6 +41,11 @@ logging.basicConfig(
 logger = logging.getLogger("refresh_thumbnails")
 
 
+def _sidecar_stamp():
+    """生成不会因同一秒连续执行而碰撞的侧车时间戳。"""
+    return f"{time.strftime('%Y%m%d_%H%M%S')}_{time.time_ns()}"
+
+
 def phase_merge(conn):
     """合并新格式(YYYY-MM-DD)重复行到旧格式(YYYY-MM)行，返回统计 dict"""
     cursor = conn.cursor()
@@ -171,7 +176,31 @@ def _dedup_key(name, aggressive=False):
             r"＋(?:noyF先生|.*描き下ろし).*)$",
             "", key,
         ).strip()
+        # 同一内容的套装命名差异：先经过上面的“版”尾缀清理，再剥离套装类型。
+        key = _re.sub(r"\s+(?:ゲーム|3点)セット$", "", key).strip()
+        # “with パワーアップキット”和单独写“パワーアップキット”按同一版本处理。
+        key = _re.sub(r"\s+with\s+(?=パワーアップキット$)", " ", key).strip()
     return key
+
+
+def _is_complete_game_bundle(name):
+    name = name or ""
+    return bool(
+        "ゲームセット" in name
+        or name.endswith(" with パワーアップキット")
+    )
+
+
+def _edition_primary_rank(row):
+    """版本变体主记录排序：数据完整性优先，其次保留包含完整游戏的套装。"""
+    name = row.get("name") or ""
+    return (
+        -(1 if row.get("downloaded") else 0),
+        -(1 if row.get("submitted_115") else 0),
+        -(1 if row.get("link") else 0),
+        -(1 if _is_complete_game_bundle(name) else 0),
+        len(name),
+    )
 
 
 def phase_dedupe(conn, dry_run=False, start_date=None, end_date=None):
@@ -300,7 +329,7 @@ def phase_dedupe(conn, dry_run=False, start_date=None, end_date=None):
     if deleted_rows:
         sidecar_dir = Path("/var/www/html/pyGal/db_backups")
         sidecar_dir.mkdir(parents=True, exist_ok=True)
-        sidecar = sidecar_dir / f"dedup_deleted_{time.strftime('%Y%m%d_%H%M%S')}.json"
+        sidecar = sidecar_dir / f"dedup_deleted_{_sidecar_stamp()}.json"
         sidecar.write_text(json.dumps(deleted_rows, ensure_ascii=False, indent=2), encoding="utf-8")
         logger.info("被删行已写入侧车: %s", sidecar)
 
@@ -472,7 +501,7 @@ def phase_purge_platform_editions(conn, start_date=None, end_date=None):
     if deleted_rows:
         sidecar_dir = Path("/var/www/html/pyGal/db_backups")
         sidecar_dir.mkdir(parents=True, exist_ok=True)
-        sidecar = sidecar_dir / f"purge_platform_deleted_{time.strftime('%Y%m%d_%H%M%S')}.json"
+        sidecar = sidecar_dir / f"purge_platform_deleted_{_sidecar_stamp()}.json"
         sidecar.write_text(json.dumps(deleted_rows, ensure_ascii=False, indent=2), encoding="utf-8")
         logger.info("被删主机版行已写入侧车: %s", sidecar)
     return stats
@@ -585,7 +614,7 @@ def phase_dedupe_cross_month(conn, start_date=None, end_date=None):
     if deleted_rows:
         sidecar_dir = Path("/var/www/html/pyGal/db_backups")
         sidecar_dir.mkdir(parents=True, exist_ok=True)
-        sidecar = sidecar_dir / f"dedup_cross_month_deleted_{time.strftime('%Y%m%d_%H%M%S')}.json"
+        sidecar = sidecar_dir / f"dedup_cross_month_deleted_{_sidecar_stamp()}.json"
         sidecar.write_text(json.dumps(deleted_rows, ensure_ascii=False, indent=2), encoding="utf-8")
         logger.info("被删跨月重复行已写入侧车: %s", sidecar)
     return stats
@@ -649,15 +678,11 @@ def phase_dedupe_editions(conn, start_date=None, end_date=None):
             # 同gid不同名：保留最新记录
             primary = max(members, key=lambda r: r["rowid"])
         else:
-            primary = min(members, key=lambda r: (
-                -(1 if r["downloaded"] else 0),
-                -(1 if r["submitted_115"] else 0),
-                -(1 if r["link"] else 0),
-                len(r["name"]),
-            ))
+            primary = min(members, key=_edition_primary_rank)
         secondaries = [r for r in members if r["rowid"] != primary["rowid"]]
         if len(primary["name"]) > min(len(r["name"]) for r in members) and not (
-                len(gid_groups) == 1 and members[0]["getchu_id"]):
+                len(gid_groups) == 1 and members[0]["getchu_id"]) and not \
+                _is_complete_game_bundle(primary["name"]):
             stats["no_primary"] += 1
             continue
 
@@ -714,7 +739,7 @@ def phase_dedupe_editions(conn, start_date=None, end_date=None):
     if deleted_rows:
         sidecar_dir = Path("/var/www/html/pyGal/db_backups")
         sidecar_dir.mkdir(parents=True, exist_ok=True)
-        sidecar = sidecar_dir / f"dedup_editions_deleted_{time.strftime('%Y%m%d_%H%M%S')}.json"
+        sidecar = sidecar_dir / f"dedup_editions_deleted_{_sidecar_stamp()}.json"
         sidecar.write_text(json.dumps(deleted_rows, ensure_ascii=False, indent=2), encoding="utf-8")
         logger.info("被删行已写入侧车: %s", sidecar)
     return stats
