@@ -6,76 +6,185 @@
     <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.1/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.bootcdn.net/ajax/libs/bootstrap-datepicker/1.9.0/css/bootstrap-datepicker.min.css" rel="stylesheet">
     <style>
+        /* ===== Getchu 风格图片卡片网格 =====
+           保留 table>tbody>tr>td 结构，纯 CSS 渲染为卡片，
+           所有 JS（closest('tr')/dataset/事件委托）无需改动 */
+
         #gamesTable {
-            table-layout: fixed;
+            display: block;
         }
 
-        .thumb-col {
-            width: 250px;
-            max-width: 250px;
-            min-width: 250px;
+        /* 隐藏表头（保留语义） */
+        #gamesTable thead {
+            display: none;
         }
 
-        .game-thumb {
-            width: 250px;
+        /* tbody = 卡片网格：固定 250px 卡片宽，自动换行居中 */
+        #gamesTable tbody {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, 250px);
+            gap: 16px;
+            justify-content: center;
+            padding: 16px;
+        }
+
+        /* tr = 单张卡片 */
+        #gamesTable tbody tr {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            grid-template-areas:
+                "thumb  thumb"
+                "name   name"
+                "ym     company"
+                "check  actions";
+            align-content: start;
+            border: 1px solid #dee2e6;
+            border-radius: 10px;
+            overflow: hidden;
+            background: #fff;
+            transition: box-shadow .15s ease, transform .15s ease, border-color .15s ease;
+        }
+
+        #gamesTable tbody tr:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 16px rgba(0, 0, 0, .12);
+            border-color: rgba(13, 110, 253, .6);
+        }
+
+        /* 原行状态色 → 卡片状态色 */
+        #gamesTable tbody tr.table-success {
+            background: rgba(25, 135, 84, .05);
+            border-color: rgba(25, 135, 84, .45);
+        }
+
+        #gamesTable tbody tr.table-success:hover {
+            border-color: rgba(25, 135, 84, .8);
+        }
+
+        #gamesTable tbody tr.table-info {
+            background: rgba(13, 110, 253, .05);
+            border-color: rgba(13, 110, 253, .45);
+        }
+
+        #gamesTable tbody tr.table-info:hover {
+            border-color: rgba(13, 110, 253, .8);
+        }
+
+        #gamesTable tbody td {
+            display: block;
+            border: 0;
+            padding: 0;
+            background: transparent;
+        }
+
+        /* 封面图区（顶部通栏） */
+        #gamesTable tbody td.thumb-col {
+            grid-area: thumb;
+            padding: 0;
+            background: #f8f9fa;
+        }
+
+        #gamesTable tbody td.thumb-col .game-thumb {
+            width: 250px;   /* 固定宽度 */
             height: auto;
             display: block;
-            border-radius: 4px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
 
-        .thumb-placeholder {
+        #gamesTable tbody td.thumb-col .thumb-placeholder {
             width: 250px;
             height: 140px;
             display: flex;
             align-items: center;
             justify-content: center;
-            background: #f8f9fa;
-            border: 1px dashed #ced4da;
-            border-radius: 4px;
+            background: #eef1f4;
+            border-bottom: 1px dashed #ced4da;
             color: #adb5bd;
         }
 
-        .game-name-cell {
-            width: 320px;
-            min-width: 260px;
-            max-width: 420px;
-            white-space: normal;
-            word-wrap: break-word;
+        /* 游戏标题（最多两行省略） */
+        #gamesTable tbody td.game-name-cell {
+            grid-area: name;
+            padding: 10px 12px 2px;
+            font-size: .875rem;
+            font-weight: 600;
+            line-height: 1.35;
         }
 
-        .check-col {
-            width: 64px;
-            max-width: 64px;
+        #gamesTable tbody td.game-name-cell .game-title-text {
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            min-height: 2.7em;
         }
 
-        .check-col input[type="checkbox"] {
-            margin: 0;
-            vertical-align: middle;
+        #gamesTable tbody td.game-name-cell .text-muted.small {
+            font-weight: 400;
+            margin-top: 2px;
+            word-break: break-all;
         }
 
-        .ym-col {
-            width: 96px;
-            max-width: 96px;
+        /* 日期 / 公司（同一行） */
+        #gamesTable tbody td.ym-col {
+            grid-area: ym;
+            padding: 4px 0 8px 12px;
+            font-size: .78rem;
+            color: #6c757d;
+            width: auto;
             white-space: nowrap;
         }
 
-        .company-col {
-            width: 180px;
-            max-width: 180px;
-            white-space: nowrap;
+        #gamesTable tbody td.company-col {
+            grid-area: company;
+            padding: 4px 12px 8px 6px;
+            font-size: .78rem;
+            color: #6c757d;
+            width: auto;
+            text-align: right;
             overflow: hidden;
             text-overflow: ellipsis;
-        }
-
-        .actions-col {
-            width: 240px;
-            max-width: 240px;
             white-space: nowrap;
         }
 
-        .actions-col .btn-group {
+        /* 卡片底部：勾选 + 操作按钮 */
+        #gamesTable tbody td.check-col {
+            grid-area: check;
+            padding: 8px 0 8px 12px;
+            border-top: 1px solid #f0f0f0;
+            display: flex;
+            align-items: center;
+            width: auto;
+        }
+
+        #gamesTable tbody td.check-col input[type="checkbox"] {
+            margin: 0;
+            cursor: pointer;
+        }
+
+        #gamesTable tbody td.actions-col {
+            grid-area: actions;
+            padding: 8px 12px 8px 0;
+            border-top: 1px solid #f0f0f0;
+            text-align: right;
+            width: auto;
+        }
+
+        #gamesTable tbody td.actions-col .btn-group {
             max-width: 100%;
+        }
+
+        /* 空数据提示占满整行 */
+        #gamesTable tbody tr.empty-row {
+            grid-column: 1 / -1;
+            display: block;
+            border: 0;
+            background: transparent;
+        }
+
+        #gamesTable tbody tr.empty-row:hover {
+            transform: none;
+            box-shadow: none;
+            border-color: transparent;
         }
 
         .datepicker-dropdown {
@@ -180,7 +289,7 @@
                 </div>
             </div>
             <div class="table-responsive">
-                <table class="table table-striped table-hover align-middle mb-0" id="gamesTable">
+                <table class="mb-0" id="gamesTable">
                     <thead class="table-dark">
                         <tr>
                             <th class="check-col text-center">选择</th>
@@ -341,7 +450,7 @@ function updateTable(data) {
             </td>
             <td class="ym-col">${game.year}/${game.month}</td>
             <td class="thumb-col">${thumbHtml}</td>
-            <td class="game-name-cell editable-cell" data-field="name">${game.name}${game.nyaa_name ? `<div class="text-muted small" style="display:${magnet ? 'none' : ''}">${game.nyaa_name}</div>` : ''}</td>
+            <td class="game-name-cell editable-cell" data-field="name"><span class="game-title-text">${game.name}</span>${game.nyaa_name ? `<div class="text-muted small" style="display:${magnet ? 'none' : ''}">${game.nyaa_name}</div>` : ''}</td>
             <td class="company-col editable-cell" data-field="company">${game.company}</td>
             <td class="actions-col">
                 ${magnet ?
@@ -384,7 +493,7 @@ function parseMonthValue(value) {
 
 function showEmptyMessage(message) {
     const tbody = document.querySelector('#gamesTable tbody');
-    tbody.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-4">${message}</td></tr>`;
+    tbody.innerHTML = `<tr class="empty-row"><td colspan="6" class="text-center text-muted py-4">${message}</td></tr>`;
     document.getElementById('page-info').textContent = '';
     updateMonthAllDownloadedBadge(null, null);
     document.getElementById('prev-page').disabled = true;
