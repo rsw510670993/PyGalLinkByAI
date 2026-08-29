@@ -12,6 +12,7 @@ from tool.runtime import cleanup_old_logs, daily_log_path, now_ts, runtime_paths
 from tool.getchu_detail import batch_update_details, get_pending_games
 
 
+logger = logging.getLogger(__name__)
 _stop_requested = False
 
 
