@@ -150,6 +150,145 @@ def _field_now_empty(cursor, rowid, field):
     return v in (None, "")
 
 
+def _dedup_key(name, aggressive=False):
+    """DB端去重键：剥离补丁对应版后缀（if エロパッチ対応...）"""
+    if not name:
+        return ""
+    import re as _re
+    key = _re.sub(r"\s*if\s+エロパッチ対応.*$", "", name).strip()
+    if aggressive:
+        # 额外剥离常见版本/店铺特典尾缀（仅用于精确匹配已有基底时）
+        key = _re.sub(
+            r"\s*(?:TREASURE BOX|プレミアム版|4版|5版|DL版|ダウンロード版|パッケージ版|"
+            r"げっちゅ屋限定.*|Getchu.com限定.*|描き下ろし.*|抱き枕カバー付.*|"
+            r"ドラマCDセット.*|B2タペストリーセット.*|同梱版|初回特典版.*|早期予約.*)$",
+            "", key,
+        ).strip()
+    return key
+
+
+def phase_dedupe(conn, dry_run=False):
+    """
+    DB端合并补丁对应版重复记录（如：X 和 X if エロパッチ対応、X＆Y if エロパッチ対応）
+
+    规则：
+    - 只处理名称含 ' if エロパッチ対応' 的行（其他 if 扩展版是独立游戏，不动）
+    - 优先精确合并：剥后缀后与同月同公司同名记录合并
+    - 其次捆绑合并：剥后缀后含 ＆ 取第一段，与同月同公司同前缀记录合并
+    - 主记录优先保留115下载数据（downloaded/submitted/link），其次保留短名称（基底版）
+    - 从记录只填不覆盖地并入主记录，再删除；被删行写入JSON侧车（非DB备份）
+    """
+    import json
+    import re as _re
+    from pathlib import Path
+
+    cursor = conn.cursor()
+    cursor.execute("SELECT rowid, * FROM getchu_games WHERE name LIKE '% if エロパッチ対応%' ORDER BY rowid")
+    cols = [d[0] for d in cursor.description]
+    patch_rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
+
+    stats = {"patch_rows": len(patch_rows), "merged": 0, "deleted": 0,
+             "no_target": 0, "skipped_conflict": 0}
+    deleted_rows = []
+
+    for row in patch_rows:
+        if row["date"].count("-") == 2:  # 新格式残留（理论上已被merge阶段清掉）
+            continue
+        base = _dedup_key(row["name"])
+        target = None
+
+        # 1) 精确匹配：同月同公司同名
+        cursor.execute(
+            "SELECT rowid FROM getchu_games WHERE date=? AND company=? AND name=? AND rowid!=?",
+            (row["date"], row["company"], base, row["rowid"]),
+        )
+        r = cursor.fetchone()
+        if r:
+            target = r[0]
+        # 2) 捆绑匹配：取＆第一段做前缀
+        if target is None and "＆" in base:
+            seg = base.split("＆")[0].strip()
+            if len(seg) >= 3:
+                cursor.execute(
+                    "SELECT rowid FROM getchu_games WHERE date=? AND company=? AND name LIKE ? AND rowid!=? AND name NOT LIKE '% if エロパッチ対応%' ORDER BY length(name) LIMIT 1",
+                    (row["date"], row["company"], seg + "%", row["rowid"]),
+                )
+                r = cursor.fetchone()
+                if r:
+                    target = r[0]
+
+        if target is None:
+            stats["no_target"] += 1
+            continue
+
+        # 选择主记录：若目标本身无115数据而补丁行有，则交换主从（保守起见仍以目标为主，数据合并到目标）
+        # 为保证不丢数据，先把补丁行的115字段按“只填不覆盖”并入目标
+        FILL_FIELDS = ["getchu_id", "thumb_url", "thumb_path", "price",
+                       "detail_url", "release_date", "size"]
+        TRANSFER_FIELDS = ["link", "nyaa_name", "comment", "infohash_hex",
+                           "submitted_pick_code", "downloaded", "submitted_115"]
+
+        for f in FILL_FIELDS:
+            cursor.execute(
+                f"UPDATE getchu_games SET {f} = ? WHERE rowid=? AND ({f} IS NULL OR {f}='')",
+                (row[f], target),
+            )
+        for f in TRANSFER_FIELDS:
+            if f in ("downloaded", "submitted_115"):
+                cursor.execute(
+                    f"UPDATE getchu_games SET {f} = ? WHERE rowid=? AND COALESCE({f},0)=0",
+                    (row[f], target),
+                )
+            else:
+                cursor.execute(
+                    f"UPDATE getchu_games SET {f} = ? WHERE rowid=? AND ({f} IS NULL OR {f}='')",
+                    (row[f], target),
+                )
+
+        # 校验：若补丁行有115数据但目标仍没有，保留补丁行（避免丢数据）
+        cursor.execute(
+            "SELECT link, downloaded, submitted_115 FROM getchu_games WHERE rowid=?",
+            (target,),
+        )
+        t_link, t_dl, t_sub = cursor.fetchone()
+        has_loss = False
+        if row["link"] and not t_link:
+            has_loss = True
+        if int(row["downloaded"] or 0) == 1 and int(t_dl or 0) != 1:
+            has_loss = True
+        if int(row["submitted_115"] or 0) == 1 and int(t_sub or 0) != 1:
+            has_loss = True
+        if has_loss:
+            stats["skipped_conflict"] += 1
+            continue
+
+        # 补丁行有独立磁链但目标已有磁链时，把补丁磁链归档到目标备注（尽量保存115信息）
+        if row["link"] and t_link and row["link"] != t_link:
+            cursor.execute("SELECT comment FROM getchu_games WHERE rowid=?", (target,))
+            t_comment = cursor.fetchone()[0]
+            note = f"【补丁版原磁链】{row['link']}"
+            if not (t_comment and note in t_comment):
+                new_comment = (t_comment + "\n" + note) if t_comment else note
+                cursor.execute("UPDATE getchu_games SET comment=? WHERE rowid=?", (new_comment, target))
+
+        deleted_rows.append(row)
+        cursor.execute("DELETE FROM getchu_games WHERE rowid=?", (row["rowid"],))
+        stats["merged"] += 1
+        stats["deleted"] += 1
+
+    conn.commit()
+
+    # 侧车：被删行JSON（轻量，不占DB空间）
+    if deleted_rows:
+        sidecar_dir = Path("/var/www/html/pyGal/db_backups")
+        sidecar_dir.mkdir(parents=True, exist_ok=True)
+        sidecar = sidecar_dir / f"dedup_deleted_{time.strftime('%Y%m%d_%H%M%S')}.json"
+        sidecar.write_text(json.dumps(deleted_rows, ensure_ascii=False, indent=2), encoding="utf-8")
+        logger.info("被删行已写入侧车: %s", sidecar)
+
+    return stats
+
+
 def _row_has_115_data(cursor, rowid):
     cursor.execute(
         """SELECT link, downloaded, submitted_115 FROM getchu_games WHERE rowid = ?""",
@@ -184,6 +323,152 @@ def phase_crawl(conn, start_year, end_year):
     ok = tool.get_all_getchu_games(start_year, end_year, 1, 12)
     logger.info("重爬完成: %s", "成功" if ok else "失败")
     return ok
+
+
+def phase_analyze(conn):
+    """只读分析：量化保守版本变体合并候选（不动DB）"""
+    cursor = conn.cursor()
+    cursor.execute("SELECT rowid, date, name, company, getchu_id, link, downloaded, submitted_115 FROM getchu_games ORDER BY date, company")
+    rows = [dict(zip([d[0] for d in cursor.description], r)) for r in cursor.fetchall()]
+
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for row in rows:
+        key = _dedup_key(row["name"], aggressive=True)
+        if not key:
+            continue
+        groups[(row["date"], row["company"], key)].append(row)
+
+    candidate_groups = []
+    for (date, company, key), members in groups.items():
+        if len(members) < 2:
+            continue
+        # 主记录：115数据优先，其次最短名称
+        primary = min(members, key=lambda r: (
+            -(1 if r["downloaded"] else 0),
+            -(1 if r["submitted_115"] else 0),
+            -(1 if r["link"] else 0),
+            len(r["name"]),
+        ))
+        secondaries = [r for r in members if r["rowid"] != primary["rowid"]]
+        # 仅当组内存在明显基底（最短名）时才视为可合并，避免把系列不同卷合并
+        if len(primary["name"]) >= min(len(r["name"]) for r in members):
+            candidate_groups.append({
+                "date": date, "company": company,
+                "primary": primary["name"], "primary_115": bool(primary["link"] or primary["downloaded"] or primary["submitted_115"]),
+                "secondaries": [{"name": r["name"], "has_115": bool(r["link"] or r["downloaded"] or r["submitted_115"])} for r in secondaries],
+            })
+
+    total_rows = sum(1 + len(g["secondaries"]) for g in candidate_groups)
+    rows_with_115_secondary = sum(1 for g in candidate_groups for s in g["secondaries"] if s["has_115"])
+    print(f"候选去重组: {len(candidate_groups)} 组")
+    print(f"涉及记录: {total_rows} 条（含主记录）")
+    print(f"次记录中带115数据的: {rows_with_115_secondary} 条（合并时需归档磁链）")
+    print("\n示例（前8组）:")
+    for g in candidate_groups[:8]:
+        print(f"  [{g['date']} {g['company']}] 主={g['primary'][:40]} (115={g['primary_115']})")
+        for s in g["secondaries"]:
+            print(f"     × {s['name'][:50]} (115={s['has_115']})")
+    return {"groups": len(candidate_groups), "rows": total_rows, "rows_with_115_secondary": rows_with_115_secondary}
+
+
+def phase_dedupe_editions(conn):
+    """
+    DB端合并店铺特典/版本变体重复记录（保守规则：同月同公司剥后缀后同名）
+
+    与 phase_dedupe（if エロパッチ対応）互补，覆盖 TREASURE BOX/早期予約/抱き枕カバー等。
+    - 只合并组内存在明显基底（最短名）的情况
+    - 主记录优先115数据，其次短名称
+    - 从记录115数据并入主记录；独立磁链归档到主记录备注
+    - 被删行写JSON侧车（非DB备份）
+    """
+    import json
+    from pathlib import Path
+    from collections import defaultdict
+
+    cursor = conn.cursor()
+    cursor.execute("SELECT rowid, * FROM getchu_games ORDER BY date, company")
+    cols = [d[0] for d in cursor.description]
+    rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
+
+    groups = defaultdict(list)
+    for row in rows:
+        key = _dedup_key(row["name"], aggressive=True)
+        if not key:
+            continue
+        groups[(row["date"], row["company"], key)].append(row)
+
+    stats = {"candidate_groups": 0, "merged": 0, "deleted": 0,
+             "no_primary": 0, "skipped_conflict": 0}
+    deleted_rows = []
+
+    for (date, company, key), members in groups.items():
+        if len(members) < 2:
+            continue
+        primary = min(members, key=lambda r: (
+            -(1 if r["downloaded"] else 0),
+            -(1 if r["submitted_115"] else 0),
+            -(1 if r["link"] else 0),
+            len(r["name"]),
+        ))
+        secondaries = [r for r in members if r["rowid"] != primary["rowid"]]
+        if len(primary["name"]) > min(len(r["name"]) for r in members):
+            stats["no_primary"] += 1
+            continue
+
+        stats["candidate_groups"] += 1
+        for row in secondaries:
+            # 只填不覆盖扩展字段
+            for f in ["getchu_id", "thumb_url", "thumb_path", "price",
+                      "detail_url", "release_date", "size"]:
+                cursor.execute(
+                    f"UPDATE getchu_games SET {f}=? WHERE rowid=? AND ({f} IS NULL OR {f}='')",
+                    (row[f], primary["rowid"]),
+                )
+            # 115字段互补
+            for f in ["link", "nyaa_name", "comment", "infohash_hex", "submitted_pick_code"]:
+                cursor.execute(
+                    f"UPDATE getchu_games SET {f}=? WHERE rowid=? AND ({f} IS NULL OR {f}='')",
+                    (row[f], primary["rowid"]),
+                )
+            for f in ["downloaded", "submitted_115"]:
+                cursor.execute(
+                    f"UPDATE getchu_games SET {f}=? WHERE rowid=? AND COALESCE({f},0)=0",
+                    (row[f], primary["rowid"]),
+                )
+            # 独立磁链归档到主记录备注
+            if row["link"]:
+                cursor.execute("SELECT link FROM getchu_games WHERE rowid=?", (primary["rowid"],))
+                p_link = cursor.fetchone()[0]
+                if p_link and p_link != row["link"]:
+                    cursor.execute("SELECT comment FROM getchu_games WHERE rowid=?", (primary["rowid"],))
+                    p_comment = cursor.fetchone()[0]
+                    note = f"【版本变体原磁链】{row['link']}"
+                    if not (p_comment and note in p_comment):
+                        cursor.execute("UPDATE getchu_games SET comment=? WHERE rowid=?",
+                                       ((p_comment + "\n" + note) if p_comment else note, primary["rowid"]))
+            # 校验115无丢失
+            cursor.execute("SELECT link, downloaded, submitted_115 FROM getchu_games WHERE rowid=?", (primary["rowid"],))
+            p_link, p_dl, p_sub = cursor.fetchone()
+            if (row["link"] and not p_link) or \
+               (int(row["downloaded"] or 0) == 1 and int(p_dl or 0) != 1) or \
+               (int(row["submitted_115"] or 0) == 1 and int(p_sub or 0) != 1):
+                stats["skipped_conflict"] += 1
+                continue
+
+            deleted_rows.append(row)
+            cursor.execute("DELETE FROM getchu_games WHERE rowid=?", (row["rowid"],))
+            stats["merged"] += 1
+            stats["deleted"] += 1
+
+    conn.commit()
+    if deleted_rows:
+        sidecar_dir = Path("/var/www/html/pyGal/db_backups")
+        sidecar_dir.mkdir(parents=True, exist_ok=True)
+        sidecar = sidecar_dir / f"dedup_editions_deleted_{time.strftime('%Y%m%d_%H%M%S')}.json"
+        sidecar.write_text(json.dumps(deleted_rows, ensure_ascii=False, indent=2), encoding="utf-8")
+        logger.info("被删行已写入侧车: %s", sidecar)
+    return stats
 
 
 def phase_thumbs(conn, sleep_seconds=0.25, batch_size=500):
@@ -236,7 +521,7 @@ def print_summary(conn, tag):
 
 def main():
     parser = argparse.ArgumentParser(description="Getchu 缩略图数据刷新")
-    parser.add_argument("--phase", required=True, choices=["merge", "crawl", "thumbs", "status"],
+    parser.add_argument("--phase", required=True, choices=["merge", "dedupe", "dedupe_editions", "analyze", "crawl", "thumbs", "status"],
                         help="执行阶段")
     parser.add_argument("--start-year", type=int, default=2008)
     parser.add_argument("--end-year", type=int, default=2026)
@@ -254,6 +539,19 @@ def main():
         stats = phase_merge(conn)
         logger.info("合并统计: %s", stats)
         print_summary(conn, "merge后")
+    elif args.phase == "dedupe":
+        print_summary(conn, "dedupe前")
+        stats = phase_dedupe(conn)
+        logger.info("补丁变体去重统计: %s", stats)
+        print_summary(conn, "dedupe后")
+    elif args.phase == "analyze":
+        stats = phase_analyze(conn)
+        logger.info("分析完成: %s", stats)
+    elif args.phase == "dedupe_editions":
+        print_summary(conn, "dedupe_editions前")
+        stats = phase_dedupe_editions(conn)
+        logger.info("版本变体去重统计: %s", stats)
+        print_summary(conn, "dedupe_editions后")
     elif args.phase == "crawl":
         print_summary(conn, "crawl前")
         phase_crawl(conn, args.start_year, args.end_year)

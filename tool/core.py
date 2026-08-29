@@ -134,7 +134,9 @@ def deduplicate_games(raw_games):
 
     for game in raw_games:
         key = normalize_name(game.name, combined_list)
-        stripped_key = key.rsplit(" ", 1)[0] if " " in key else key
+        # 补丁对应版（if エロパッチ対応...）视为同一游戏，剥离后缀生成去重键
+        dedup_key = re.sub(r"\s*if\s+エロパッチ対応.*$", "", key).strip()
+        stripped_key = dedup_key.rsplit(" ", 1)[0] if " " in dedup_key else dedup_key
         
         # 新增：如果有getchu_id，优先用getchu_id去重（防止不同月同名版本冲突）
         if hasattr(game, 'extra') and game.extra and game.extra.get('getchu_id'):
@@ -144,11 +146,12 @@ def deduplicate_games(raw_games):
             processed_games.append(game)
             processed_keys.add(gid_key)
         else:
-            # 旧逻辑：公司名+名称去重
-            if key in processed_keys or stripped_key in processed_keys:
+            # 旧逻辑：公司名+名称去重（补丁后缀剥离后匹配）
+            if key in processed_keys or dedup_key in processed_keys or stripped_key in processed_keys:
                 continue
             processed_games.append(game)
             processed_keys.add(key)
+            processed_keys.add(dedup_key)
 
     processed_games.sort(key=lambda x: (x.date, x.name))
     return processed_games
@@ -481,81 +484,79 @@ def delete_game_record(date, name, db_path=None):
     return affected > 0
 
 
+def _build_update_sql(extra):
+    """根据 extra 构建 UPDATE 的 set 子句和参数"""
+    set_clause = []
+    params = []
+    if extra.get("getchu_id"):
+        set_clause.append("getchu_id = ?")
+        params.append(extra["getchu_id"])
+    if extra.get("price"):
+        set_clause.append("price = ?")
+        params.append(extra["price"])
+    if extra.get("detail_url"):
+        set_clause.append("detail_url = ?")
+        params.append(extra["detail_url"])
+    if extra.get("thumb_url"):
+        set_clause.append("thumb_url = ?")
+        params.append(extra["thumb_url"])
+    if extra.get("release_date"):
+        set_clause.append("release_date = ?")
+        params.append(extra["release_date"])
+    return set_clause, params
+
+
 def upsert_getchu_game(cursor, game):
     """
     插入或更新单个游戏记录（保留115下载相关数据）
 
+    - 优先按 getchu_id 匹配：名称不一致（历史去重规则改写）也能正确合并到已有记录
     - INSERT OR IGNORE 基础字段（date+name 为主键）
     - 再更新扩展字段：getchu_id / price / detail_url / thumb_url / release_date
-    - 匹配策略：优先 date+name+company，失败时降级 date+name
+    - 匹配策略：gid > date+name+company > date+name
     - 永不触碰 link / nyaa_name / downloaded / submitted_115 等下载字段
 
     Returns:
         bool: 是否新插入了记录
     """
+    extra = getattr(game, "extra", None) or {}
+    gid = extra.get("getchu_id")
+
+    # 1) 已有同 gid 记录：直接按 rowid 更新，避免名称不一致产生重复
+    if gid:
+        cursor.execute("SELECT rowid FROM getchu_games WHERE getchu_id = ? LIMIT 1", (gid,))
+        r = cursor.fetchone()
+        if r:
+            set_clause, params = _build_update_sql(extra)
+            if set_clause:
+                cursor.execute(
+                    f"UPDATE getchu_games SET {', '.join(set_clause)} WHERE rowid = ?",
+                    tuple(params) + (r[0],),
+                )
+            return False
+
+    # 2) INSERT OR IGNORE 基础字段（date+name 为主键）
     cursor.execute(
         "INSERT OR IGNORE INTO getchu_games (date, name, company, size) VALUES (?,?,?,?)",
         (game.date, game.name, game.company, game.size),
     )
     inserted = cursor.rowcount == 1
-    extra = getattr(game, "extra", None) or {}
-    gid = extra.get("getchu_id")
-    price = extra.get("price")
-    detail_url = extra.get("detail_url")
-    thumb_url = extra.get("thumb_url")
-    release_date = extra.get("release_date")
-    if not (gid or price or detail_url or thumb_url or release_date):
+
+    # 3) 更新扩展字段（无 gid 或新插入时走名称匹配）
+    set_clause, params = _build_update_sql(extra)
+    if not set_clause:
         return inserted
 
-    set_clause = []
-    params = []
-    if gid:
-        set_clause.append("getchu_id = ?")
-        params.append(gid)
-    if price:
-        set_clause.append("price = ?")
-        params.append(price)
-    if detail_url:
-        set_clause.append("detail_url = ?")
-        params.append(detail_url)
-    if thumb_url:
-        set_clause.append("thumb_url = ?")
-        params.append(thumb_url)
-    if release_date:
-        set_clause.append("release_date = ?")
-        params.append(release_date)
-
-    base_sql = f"UPDATE getchu_games SET {', '.join(set_clause)}"
-    # getchu_id 有部分唯一索引，若该 gid 已被其他行占用则去掉 gid 再更新
-    try:
-        # 优先精确匹配，失败则忽略公司名差异降级匹配
+    # 优先精确匹配，失败则忽略公司名差异降级匹配
+    cursor.execute(
+        f"UPDATE getchu_games SET {', '.join(set_clause)} WHERE date = ? AND name = ? AND company = ?",
+        tuple(params) + (game.date, game.name, game.company),
+    )
+    if cursor.rowcount == 0:
         cursor.execute(
-            base_sql + " WHERE date = ? AND name = ? AND company = ?",
-            tuple(params) + (game.date, game.name, game.company),
+            f"UPDATE getchu_games SET {', '.join(set_clause)} WHERE date = ? AND name = ?",
+            tuple(params) + (game.date, game.name),
         )
-        if cursor.rowcount == 0:
-            cursor.execute(
-                base_sql + " WHERE date = ? AND name = ?",
-                tuple(params) + (game.date, game.name),
-            )
-    except sqlite3.IntegrityError:
-        # 同一 gid 出现在清单多行（同名重复条目等）：去掉 getchu_id 重试
-        reduced = [c for c in set_clause if not c.startswith("getchu_id")]
-        if len(reduced) < len(set_clause):
-            base_sql2 = f"UPDATE getchu_games SET {', '.join(reduced)}"
-            cursor.execute(
-                base_sql2 + " WHERE date = ? AND name = ? AND company = ?",
-                tuple(p for c, p in zip(set_clause, params) if not c.startswith("getchu_id"))
-                + (game.date, game.name, game.company),
-            )
-            if cursor.rowcount == 0:
-                cursor.execute(
-                    base_sql2 + " WHERE date = ? AND name = ?",
-                    tuple(p for c, p in zip(set_clause, params) if not c.startswith("getchu_id"))
-                    + (game.date, game.name),
-                )
-        else:
-            raise
     return inserted
 
 
