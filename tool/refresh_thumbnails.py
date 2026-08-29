@@ -455,6 +455,119 @@ def phase_purge_platform_editions(conn):
     return stats
 
 
+def phase_dedupe_cross_month(conn, start_date=None, end_date=None):
+    """
+    DB端合并跳票（跨月重复）记录：同公司+完整同名 出现在不同月份
+
+    规则：
+    - 主记录：优先有 getchu_id（正式发售记录）→ 最新 date → 有115数据 → rowid 大
+    - 从记录：只填不覆盖迁移 扩展字段+115字段 到主记录；独立磁链归档到备注
+    - 校验115无丢失后删除旧月份行；被删行写JSON侧车（非DB备份）
+    """
+    import json
+    from pathlib import Path
+    from collections import defaultdict
+
+    cursor = conn.cursor()
+    if start_date or end_date:
+        where = []
+        params = []
+        if start_date:
+            where.append("date >= ?")
+            params.append(start_date)
+        if end_date:
+            where.append("date <= ?")
+            params.append(end_date)
+        cursor.execute(
+            f"SELECT rowid, * FROM getchu_games WHERE {' AND '.join(where)} ORDER BY date, company",
+            tuple(params),
+        )
+    else:
+        cursor.execute("SELECT rowid, * FROM getchu_games ORDER BY date, company")
+    cols = [d[0] for d in cursor.description]
+    rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
+
+    groups = defaultdict(list)
+    for r in rows:
+        groups[(r["company"], r["name"])].append(r)
+
+    stats = {"cross_groups": 0, "rows": 0, "merged": 0, "deleted": 0,
+             "skipped_conflict": 0}
+    deleted_rows = []
+
+    for (company, name), members in groups.items():
+        months = set(m["date"] for m in members)
+        if len(months) < 2:
+            continue
+        stats["cross_groups"] += 1
+        stats["rows"] += len(members)
+
+        # 主记录：有gid > 最新date > 有115 > rowid大
+        primary = max(members, key=lambda r: (
+            bool(r["getchu_id"]),
+            r["date"],
+            bool(r["link"] or r["downloaded"] or r["submitted_115"]),
+            r["rowid"],
+        ))
+        secondaries = [r for r in members if r["rowid"] != primary["rowid"]]
+
+        for row in secondaries:
+            # 只填不覆盖扩展字段（getchu_id 唯一冲突跳过）
+            for f in ["getchu_id", "thumb_url", "thumb_path", "price",
+                      "detail_url", "release_date", "size"]:
+                try:
+                    cursor.execute(
+                        f"UPDATE getchu_games SET {f}=? WHERE rowid=? AND ({f} IS NULL OR {f}='')",
+                        (row[f], primary["rowid"]),
+                    )
+                except sqlite3.IntegrityError:
+                    pass
+            # 115字段互补
+            for f in ["link", "nyaa_name", "comment", "infohash_hex", "submitted_pick_code"]:
+                cursor.execute(
+                    f"UPDATE getchu_games SET {f}=? WHERE rowid=? AND ({f} IS NULL OR {f}='')",
+                    (row[f], primary["rowid"]),
+                )
+            for f in ["downloaded", "submitted_115"]:
+                cursor.execute(
+                    f"UPDATE getchu_games SET {f}=? WHERE rowid=? AND COALESCE({f},0)=0",
+                    (row[f], primary["rowid"]),
+                )
+            # 独立磁链归档
+            if row["link"]:
+                cursor.execute("SELECT link FROM getchu_games WHERE rowid=?", (primary["rowid"],))
+                p_link = cursor.fetchone()[0]
+                if p_link and p_link != row["link"]:
+                    cursor.execute("SELECT comment FROM getchu_games WHERE rowid=?", (primary["rowid"],))
+                    p_comment = cursor.fetchone()[0]
+                    note = f"【跳票前磁链】{row['link']}"
+                    if not (p_comment and note in p_comment):
+                        cursor.execute("UPDATE getchu_games SET comment=? WHERE rowid=?",
+                                       ((p_comment + "\n" + note) if p_comment else note, primary["rowid"]))
+            # 校验115无丢失
+            cursor.execute("SELECT link, downloaded, submitted_115 FROM getchu_games WHERE rowid=?", (primary["rowid"],))
+            p_link, p_dl, p_sub = cursor.fetchone()
+            if (row["link"] and not p_link) or \
+               (int(row["downloaded"] or 0) == 1 and int(p_dl or 0) != 1) or \
+               (int(row["submitted_115"] or 0) == 1 and int(p_sub or 0) != 1):
+                stats["skipped_conflict"] += 1
+                continue
+
+            deleted_rows.append(row)
+            cursor.execute("DELETE FROM getchu_games WHERE rowid=?", (row["rowid"],))
+            stats["merged"] += 1
+            stats["deleted"] += 1
+
+    conn.commit()
+    if deleted_rows:
+        sidecar_dir = Path("/var/www/html/pyGal/db_backups")
+        sidecar_dir.mkdir(parents=True, exist_ok=True)
+        sidecar = sidecar_dir / f"dedup_cross_month_deleted_{time.strftime('%Y%m%d_%H%M%S')}.json"
+        sidecar.write_text(json.dumps(deleted_rows, ensure_ascii=False, indent=2), encoding="utf-8")
+        logger.info("被删跨月重复行已写入侧车: %s", sidecar)
+    return stats
+
+
 def phase_dedupe_editions(conn, start_date=None, end_date=None):
     """
     DB端合并店铺特典/版本变体重复记录（保守规则：同月同公司剥后缀后同名）
@@ -634,7 +747,7 @@ def print_summary(conn, tag):
 
 def main():
     parser = argparse.ArgumentParser(description="Getchu 缩略图数据刷新")
-    parser.add_argument("--phase", required=True, choices=["merge", "dedupe", "dedupe_editions", "purge_platform", "analyze", "crawl", "thumbs", "status"],
+    parser.add_argument("--phase", required=True, choices=["merge", "dedupe", "dedupe_editions", "dedupe_cross_month", "purge_platform", "analyze", "crawl", "thumbs", "status"],
                         help="执行阶段")
     parser.add_argument("--start-year", type=int, default=2008)
     parser.add_argument("--end-year", type=int, default=2026)
@@ -667,6 +780,11 @@ def main():
         stats = phase_purge_platform_editions(conn)
         logger.info("主机平台版排除统计: %s", stats)
         print_summary(conn, "purge后")
+    elif args.phase == "dedupe_cross_month":
+        print_summary(conn, "dedupe_cross_month前")
+        stats = phase_dedupe_cross_month(conn, start_date=args.start_date, end_date=args.end_date)
+        logger.info("跨月跳票去重统计: %s", stats)
+        print_summary(conn, "dedupe_cross_month后")
     elif args.phase == "dedupe_editions":
         print_summary(conn, "dedupe_editions前")
         stats = phase_dedupe_editions(conn, start_date=args.start_date, end_date=args.end_date)
