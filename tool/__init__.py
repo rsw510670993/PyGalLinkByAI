@@ -18,6 +18,7 @@ from .core import (
     open_db,
     save_match_judgement,
     save_match_keyword_rules,
+    upsert_getchu_game,
 )
 from .ai_matcher import (
     Aigc2dClient,

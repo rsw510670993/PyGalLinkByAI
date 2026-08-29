@@ -415,7 +415,7 @@ def get_pending_games(conn, limit=1000):
     ]
 
 
-def batch_download_thumbnails(games_batch, conn, start_time=None):
+def batch_download_thumbnails(games_batch, conn, start_time=None, sleep_seconds=0.5):
     """
     批量下载游戏缩略图（基于已有的thumb_url）
     
@@ -423,6 +423,7 @@ def batch_download_thumbnails(games_batch, conn, start_time=None):
         games_batch: 待下载缩略图的游戏列表 [{'gid': str, 'thumb_url': str, ...}, ...]
         conn: 数据库连接
         start_time: 开始时间（用于进度计算）
+        sleep_seconds: 每个请求后的限速秒数
     
     Returns:
         dict: 下载统计
@@ -440,7 +441,10 @@ def batch_download_thumbnails(games_batch, conn, start_time=None):
     for i, game in enumerate(games_batch, 1):
         try:
             gid = game.get('gid') or game.get('getchu_id')
-            thumb_url = game.get('thumb_url')
+            # thumb_url 缺失时按 Getchu 固定格式从 gid 兜底构造
+            thumb_url = game.get('thumb_url') or (
+                f"https://www.getchu.com/brandnew/{gid}/rc{gid}package.jpg" if gid else None
+            )
             
             if not gid or not thumb_url:
                 stats['skipped'] += 1
@@ -475,8 +479,8 @@ def batch_download_thumbnails(games_batch, conn, start_time=None):
                 stats['failed'] += 1
                 logger.warning("⚠️ 下载失败: %s", gid)
             
-            # 限速：每0.5秒一个（缩略图下载较轻量）
-            time.sleep(0.5)
+            # 限速：避免请求过快被Getchu限制
+            time.sleep(sleep_seconds)
             
             # 进度报告
             if i % 50 == 0 or i == len(games_batch):

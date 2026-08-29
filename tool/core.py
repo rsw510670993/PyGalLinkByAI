@@ -65,16 +65,17 @@ def get_raw_getchu_games(year, month):
                 continue
             
             # 处理日期格式：col0通常是 "08/28" 格式
+            month_key = f"{year}-{month:02d}"  # 主键日期统一用 YYYY-MM（与历史数据兼容）
             if "/" in day_text:
                 # 提取天数部分，避免混合格式
                 day_part = day_text.split("/")[-1]  # 取最后的部分
                 if len(day_part) == 2 and day_part.isdigit():
-                    release_date = f"{year}-{month:02d}-{day_part}"
+                    release_date = f"{month_key}-{day_part}"
                 else:
                     # 如果格式不正确，使用原始格式（降级）
-                    release_date = f"{year}-{month:02d}-{day_text}"
+                    release_date = f"{month_key}-{day_text}"
             else:
-                release_date = f"{year}-{month:02d}-{day_text}"
+                release_date = f"{month_key}-{day_text}"
             
             # 解析游戏标题和getchu_id（col1链接）
             a_tag = columns[1].find('a', href=re.compile(r'soft\.phtml\?id=(\d+)'))
@@ -101,7 +102,7 @@ def get_raw_getchu_games(year, month):
             
             if company and name and getchu_id and not any(skip_str in name for skip_str in skip_list):
                 raw_games.append(GetchuGame(
-                    date=release_date,
+                    date=month_key,
                     name=name,
                     company=company,
                     size=media,  # 复用size字段存储媒体类型
@@ -109,7 +110,8 @@ def get_raw_getchu_games(year, month):
                         "getchu_id": getchu_id, 
                         "price": price, 
                         "detail_url": detail_url,
-                        "thumb_url": thumb_url  # 新增缩略图URL
+                        "thumb_url": thumb_url,  # 缩略图URL
+                        "release_date": release_date  # 精确发售日
                     }
                 ))
 
@@ -479,61 +481,121 @@ def delete_game_record(date, name, db_path=None):
     return affected > 0
 
 
+def upsert_getchu_game(cursor, game):
+    """
+    插入或更新单个游戏记录（保留115下载相关数据）
+
+    - INSERT OR IGNORE 基础字段（date+name 为主键）
+    - 再更新扩展字段：getchu_id / price / detail_url / thumb_url / release_date
+    - 匹配策略：优先 date+name+company，失败时降级 date+name
+    - 永不触碰 link / nyaa_name / downloaded / submitted_115 等下载字段
+
+    Returns:
+        bool: 是否新插入了记录
+    """
+    cursor.execute(
+        "INSERT OR IGNORE INTO getchu_games (date, name, company, size) VALUES (?,?,?,?)",
+        (game.date, game.name, game.company, game.size),
+    )
+    inserted = cursor.rowcount == 1
+    extra = getattr(game, "extra", None) or {}
+    gid = extra.get("getchu_id")
+    price = extra.get("price")
+    detail_url = extra.get("detail_url")
+    thumb_url = extra.get("thumb_url")
+    release_date = extra.get("release_date")
+    if not (gid or price or detail_url or thumb_url or release_date):
+        return inserted
+
+    set_clause = []
+    params = []
+    if gid:
+        set_clause.append("getchu_id = ?")
+        params.append(gid)
+    if price:
+        set_clause.append("price = ?")
+        params.append(price)
+    if detail_url:
+        set_clause.append("detail_url = ?")
+        params.append(detail_url)
+    if thumb_url:
+        set_clause.append("thumb_url = ?")
+        params.append(thumb_url)
+    if release_date:
+        set_clause.append("release_date = ?")
+        params.append(release_date)
+
+    base_sql = f"UPDATE getchu_games SET {', '.join(set_clause)}"
+    # getchu_id 有部分唯一索引，若该 gid 已被其他行占用则去掉 gid 再更新
+    try:
+        # 优先精确匹配，失败则忽略公司名差异降级匹配
+        cursor.execute(
+            base_sql + " WHERE date = ? AND name = ? AND company = ?",
+            tuple(params) + (game.date, game.name, game.company),
+        )
+        if cursor.rowcount == 0:
+            cursor.execute(
+                base_sql + " WHERE date = ? AND name = ?",
+                tuple(params) + (game.date, game.name),
+            )
+    except sqlite3.IntegrityError:
+        # 同一 gid 出现在清单多行（同名重复条目等）：去掉 getchu_id 重试
+        reduced = [c for c in set_clause if not c.startswith("getchu_id")]
+        if len(reduced) < len(set_clause):
+            base_sql2 = f"UPDATE getchu_games SET {', '.join(reduced)}"
+            cursor.execute(
+                base_sql2 + " WHERE date = ? AND name = ? AND company = ?",
+                tuple(p for c, p in zip(set_clause, params) if not c.startswith("getchu_id"))
+                + (game.date, game.name, game.company),
+            )
+            if cursor.rowcount == 0:
+                cursor.execute(
+                    base_sql2 + " WHERE date = ? AND name = ?",
+                    tuple(p for c, p in zip(set_clause, params) if not c.startswith("getchu_id"))
+                    + (game.date, game.name),
+                )
+        else:
+            raise
+    return inserted
+
+
 def get_all_getchu_games(start_year, end_year, start_month, end_month, db_path=None):
     logger.info("开始获取%s年%s月至%s年%s月的数据", start_year, start_month, end_year, end_month)
+    conn = None
     try:
         conn = open_db(db_path=db_path)
         ensure_getchu_schema(conn)
         cursor = conn.cursor()
         success_count = 0
+        error_months = 0
         for year in range(start_year, end_year + 1):
             for month in range(start_month, end_month + 1):
                 logger.info("正在处理%s年%s月的数据", year, month)
-                games = get_getchu_games(year, month)
+                try:
+                    games = get_getchu_games(year, month)
+                except Exception as e:
+                    # 单月网络/解析失败不中断整体
+                    logger.error("%s年%s月获取失败: %s", year, month, str(e))
+                    error_months += 1
+                    continue
                 if not games:
                     logger.warning("%s年%s月没有获取到数据", year, month)
                     continue
                 for game in games:
-                    # 支持新增字段：getchu_id, release_date, size(媒体), price, detail_url
-                    cursor.execute(
-                        "INSERT OR IGNORE INTO getchu_games (date, name, company, size) VALUES (?,?,?,?)",
-                        (game.date, game.name, game.company, game.size),
-                    )
-                    # 单独更新新增字段（如果有）
-                    if hasattr(game, 'extra') and game.extra:
-                        gid = game.extra.get('getchu_id')
-                        price = game.extra.get('price')
-                        detail_url = game.extra.get('detail_url')
-                        thumb_url = game.extra.get('thumb_url')
-                        
-                        if gid or price or detail_url or thumb_url:
-                            set_clause = []
-                            params = []
-                            if gid:
-                                set_clause.append("getchu_id = ?")
-                                params.append(gid)
-                            if price:
-                                set_clause.append("price = ?")
-                                params.append(price)
-                            if detail_url:
-                                set_clause.append("detail_url = ?")
-                                params.append(detail_url)
-                            if thumb_url:
-                                set_clause.append("thumb_url = ?")
-                                params.append(thumb_url)
-                            
-                            if set_clause:
-                                update_sql = f"UPDATE getchu_games SET {', '.join(set_clause)} WHERE date = ? AND name = ? AND company = ?"
-                                params.extend([game.date, game.name, game.company])
-                                cursor.execute(update_sql, tuple(params))
+                    # 统一入库：INSERT OR IGNORE + 扩展字段更新（含公司名降级匹配）
+                    upsert_getchu_game(cursor, game)
                 success_count += len(games)
+                conn.commit()  # 每月提交，避免单点异常丢失全部进度
                 logger.info("完成%s年%s月的数据处理，共处理%s个游戏", year, month, len(games))
-        conn.commit()
-        conn.close()
+        if error_months:
+            logger.warning("共%d个月获取失败（已跳过）", error_months)
         return success_count > 0
     except Exception as e:
         logger.error("get_all_getchu_games,数据库操作失败: %s", str(e))
         return False
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def get_nyaa_data(game_name, company):

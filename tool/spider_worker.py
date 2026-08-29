@@ -108,11 +108,8 @@ def main():
                             status["stopped_reason"] = "signal"
                             break
 
-                        cursor.execute(
-                            "INSERT OR IGNORE INTO getchu_games (date, name, company) VALUES (?,?,?)",
-                            (game.date, game.name, game.company),
-                        )
-                        if cursor.rowcount == 1:
+                        # 统一入库：保存 getchu_id/thumb_url/price/detail_url/release_date 等扩展字段
+                        if tool.upsert_getchu_game(cursor, game):
                             inserted += 1
                         else:
                             skipped += 1
