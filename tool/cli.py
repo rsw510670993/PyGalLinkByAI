@@ -29,11 +29,15 @@ def _spider_status_default():
         "running": False,
         "pid": None,
         "progress": 0.0,
+        "phase": "listing",  # listing | detail
         "current_year": None,
         "current_month": None,
         "current_game": None,
         "start_year": None,
         "end_year": None,
+        "detail_done": 0,
+        "detail_total": 0,
+        "detail_failed": 0,
         "started_at": None,
         "updated_at": None,
         "stopped_reason": None,
@@ -651,6 +655,140 @@ def cmd_delete_game(args):
     _print({"success": ok, "message": "删除成功" if ok else "未找到匹配记录"})
 
 
+def cmd_detail_retry(args):
+    """重试失败的详情抓取任务"""
+    import sqlite3
+    
+    paths = runtime_paths()
+    conn = sqlite3.connect(paths["db_path"])
+    try:
+        # 查询失败的游戏（detail_fetched=2 且重试次数 < 3）
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT getchu_id, name, company 
+            FROM getchu_games 
+            WHERE detail_fetched = 2 AND detail_retry < 3
+            ORDER BY detail_retry, date
+            LIMIT ?
+        """, (args.limit,))
+        
+        failed_games = cursor.fetchall()
+        if not failed_games:
+            _print({"status": "info", "message": "没有需要重试的游戏"})
+            return
+        
+        _print({
+            "status": "success", 
+            "message": f"找到 {len(failed_games)} 个游戏需要重试",
+            "games": [
+                {"gid": row[0], "name": row[1], "company": row[2]} 
+                for row in failed_games[:5]
+            ] + (["...等"] if len(failed_games) > 5 else [])
+        })
+        
+        # 分批处理
+        import tool.getchu_detail as detail
+        
+        total_success = 0
+        total_failed = 0
+        
+        for batch_start in range(0, len(failed_games), args.batch_size):
+            batch_end = min(batch_start + args.batch_size, len(failed_games))
+            batch_games = [
+                {"gid": row[0], "name": row[1], "company": row[2]} 
+                for row in failed_games[batch_start:batch_end]
+            ]
+            
+            # 重置重试计数
+            for gid in [g["gid"] for g in batch_games]:
+                cursor.execute("""
+                    UPDATE getchu_games SET detail_retry = 0 WHERE getchu_id = ?
+                """, (gid,))
+            conn.commit()
+            
+            # 执行详情抓取
+            stats = detail.batch_update_details(batch_games, conn)
+            
+            total_success += stats["success"]
+            total_failed += stats["failed"]
+            
+            _print({
+                "status": "progress", 
+                "batch": f"{batch_start + 1}-{batch_end}/{len(failed_games)}",
+                "success": total_success,
+                "failed": total_failed,
+                "stats": stats
+            })
+        
+        _print({
+            "status": "completed", 
+            "message": f"重试完成: 成功 {total_success}, 失败 {total_failed}",
+            "total_processed": len(failed_games)
+        })
+        
+    finally:
+        conn.close()
+
+
+def cmd_download_thumbnails(args):
+    """批量下载游戏缩略图"""
+    import sqlite3
+    
+    paths = runtime_paths()
+    conn = sqlite3.connect(paths["db_path"])
+    try:
+        import tool.getchu_detail as detail
+        
+        # 获取待下载缩略图的游戏
+        games_to_download = detail.get_games_without_thumbnails(conn, args.limit)
+        
+        if not games_to_download:
+            _print({"status": "info", "message": "没有需要下载缩略图的游戏"})
+            return
+        
+        _print({
+            "status": "success", 
+            "message": f"找到 {len(games_to_download)} 个游戏需要下载缩略图",
+            "games": [
+                {"gid": g["gid"], "name": g["name"][:30], "thumb_url": g["thumb_url"]} 
+                for g in games_to_download[:5]
+            ] + (["...等"] if len(games_to_download) > 5 else [])
+        })
+        
+        # 分批处理
+        total_success = 0
+        total_failed = 0
+        total_skipped = 0
+        
+        for batch_start in range(0, len(games_to_download), args.batch_size):
+            batch_end = min(batch_start + args.batch_size, len(games_to_download))
+            batch_games = games_to_download[batch_start:batch_end]
+            
+            # 执行缩略图下载
+            stats = detail.batch_download_thumbnails(batch_games, conn)
+            
+            total_success += stats["success"]
+            total_failed += stats["failed"]
+            total_skipped += stats["skipped"]
+            
+            _print({
+                "status": "progress", 
+                "batch": f"{batch_start + 1}-{batch_end}/{len(games_to_download)}",
+                "success": total_success,
+                "failed": total_failed,
+                "skipped": total_skipped,
+                "stats": stats
+            })
+        
+        _print({
+            "status": "completed", 
+            "message": f"缩略图下载完成: 成功 {total_success}, 失败 {total_failed}, 跳过 {total_skipped}",
+            "total_processed": len(games_to_download)
+        })
+        
+    finally:
+        conn.close()
+
 
 def cmd_115_check_all_worker(args):
     import tool.core
@@ -992,6 +1130,16 @@ def build_parser():
 
     p_spider_stop = spider_sub.add_parser("stop")
     p_spider_stop.set_defaults(func=cmd_spider_stop)
+
+    p_detail_retry = spider_sub.add_parser("detail_retry")
+    p_detail_retry.add_argument("--limit", type=int, default=500, help="一次重试的失败游戏数量")
+    p_detail_retry.add_argument("--batch-size", type=int, default=50, help="每批处理的数量")
+    p_detail_retry.set_defaults(func=cmd_detail_retry)
+
+    p_download_thumbs = spider_sub.add_parser("download_thumbnails")
+    p_download_thumbs.add_argument("--limit", type=int, default=1000, help="一次下载的缩略图数量")
+    p_download_thumbs.add_argument("--batch-size", type=int, default=100, help="每批处理的数量")
+    p_download_thumbs.set_defaults(func=cmd_download_thumbnails)
 
     p_download = sub.add_parser("download")
     download_sub = p_download.add_subparsers(dest="action", required=True)

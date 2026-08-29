@@ -39,6 +39,7 @@ def get_raw_getchu_games(year, month):
     url = f"https://www.getchu.com/all/price.html?genre=pc_soft&year={year}&month={month}"
     try:
         response = requests.get(url, cookies=cookies)
+        response.encoding = 'euc-jp'  # Getchu页面使用EUC-JP编码
         response.raise_for_status()
     except Exception as e:
         logger.error("获取%s年%s月数据时出错: %s", year, month, str(e))
@@ -58,11 +59,59 @@ def get_raw_getchu_games(year, month):
     for row in game_rows:
         columns = row.find_all("td")
         if len(columns) >= 3:
-            date = f"{year}-{month:02d}"
-            name = columns[1].text.strip()
+            # 解析精确发售日（col0锚点MM/DD）
+            day_text = columns[0].get_text(strip=True)
+            if not day_text or day_text == "/":
+                continue
+            
+            # 处理日期格式：col0通常是 "08/28" 格式
+            if "/" in day_text:
+                # 提取天数部分，避免混合格式
+                day_part = day_text.split("/")[-1]  # 取最后的部分
+                if len(day_part) == 2 and day_part.isdigit():
+                    release_date = f"{year}-{month:02d}-{day_part}"
+                else:
+                    # 如果格式不正确，使用原始格式（降级）
+                    release_date = f"{year}-{month:02d}-{day_text}"
+            else:
+                release_date = f"{year}-{month:02d}-{day_text}"
+            
+            # 解析游戏标题和getchu_id（col1链接）
+            a_tag = columns[1].find('a', href=re.compile(r'soft\.phtml\?id=(\d+)'))
+            if not a_tag:
+                continue
+            name = a_tag.text.strip()
+            match = re.search(r'id=(\d+)', a_tag['href'])
+            getchu_id = match.group(1) if match else None
+            
+            # 制作公司（col2）
             company = columns[2].text.strip()
-            if company and name and not any(skip_str in name for skip_str in skip_list):
-                raw_games.append(GetchuGame(date, name, company))
+            
+            # 媒体类型（col3）
+            media = columns[3].text.strip()
+            
+            # 价格（col4）
+            price = columns[4].get_text(" ", strip=True)
+            
+            # 详情页URL
+            detail_url = f"https://www.getchu.com/soft.phtml?id={getchu_id}" if getchu_id else None
+            
+            # 构建缩略图URL（Getchu缩略图格式固定：/brandnew/{gid}/rc{gid}package.jpg）
+            thumb_url = f"https://www.getchu.com/brandnew/{getchu_id}/rc{getchu_id}package.jpg" if getchu_id else None
+            
+            if company and name and getchu_id and not any(skip_str in name for skip_str in skip_list):
+                raw_games.append(GetchuGame(
+                    date=release_date,
+                    name=name,
+                    company=company,
+                    size=media,  # 复用size字段存储媒体类型
+                    extra={
+                        "getchu_id": getchu_id, 
+                        "price": price, 
+                        "detail_url": detail_url,
+                        "thumb_url": thumb_url  # 新增缩略图URL
+                    }
+                ))
 
     return raw_games
 
@@ -84,10 +133,20 @@ def deduplicate_games(raw_games):
     for game in raw_games:
         key = normalize_name(game.name, combined_list)
         stripped_key = key.rsplit(" ", 1)[0] if " " in key else key
-        if key in processed_keys or stripped_key in processed_keys:
-            continue
-        processed_games.append(game)
-        processed_keys.add(key)
+        
+        # 新增：如果有getchu_id，优先用getchu_id去重（防止不同月同名版本冲突）
+        if hasattr(game, 'extra') and game.extra and game.extra.get('getchu_id'):
+            gid_key = f"gid_{game.extra['getchu_id']}"
+            if gid_key in processed_keys:
+                continue
+            processed_games.append(game)
+            processed_keys.add(gid_key)
+        else:
+            # 旧逻辑：公司名+名称去重
+            if key in processed_keys or stripped_key in processed_keys:
+                continue
+            processed_games.append(game)
+            processed_keys.add(key)
 
     processed_games.sort(key=lambda x: (x.date, x.name))
     return processed_games
@@ -435,10 +494,38 @@ def get_all_getchu_games(start_year, end_year, start_month, end_month, db_path=N
                     logger.warning("%s年%s月没有获取到数据", year, month)
                     continue
                 for game in games:
+                    # 支持新增字段：getchu_id, release_date, size(媒体), price, detail_url
                     cursor.execute(
-                        "INSERT OR IGNORE INTO getchu_games (date, name, company) VALUES (?,?,?)",
-                        (game.date, game.name, game.company),
+                        "INSERT OR IGNORE INTO getchu_games (date, name, company, size) VALUES (?,?,?,?)",
+                        (game.date, game.name, game.company, game.size),
                     )
+                    # 单独更新新增字段（如果有）
+                    if hasattr(game, 'extra') and game.extra:
+                        gid = game.extra.get('getchu_id')
+                        price = game.extra.get('price')
+                        detail_url = game.extra.get('detail_url')
+                        thumb_url = game.extra.get('thumb_url')
+                        
+                        if gid or price or detail_url or thumb_url:
+                            set_clause = []
+                            params = []
+                            if gid:
+                                set_clause.append("getchu_id = ?")
+                                params.append(gid)
+                            if price:
+                                set_clause.append("price = ?")
+                                params.append(price)
+                            if detail_url:
+                                set_clause.append("detail_url = ?")
+                                params.append(detail_url)
+                            if thumb_url:
+                                set_clause.append("thumb_url = ?")
+                                params.append(thumb_url)
+                            
+                            if set_clause:
+                                update_sql = f"UPDATE getchu_games SET {', '.join(set_clause)} WHERE date = ? AND name = ? AND company = ?"
+                                params.extend([game.date, game.name, game.company])
+                                cursor.execute(update_sql, tuple(params))
                 success_count += len(games)
                 logger.info("完成%s年%s月的数据处理，共处理%s个游戏", year, month, len(games))
         conn.commit()

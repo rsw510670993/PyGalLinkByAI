@@ -1,7 +1,16 @@
 class GetchuGame:
-    def __init__(self, date, name, company, size=None, link=None, nyaa_name=None, comment=None, downloaded=0, infohash_hex=None, submitted_115=0, submitted_pick_code=None):
+    def __init__(self, date, name, company, size=None, link=None, nyaa_name=None, comment=None, downloaded=0, infohash_hex=None, submitted_115=0, submitted_pick_code=None, extra=None):
         self.date = date
-        self.year, self.month = map(int, date.split('-'))
+        # 支持新格式 YYYY-MM-DD 和旧格式 YYYY-MM
+        if len(date.split('-')) == 3:
+            # 新格式：YYYY-MM-DD
+            date_parts = date.split('-')
+            self.year = int(date_parts[0])
+            self.month = int(date_parts[1])
+            # 如果需要，也可以添加 self.day = int(date_parts[2])
+        else:
+            # 旧格式：YYYY-MM
+            self.year, self.month = map(int, date.split('-'))
         self.name = name
         self.company = company
         self.size = size
@@ -12,6 +21,7 @@ class GetchuGame:
         self.infohash_hex = infohash_hex
         self.submitted_115 = submitted_115
         self.submitted_pick_code = submitted_pick_code
+        self.extra = extra or {}
 
     def __str__(self):
         return f"GetchuGame(date={self.date}, name='{self.name}', company='{self.company}')"

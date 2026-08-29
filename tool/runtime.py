@@ -53,6 +53,7 @@ def runtime_paths(config_path=None):
     log_dir = _abs_from_root(config.get("log_dir", os.path.dirname(log_path) or "logs"))
     log_retention_days = int(config.get("log_retention_days", 14) or 14)
     log_auto_cleanup = bool(config.get("log_auto_cleanup", True))
+    thumbnail_dir = _abs_from_root(config.get("thumbnail_dir", "thumbnails"))
 
     return {
         "config": config,
@@ -62,6 +63,7 @@ def runtime_paths(config_path=None):
         "log_dir": log_dir,
         "log_retention_days": log_retention_days,
         "log_auto_cleanup": log_auto_cleanup,
+        "thumbnail_dir": thumbnail_dir,
         "spider_status_path": os.path.join(status_dir, "spider_status.json"),
         "download_status_path": os.path.join(status_dir, "download_status.json"),
         "check_all_status_path": os.path.join(status_dir, "check_all_status.json"),

@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pa
 
 import tool
 from tool.runtime import cleanup_old_logs, daily_log_path, now_ts, runtime_paths, write_json_atomic
+from tool.getchu_detail import batch_update_details, get_pending_games
 
 
 _stop_requested = False
@@ -50,11 +51,15 @@ def main():
         "running": True,
         "pid": pid,
         "progress": 0.0,
+        "phase": "listing",  # listing | detail
         "current_year": start_year,
         "current_month": None,
         "current_game": None,
         "start_year": start_year,
         "end_year": end_year,
+        "detail_done": 0,
+        "detail_total": 0,
+        "detail_failed": 0,
         "started_at": now_ts(),
         "updated_at": now_ts(),
         "stopped_reason": None,
@@ -129,6 +134,66 @@ def main():
 
                 if _stop_requested:
                     break
+
+                # === 阶段2：详情补全 ===
+                if not _stop_requested:
+                    logger.info("📋 列表抓取完成，开始详情补全阶段...")
+                    status["phase"] = "detail"
+                    status["updated_at"] = now_ts()
+                    write_json_atomic(paths["spider_status_path"], status)
+                    
+                    # 获取待处理的游戏列表
+                    pending_games = get_pending_games(conn, limit=10000)
+                    total_pending = len(pending_games)
+                    status["detail_total"] = total_pending
+                    status["detail_done"] = 0
+                    status["detail_failed"] = 0
+                    status["updated_at"] = now_ts()
+                    write_json_atomic(paths["spider_status_path"], status)
+                    
+                    logger.info("📋 待处理游戏数量: %d", total_pending)
+                    
+                    if total_pending > 0:
+                        # 分批处理（每批100个，减少内存占用）
+                        batch_size = 100
+                        for batch_start in range(0, total_pending, batch_size):
+                            if _stop_requested:
+                                status["stopped_reason"] = "signal"
+                                break
+                            
+                            batch_end = min(batch_start + batch_size, total_pending)
+                            batch_games = pending_games[batch_start:batch_end]
+                            
+                            logger.info("📋 处理批次 %d-%d/%d", 
+                                      batch_start + 1, batch_end, total_pending)
+                            
+                            # 执行详情补全
+                            stats = batch_update_details(
+                                batch_games, conn, 
+                                start_time=status["started_at"]
+                            )
+                            
+                            # 更新统计
+                            status["detail_done"] += stats["success"] + stats["skipped"]
+                            status["detail_failed"] += stats["failed"] + stats["retry_failed"]
+                            status["progress"] = round(
+                                (done_months * 12 + status["detail_done"]) / (total_months * 12 + total_pending) * 100, 2
+                            )
+                            status["updated_at"] = now_ts()
+                            write_json_atomic(paths["spider_status_path"], status)
+                            
+                            logger.info("📋 批次完成: 成功:%d 失败:%d 跳过:%d 重试:%d", 
+                                      stats["success"], stats["failed"], stats["skipped"], stats["retried"])
+                            
+                            # 检查是否还有待处理的
+                            remaining = get_pending_games(conn, limit=1)
+                            if not remaining:
+                                logger.info("🎉 所有游戏详情补全完成！")
+                                break
+                    
+                    logger.info("🎉 详情补全阶段完成")
+                
+                conn.commit()
         finally:
             conn.close()
     except Exception:
