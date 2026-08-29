@@ -165,8 +165,8 @@ def _dedup_key(name, aggressive=False):
             r"セット版|人妻セット|メモリアル特装版.*|げっちゅ屋限定.*|Getchu.com限定.*|"
             r"描き下ろし.*|抱き枕カバー付.*|ドラマCDセット.*|B2タペストリーセット.*|"
             r"B2タペストリー.*|タペストリー.*|アクリルパネル付き|＋アクリルパネル付き|"
-            r"アクリルジオラマつき|特製痛DVDドライブ付き|初回特典版.*|早期予約.*|"
-            r"シークレットBOX.*|Wスエード.*|アクアヴェール.*|＜.*予約＞|"
+            r"アクリルジオラマつき|特製痛DVDドライブ付き|初回特典版.*|早期予約.*|＜.*予約＞|"
+            r"シークレットBOX.*|Wスエード.*|アクアヴェール.*|復刻.*|"
             r"「.*」WスエードB2タペストリー付.*|森山しじみ.*|さいとうつかさ.*|noyF先生.*|"
             r"＋(?:noyF先生|.*描き下ろし).*)$",
             "", key,
@@ -379,6 +379,82 @@ def phase_analyze(conn):
     return {"groups": len(candidate_groups), "rows": total_rows, "rows_with_115_secondary": rows_with_115_secondary}
 
 
+def phase_purge_platform_editions(conn):
+    """
+    排除主机平台版记录（对收集GALGAME不属于目标）
+
+    识别规则：
+    - 名称以空白+数字版结尾（2版=NS2版 / 4版=PS4版 / 5版=PS5版）
+    - 或含 PlayStation 4版/5版
+    - V2版 等前面带字母的版本号不误伤（前面不是空白）
+
+    删除策略：
+    - 同月同公司存在PC基底（去平台版后同名的记录）→ 只删除平台版行
+    - 无PC基底 → 该主机版游戏整组删除（含 プレミアムボックス/TREASURE BOX 等变体）
+    - 被删行写JSON侧车（非DB备份）
+    """
+    import re as _re
+    import json
+    from pathlib import Path
+
+    cursor = conn.cursor()
+    cursor.execute("SELECT rowid, * FROM getchu_games ORDER BY date, company")
+    cols = [d[0] for d in cursor.description]
+    rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
+
+    # 平台版行：\s+数字版 结尾 或 PlayStation X版
+    pat = _re.compile(r"(?:\s+(?:2|4|5)版|PlayStation\s*(?:4|5)版)$")
+    platform_rows = [r for r in rows if pat.search(r["name"])]
+
+    # 按 (date, company, core) 分组：core = 去掉平台版尾缀后的名字
+    groups = {}
+    for r in platform_rows:
+        core = _re.sub(r"\s+(?:2|4|5)版$", "", r["name"]).strip()
+        core = _re.sub(r"PlayStation\s*(?:4|5)版$", "", core).strip()
+        groups.setdefault((r["date"], r["company"], core), []).append(r)
+
+    stats = {"platform_rows": len(platform_rows), "groups": len(groups),
+             "deleted": 0, "with_pc_base": 0, "no_pc_base": 0, "skipped_115": 0}
+    deleted_rows = []
+
+    for (date, company, core), members in groups.items():
+        # 是否存在PC基底：同月同公司 name == core
+        cursor.execute("SELECT COUNT(*) FROM getchu_games WHERE date=? AND company=? AND name=?",
+                       (date, company, core))
+        has_pc_base = cursor.fetchone()[0] > 0
+
+        # 确定要删的行：有PC基底只删平台版成员；无PC基底删该组全部同前缀记录
+        if has_pc_base:
+            to_delete = members
+            stats["with_pc_base"] += 1
+        else:
+            cursor.execute(
+                "SELECT rowid, * FROM getchu_games WHERE date=? AND company=? AND name LIKE ?",
+                (date, company, core + "%"),
+            )
+            sub_cols = [d[0] for d in cursor.description]
+            to_delete = [dict(zip(sub_cols, r)) for r in cursor.fetchall()]
+            stats["no_pc_base"] += 1
+
+        for r in to_delete:
+            # 有115数据则保留（避免丢失），否则删除
+            if r.get("link") or int(r.get("downloaded") or 0) == 1 or int(r.get("submitted_115") or 0) == 1:
+                stats["skipped_115"] += 1
+                continue
+            deleted_rows.append(r)
+            cursor.execute("DELETE FROM getchu_games WHERE rowid=?", (r["rowid"],))
+            stats["deleted"] += 1
+
+    conn.commit()
+    if deleted_rows:
+        sidecar_dir = Path("/var/www/html/pyGal/db_backups")
+        sidecar_dir.mkdir(parents=True, exist_ok=True)
+        sidecar = sidecar_dir / f"purge_platform_deleted_{time.strftime('%Y%m%d_%H%M%S')}.json"
+        sidecar.write_text(json.dumps(deleted_rows, ensure_ascii=False, indent=2), encoding="utf-8")
+        logger.info("被删主机版行已写入侧车: %s", sidecar)
+    return stats
+
+
 def phase_dedupe_editions(conn, start_date=None, end_date=None):
     """
     DB端合并店铺特典/版本变体重复记录（保守规则：同月同公司剥后缀后同名）
@@ -558,7 +634,7 @@ def print_summary(conn, tag):
 
 def main():
     parser = argparse.ArgumentParser(description="Getchu 缩略图数据刷新")
-    parser.add_argument("--phase", required=True, choices=["merge", "dedupe", "dedupe_editions", "analyze", "crawl", "thumbs", "status"],
+    parser.add_argument("--phase", required=True, choices=["merge", "dedupe", "dedupe_editions", "purge_platform", "analyze", "crawl", "thumbs", "status"],
                         help="执行阶段")
     parser.add_argument("--start-year", type=int, default=2008)
     parser.add_argument("--end-year", type=int, default=2026)
@@ -586,6 +662,11 @@ def main():
     elif args.phase == "analyze":
         stats = phase_analyze(conn)
         logger.info("分析完成: %s", stats)
+    elif args.phase == "purge_platform":
+        print_summary(conn, "purge前")
+        stats = phase_purge_platform_editions(conn)
+        logger.info("主机平台版排除统计: %s", stats)
+        print_summary(conn, "purge后")
     elif args.phase == "dedupe_editions":
         print_summary(conn, "dedupe_editions前")
         stats = phase_dedupe_editions(conn, start_date=args.start_date, end_date=args.end_date)
