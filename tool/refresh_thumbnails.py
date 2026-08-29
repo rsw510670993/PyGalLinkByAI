@@ -155,13 +155,17 @@ def _dedup_key(name, aggressive=False):
     if not name:
         return ""
     import re as _re
-    key = _re.sub(r"\s*if\s+エロパッチ対応.*$", "", name).strip()
+    # 补丁对应版：if 与 エロパッチ対応 之间可有/无空格，尾部可能是 ＜入荷予定＞ 等
+    key = _re.sub(r"\s*if\s*エロパッチ対応.*$", "", name).strip()
     if aggressive:
         # 额外剥离常见版本/店铺特典尾缀（仅用于精确匹配已有基底时）
         key = _re.sub(
-            r"\s*(?:TREASURE BOX|プレミアム版|4版|5版|DL版|ダウンロード版|パッケージ版|"
+            r"\s*(?:TREASURE BOX|プレミアム版|プレミアムエディション|プレミアム\s*$|4版|5版|DL版|ダウンロード版|"
+            r"パッケージ版|版$|特別版.*$|通常版|初回版|限定版|豪華版|同梱版|セット版|"
             r"げっちゅ屋限定.*|Getchu.com限定.*|描き下ろし.*|抱き枕カバー付.*|"
-            r"ドラマCDセット.*|B2タペストリーセット.*|同梱版|初回特典版.*|早期予約.*)$",
+            r"ドラマCDセット.*|B2タペストリーセット.*|B2タペストリー.*|タペストリー.*|"
+            r"アクリルパネル付き|＋アクリルパネル付き|初回特典版.*|早期予約.*|"
+            r"シークレットBOX.*|Wスエード.*|アクアヴェール.*)$",
             "", key,
         ).strip()
     return key
@@ -183,7 +187,7 @@ def phase_dedupe(conn, dry_run=False):
     from pathlib import Path
 
     cursor = conn.cursor()
-    cursor.execute("SELECT rowid, * FROM getchu_games WHERE name LIKE '% if エロパッチ対応%' ORDER BY rowid")
+    cursor.execute("SELECT rowid, * FROM getchu_games WHERE name LIKE '%ifエロパッチ対応%' ORDER BY rowid")
     cols = [d[0] for d in cursor.description]
     patch_rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
 
@@ -405,26 +409,41 @@ def phase_dedupe_editions(conn):
     for (date, company, key), members in groups.items():
         if len(members) < 2:
             continue
-        primary = min(members, key=lambda r: (
-            -(1 if r["downloaded"] else 0),
-            -(1 if r["submitted_115"] else 0),
-            -(1 if r["link"] else 0),
-            len(r["name"]),
-        ))
+        # 主记录选择：
+        # 1) 同gid多行（名称不一致）→ 以新记录为准（rowid最大）
+        # 2) 否则 115数据优先，其次短名称（基底版）
+        gid_groups = defaultdict(list)
+        for m in members:
+            gid_groups[m["getchu_id"]].append(m)
+        if len(gid_groups) == 1 and len(members) > 1 and members[0]["getchu_id"]:
+            # 同gid不同名：保留最新记录
+            primary = max(members, key=lambda r: r["rowid"])
+        else:
+            primary = min(members, key=lambda r: (
+                -(1 if r["downloaded"] else 0),
+                -(1 if r["submitted_115"] else 0),
+                -(1 if r["link"] else 0),
+                len(r["name"]),
+            ))
         secondaries = [r for r in members if r["rowid"] != primary["rowid"]]
-        if len(primary["name"]) > min(len(r["name"]) for r in members):
+        if len(primary["name"]) > min(len(r["name"]) for r in members) and not (
+                len(gid_groups) == 1 and members[0]["getchu_id"]):
             stats["no_primary"] += 1
             continue
 
         stats["candidate_groups"] += 1
         for row in secondaries:
-            # 只填不覆盖扩展字段
+            # 只填不覆盖扩展字段（getchu_id 有唯一索引，冲突时跳过）
             for f in ["getchu_id", "thumb_url", "thumb_path", "price",
                       "detail_url", "release_date", "size"]:
-                cursor.execute(
-                    f"UPDATE getchu_games SET {f}=? WHERE rowid=? AND ({f} IS NULL OR {f}='')",
-                    (row[f], primary["rowid"]),
-                )
+                try:
+                    cursor.execute(
+                        f"UPDATE getchu_games SET {f}=? WHERE rowid=? AND ({f} IS NULL OR {f}='')",
+                        (row[f], primary["rowid"]),
+                    )
+                except sqlite3.IntegrityError:
+                    # getchu_id 已被其他行占用：跳过该字段
+                    pass
             # 115字段互补
             for f in ["link", "nyaa_name", "comment", "infohash_hex", "submitted_pick_code"]:
                 cursor.execute(
