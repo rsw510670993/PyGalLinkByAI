@@ -33,6 +33,7 @@ from .core import open_db
 from .runtime import read_config, repo_root
 from .relabel import extract_dn_parts
 from .p115_client import (
+    get_item_info,
     parse_magnet_simple,
     search_files,
     get_item_name,
@@ -352,7 +353,10 @@ def locate_by_search(dn, name):
             if best is None or score > best[0]:
                 best = (score, it)
                 dir_hits = 1 if is_dir else 0
-            elif score == best[0] and is_dir:
+            elif score == best[0]:
+                if is_dir:
+                    # 同分目录优先（目录才是整理目标；文件可能只是目录内的种子内容）
+                    best = (score, it)
                 dir_hits += 1
 
         if best is not None and best[0] >= 3:
@@ -373,6 +377,114 @@ def locate_by_search(dn, name):
     }
 
 
+def _wrap_file_torrent(conn, loc, dn, target, year_dir_path, dry_run, year_dirs,
+                       date_code, company, date, name, result):
+    """单文件种子处理：在 /GAL/GAL-{年} 下创建规范名文件夹，把匹配文件移入。
+
+    匹配范围 = 文件所在同级目录中所有 _names_match(dn) 的文件（兼容分包rar）。
+    """
+    result["old_name"] = loc.get("name")
+    result["old_path"] = ((loc.get("parent_path") or "").rstrip("/") + "/" + loc["name"])
+    result["cid"] = loc.get("cid")
+    result["located_by"] = "search_file"
+    if dry_run:
+        result["status"] = "would_wrap_file"
+        result["target_path"] = f"{year_dir_path}/{target}"
+        result["message"] = "预览: 单文件种子 → 创建文件夹并移入 " + year_dir_path
+        return result
+
+    from .p115_client import _normalize_for_comparison, _names_match
+
+    # 1) 确保年份目录
+    if year_dir_path in year_dirs:
+        year_cid = year_dirs[year_dir_path]
+    else:
+        year_cid = resolve_cid(year_dir_path)
+        if not year_cid:
+            year_cid = mkdir_year_dir(year_dir_path.rsplit("-", 1)[-1])
+        if not year_cid:
+            result["status"] = "error"
+            result["message"] = f"创建年份目录失败: {year_dir_path}"
+            return result
+        year_dirs[year_dir_path] = year_cid
+
+    # 2) 同级目录中收集所有匹配 dn 的文件
+    parent_pid = loc.get("pid")
+    siblings = list_dir_children(parent_pid) if parent_pid else None
+    matched = []
+    norm_dn = _normalize_for_comparison(dn)
+    for it in (siblings or []):
+        if str(it.get("fc", "1")) == "0":
+            continue  # 只要文件
+        if _names_match(norm_dn, _normalize_for_comparison(it.get("n") or "")):
+            matched.append(it)
+    if not matched:
+        matched = [{"cid": loc["cid"], "n": loc["name"], "pid": parent_pid}]
+
+    # 3) 创建规范文件夹（冲突检查）
+    children = list_dir_children_names(year_cid)
+    if children is not None and target in children:
+        result["status"] = "conflict"
+        result["message"] = f"目标目录已存在同名文件夹: {target}"
+        return result
+    from .p115_client import _import_p115client
+
+    client = _load_client()
+    try:
+        _, check_response = _import_p115client()
+        resp = check_response(client.fs_mkdir({"name": target, "pid": year_cid}))
+        data = resp.get("data") if isinstance(resp, dict) else {}
+        new_cid = (data or {}).get("file_id") or (data or {}).get("cid")
+        if not new_cid:
+            new_cid = resolve_cid(f"{year_dir_path}/{target}")
+    except Exception as e:
+        result["status"] = "error"
+        result["message"] = f"创建文件夹失败: {e}"
+        return result
+    if not new_cid:
+        result["status"] = "error"
+        result["message"] = "创建文件夹后无法取到cid"
+        return result
+
+    # 4) 逐个移入
+    moved = 0
+    for it in matched:
+        fid = str(it.get("cid") or "")
+        if not fid:
+            continue
+        mr = move_item(fid, new_cid)
+        if not mr.get("success"):
+            result["status"] = "error"
+            result["message"] = f"移入失败({it.get('n', '')[:30]}): {mr.get('message')}"
+            return result
+        moved += 1
+        time.sleep(0.3)
+    time.sleep(0.5)
+    if get_item_name(new_cid) != target:
+        result["status"] = "error"
+        result["message"] = "文件夹创建后校验失败"
+        return result
+
+    result["cid"] = str(new_cid)
+    result["status"] = "wrapped_file"
+    result["actions"] = ["wrap_file"]
+    result["target_path"] = f"{year_dir_path}/{target}"
+    result["message"] = f"已创建文件夹并移入{moved}个文件"
+    save_folder_record(conn, date, name, cid=str(new_cid), pid=str(year_cid),
+                       folder_name=target, folder_path=result["target_path"],
+                       target_name=target, date_code=date_code, company=company,
+                       status="wrapped_file")
+    # ⑦ 补记 downloaded
+    row = conn.execute(
+        "SELECT COALESCE(downloaded,0) FROM getchu_games WHERE date=? AND name=?",
+        (date, name),
+    ).fetchone()
+    if row and row[0] == 0:
+        set_downloaded(conn, date, name, str(new_cid))
+        result["actions"].append("set_dl")
+    return result
+
+
 def organize_single(date, name, dry_run=True, conn=None, year_dirs=None):
     """整理单个游戏: 存在性检查 → 规范命名([YYYY-MM-DD][公司]名) → 位置校验(/GAL/GAL-{dn年})
 
@@ -384,7 +496,8 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None):
       in_offline              磁链在115离线任务中（提交未完成，等待）
       missing_in_115          ⚠ 标记已下载/已提交但115找不到（execute时重置 submitted_115=0）
       not_downloaded          未下载（无磁链提交记录，正常）
-      conflict / ambiguous / shared_cid / not_dir / no_dn_date / no_link / error
+      wrapped_file / would_wrap_file（单文件种子包文件夹）
+      conflict / ambiguous / shared_cid / no_dn_date / no_link / error
     """
     result = {
         "date": date, "name": name, "status": None,
@@ -486,9 +599,22 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None):
                 result["message"] = "命中多个候选目录，为安全起见跳过"
                 return result
             if not loc.get("is_dir"):
-                result["status"] = "not_dir"
-                result["message"] = "命中的是文件而非目录，跳过"
-                return result
+                # 命中的是文件：先取真实父目录信息（搜索结果无pid，用fs_file查）
+                info = get_item_info(loc["cid"]) or {}
+                if str(info.get("fc", "1")) == "0":
+                    # 实际是目录（搜索索引把目录内文件当命中）→ 按目录处理
+                    loc = {"cid": info["cid"], "pid": info.get("pid"), "name": info.get("n"),
+                           "parent_path": parent_crumbs_path(info.get("pid")) if info.get("pid") else None,
+                           "is_dir": True, "pick_code": info.get("pc")}
+                else:
+                    # 单文件种子 → 建规范文件夹包进去（用户指定策略）
+                    if info.get("pid"):
+                        loc["pid"] = info["pid"]
+                        loc["parent_path"] = parent_crumbs_path(info["pid"])
+                    wrap = _wrap_file_torrent(conn, loc, dn_of(link), target, year_dir_path,
+                                              dry_run, year_dirs, date_code, company,
+                                              date, name, result)
+                    return wrap
             cid = loc.get("cid")
             pid = loc.get("pid")
             old_name = loc.get("name")
@@ -500,24 +626,21 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None):
         result["old_path"] = (parent_path.rstrip("/") + "/" + old_name) if parent_path else old_name
         result["located_by"] = located_by
 
-        # ③.5 共享cid守卫：同一115目录被多行引用 → 只处理目标名与当前目录名一致的一行，
-        #     其余跳过待人工审阅（防止重复行/共用磁链行之间改名互踢）
-        if located_by == "db_record":
-            others = conn.execute(
-                "SELECT date, name, target_name FROM getchu_115_folders"
-                " WHERE cid=? AND NOT (date=? AND name=?)",
-                (cid, date, name),
-            ).fetchall()
-            if others:
-                my_matches_cur = (old_name == target)
-                other_matches = any(o[2] == old_name for o in others)
-                if my_matches_cur and not other_matches:
-                    pass  # 本行持有当前目录名，其他行是陈旧引用 → 本行处理
-                else:
-                    result["status"] = "shared_cid"
-                    result["message"] = ("115目录被多行引用(" + "; ".join(
-                        f"{d}/{n[:20]}" for d, n, _t in others) + ")，跳过待人工审阅")
-                    return result
+        # ③.5 共享cid守卫（无论定位方式）：同一115目录被多行引用 → 只处理"记录中目标名
+        #     与当前目录名一致"的那一行，其余跳过待人工审阅（防重复行/共用磁链行改名互踢）
+        others = conn.execute(
+            "SELECT date, name, target_name FROM getchu_115_folders"
+            " WHERE cid=? AND NOT (date=? AND name=?)",
+            (cid, date, name),
+        ).fetchall()
+        if others:
+            my_record_holds = (located_by == "db_record" and old_name == target
+                               and not any(o[2] == old_name for o in others))
+            if not my_record_holds:
+                result["status"] = "shared_cid"
+                result["message"] = ("115目录被多行引用(" + "; ".join(
+                    f"{d}/{n[:20]}" for d, n, _t in others) + ")，跳过待人工审阅")
+                return result
 
         # ④ 动作判定: 改名 + 移动
         need_rename = old_name != target
@@ -779,8 +902,22 @@ def _save_review_list(pending, year=None, month=None, name=None, dry_run=True):
         "conflict": "目标目录已有同名项 → 人工比对内容后合并/删除",
         "error": "执行报错 → 查看 message 重试",
     }
+    _MANUAL = {"shared_cid", "ambiguous", "missing_in_115", "conflict", "error"}
     for r in pending:
         r["advice"] = _ADVICE.get(r.get("status"))
+        r["manual"] = r.get("status") in _MANUAL
+    # 跨批次合并：同scope键(date,name)以新为准，其余批次残留项保留
+    try:
+        with open(_review_path(), "r", encoding="utf-8") as f:
+            prev = json.load(f)
+    except Exception:
+        prev = None
+    if prev and isinstance(prev.get("items"), list) and (year or month or name):
+        merged = {f"{r.get('date')}\x00{r.get('name')}": r for r in prev["items"]}
+        for r in pending:
+            merged[f"{r.get('date')}\x00{r.get('name')}"] = r
+        pending = list(merged.values())
+    pending.sort(key=lambda r: (str(r.get("date")), str(r.get("name"))))
     payload = {
         "updated_at": int(time.time()),
         "updated_at_str": time.strftime("%Y-%m-%d %H:%M:%S"),

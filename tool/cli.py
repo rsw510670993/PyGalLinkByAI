@@ -968,6 +968,8 @@ def cmd_115_review(args):
     items = data.get("items") or []
     if status_filter:
         items = [r for r in items if r.get("status") == status_filter]
+    if getattr(args, "todo", False):
+        items = [r for r in items if r.get("manual")]
     _print({
         "status": "ok",
         "path": path,
@@ -976,7 +978,7 @@ def cmd_115_review(args):
         "total": len(items),
         "items": [
             {k: r.get(k) for k in ("date", "name", "status", "message", "advice",
-                                   "old_path", "target_path", "dn_date")}
+                                   "manual", "old_path", "target_path", "dn_date")}
             for r in items
         ],
     })
@@ -1462,6 +1464,7 @@ def build_parser():
     p_115_organize.set_defaults(func=cmd_115_organize)
     p_115_review = _115_sub.add_parser("review", help="查看115整理待人工审阅清单")
     p_115_review.add_argument("--status", type=str, help="按状态过滤(shared_cid/ambiguous/not_dir/no_dn_date/missing_in_115)")
+    p_115_review.add_argument("--todo", action="store_true", help="仅显示人工处理项(manual)")
     p_115_review.set_defaults(func=cmd_115_review)
 
     p_update = sub.add_parser("update_game")

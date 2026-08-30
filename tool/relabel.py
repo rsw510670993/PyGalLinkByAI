@@ -78,6 +78,49 @@ def parse_magnet_dn(link):
     return dn.strip() or None
 
 
+_BARE_DATE_RE = re.compile(
+    r"(?<!\d)("
+    r"(?:19|20)\d{2}[-/.年](?:0?[1-9]|1[0-2])[-/.月](?:0?[1-9]|[12]\d|3[01])日?"  # 2016-10-28 / 2026.07.24
+    r"|(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])"                     # 20161028
+    r"|\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])"                              # 161028
+    r")(?!\d)"
+)
+
+
+def _bare_date_in_text(text, release_date=None):
+    """dn 文本中的裸日期（文件名时间兜底）：优先取与 getchu 发售日一致的，否则取最后一个。
+
+    返回 YYYY-MM-DD 或 None。
+    """
+    if not text:
+        return None
+    hits = []
+    for m in _BARE_DATE_RE.finditer(text):
+        raw = m.group(1)
+        digits = re.sub(r"\D", "", raw)
+        if len(digits) == 8 and ("-" in raw or "/" in raw or "." in raw or "年" in raw):
+            iso = f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
+            code = digits[2:]
+        elif len(digits) == 8:
+            iso = f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
+            code = digits[2:]
+        elif len(digits) == 6:
+            iso = _fmt_release_ts(digits)
+            code = digits
+        else:
+            continue
+        if iso:
+            hits.append((iso, code, digits))
+    if not hits:
+        return None
+    rel_n = (release_date or "").replace("-", "") if release_date else ""
+    for iso, code, digits in hits:
+        if rel_n and digits == rel_n:
+            return iso
+    iso, _c, _d = hits[-1]
+    return iso
+
+
 def _fmt_release_ts(date_code):
     """[YYMMDD] 或 [YYYYMMDD] -> YYYY-MM-DD；非法返回 None。"""
     if not date_code:
@@ -533,8 +576,17 @@ def relabel_month(year, month, conn=None, config=None, force=False, dry_run=True
                 plan["no_dn"] += 1
                 continue
             if not parts["release_ts"]:
-                plan["no_dn_date"] += 1
-                continue
+                # 时间降级链：dn日期码 → 文件名裸日期 → getchu预定时间(release_date)
+                bare = _bare_date_in_text(parts["dn"], row.get("release_date"))
+                if bare:
+                    parts["release_ts"] = bare
+                    parts["date_code"] = bare.replace("-", "")[2:]
+                elif row.get("release_date"):
+                    parts["release_ts"] = row["release_date"]
+                    parts["ts_fallback"] = "getchu_scheduled"
+                else:
+                    plan["no_dn_date"] += 1
+                    continue
 
             # 关联性校验（防历史错配磁链搬错月/改名）
             related, pts, _detail = _name_related(

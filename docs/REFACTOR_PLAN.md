@@ -163,7 +163,13 @@
   - **shared_cid 守卫**：一个 115 目录被多行引用（重复行/共用磁链行）→ 只处理持名行，其余跳过防改名互踢
   - 修复：`fs_move` web 端点 payload 为 `{fid, pid}`（非 `file_ids/to_cid`）
 
-#### 待人工审阅清单（14 项，动态维护）
+#### 审阅清单处理策略（用户裁定 2026-08-30）
+
+- **not_dir 单文件种子** → 自动化：在 `/GAL/GAL-{年}` 建规范名文件夹，把匹配文件移入（`wrapped_file` 状态）；定位同分时目录优先（防目录内文件抢占命中）
+- **no_dn_date** → 自动化：`release_ts` 降级链 **dn日期码 → 文件名裸日期（含损坏dn的 `161028][` 场景、`YYYY.MM.DD` 等模式）→ getchu预定时间(release_date)**；执行后全库 4620/4628 有 release_ts，no_dn_date 清零
+- **shared_cid / ambiguous / missing_in_115** → 人工待办（`115 review --todo`，当前 13 项），**审核页面（Web UI）为待办事项**，Phase 5 后制作
+
+#### 待人工审阅清单（动态维护：status/review_115.json）
 
 **存放位置**：`status/review_115.json`（每次 `115 organize --execute` 自动刷新，含旧路径/目标路径/处理建议）
 **查看命令**：`python3 tool/cli.py 115 review [--status shared_cid|ambiguous|...]`
@@ -177,6 +183,8 @@
 | missing_in_115 | 1 | 魔法騎士リーンフォリア２ → submitted_115 已重置，重提磁链即可 |
 
 ### Phase 5：集成验证（2026 全链路）
+
+- [ ] P5-0 待办：115 审核页面（Web UI）——展示 `status/review_115.json` 人工待办（shared_cid 合并行 / ambiguous 指定目录 / missing_in_115 重提），支持标记处理
 
 - [ ] P5-1 新增 `pipeline` 子命令：按顺序串 Phase 1-4（支持 `--from-step` 断点续跑）
 - [ ] P5-2 2026 年端到端跑一遍，核对每阶段统计数字与最终目录结构
