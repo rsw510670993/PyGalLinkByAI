@@ -784,3 +784,89 @@ def check_magnet_exists(magnet, save_path, debug=False):
     if dbg is not None and not dbg.get("has_cookie_file"):
         out["message"] = "cookie文件不存在或为空，可能未登录导致搜索结果为空"
     return out
+
+
+# ==================== 整理115 v2 (cid精确寻址/重命名) ====================
+
+def _crumbs_to_path(crumbs, tail_name=None):
+    """把fs_files返回的path面包屑数组拼成完整路径，排除'根目录'/'回收站'"""
+    if not crumbs or not isinstance(crumbs, list):
+        return None
+    parts = []
+    for c in crumbs:
+        if not isinstance(c, dict):
+            continue
+        n = c.get("name") or ""
+        if n in ("根目录", "回收站") and not parts:
+            continue
+        parts.append(n)
+    if tail_name:
+        parts.append(tail_name)
+    return "/" + "/".join(parts) if parts else None
+
+
+def get_item_name(file_id):
+    """按file_id查询名称（fs_file_skim，用于cid精确校验）"""
+    client = load_client()
+    if client is None:
+        return None
+    try:
+        _, check_response = _import_p115client()
+        resp = check_response(client.fs_file_skim({"file_id": str(file_id)}))
+        data = resp.get("data") or []
+        if data and isinstance(data[0], dict):
+            return data[0].get("file_name")
+    except Exception:
+        pass
+    return None
+
+
+def rename_item(file_id, new_name):
+    """重命名115文件/目录（web端点batch_rename）"""
+    client = load_client()
+    if client is None:
+        return {"success": False, "message": "未登录"}
+    try:
+        _, check_response = _import_p115client()
+        resp = check_response(client.fs_rename({f"files_new_name[{file_id}]": new_name}))
+        return {"success": True, "response": resp}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+def list_dir_children_names(cid, max_pages=20):
+    """列出目录下所有子项名称（分页），用于重名冲突检查。失败返回None"""
+    client = load_client()
+    if client is None:
+        return None
+    names = []
+    try:
+        _, check_response = _import_p115client()
+        offset = 0
+        for _ in range(max_pages):
+            resp = check_response(
+                client.fs_files({"cid": str(cid), "limit": 200, "offset": offset, "show_dir": 1})
+            )
+            data = resp.get("data") or []
+            for it in data:
+                if isinstance(it, dict) and it.get("n"):
+                    names.append(it["n"])
+            if len(data) < 200:
+                break
+            offset += len(data)
+        return names
+    except Exception:
+        return None
+
+
+def parent_crumbs_path(pid):
+    """获取指定目录cid的父链面包屑完整路径（不含自身名）"""
+    client = load_client()
+    if client is None:
+        return None
+    try:
+        _, check_response = _import_p115client()
+        resp = check_response(client.fs_files({"cid": str(pid), "limit": 1, "show_dir": 1}))
+        return _crumbs_to_path(resp.get("path"))
+    except Exception:
+        return None

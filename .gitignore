@@ -169,3 +169,9 @@ getchu.db
 status/
 logs/
 tool/115-cookies.txt
+
+# 本地敏感/数据目录（勿提交）
+tool/config/
+db_backups/
+thumbnails/
+.gitconfig
