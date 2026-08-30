@@ -146,16 +146,30 @@
   - 幂等复验：`already=4618 / applied=0 / 零写入`
 - [x] P3-6 基础设施修复：`open_db` 增加 `PRAGMA temp_store=MEMORY`（本机 /var/tmp 受限导致大排序查询 "unable to open database file"）
 
-### Phase 4：115 存在性检查与目录整理
+### Phase 4：115 存在性检查与目录整理 v3（已完成 2026-08-30，2025+2026 已执行）
 
-- [ ] P4-1 存在性检查：`tool/organize_115.py` 增加按 infohash/文件名查 115 是否已存在
-  - 存在 → 校验其目录是否为 `GAL/GAL-年份`，错误则移动
-  - 不存在 → 标记 `submitted_115=0` 供后续提交
-- [ ] P4-2 重命名规则：`[{dn时间戳:%Y-%m-%d}][{company}]{name}`
-  - 与 `config.json::organize_name_format` 对齐，新增 `{dn_date}` 占位符
-- [ ] P4-3 `cli.py` 扩展 `115 organize`：支持 `--year --month --name --dry-run`
-  - dry-run 输出：旧路径 → 新路径 映射表
-- [ ] P4-4 2026 年 dry-run 验证重命名映射无误后实际执行
+**目标语义：名字 `[YYYY-MM-DD][公司]游戏名`，位置 `/GAL/GAL-{dn年}`，dn 时间戳=release_ts（Phase 3 多码规则落库值，缺失时从磁链解析兜底）。**
+
+- [x] P4-1 存在性检查（`organize_single` 重构）
+  - 定位链升级：① folder 记录 cid 精确寻址 → ② dn 全局搜索 → **③ dn 年份目录直读兜底**（绕过 115 搜索索引滞后，如 アマカノ3 全局搜索 0 命中但目录实际存在）→ ④ 离线任务核对（infohash 在 `offline_list` 中 → `in_offline` 等待下载完成）
+  - 存在 → 名称/位置校验：位置≠`/GAL/GAL-{dn年}` 则 `fs_move`（年份目录缺则 `fs_mkdir` 创建）；名字≠规范则 `fs_rename`，均事后复核
+  - **存在性↔状态位闭环**：115 存在但 `downloaded=0` → 补记 1（`set_dl`）；曾被误重置 `submitted_115=0` → 恢复 1（`restore_sub`）；⚠ 标记已下载但 115 找不到 → `missing_in_115` 并**重置 submitted_115=0 供重提**（execute 模式）
+- [x] P4-2 命名规则：`compute_target_name` 支持 `{dn_date}`(YYYY-MM-DD) / `{date}`(旧6位码) 占位符；`config.json::organize_name_format` → `"[{dn_date}][{company}]{name}"`；`115_save_path` → `/GAL`（`/我的下载/Getchu` 已不存在，统一到 GAL 树）
+- [x] P4-3 CLI：`115 organize --year --month --name [--limit]`，**安全化默认预览，`--execute` 才执行**（旧 `--dry-run` 语义废弃）
+- [x] P4-4 执行（备份 `getchu.db.before_organize_2026/2025`）：
+  - **2026**：81 行 → 49 重命名到位（含 ネモフィリア 从 numpy 残留目录救回 `/GAL/GAL-2026`）+ 1 重置 submitted（リーンフォリア２ 确实缺失）+ 25 未下载 + 6 待审
+  - **2025**：152 行 → 142 重命名到位（含 Rance35th 双码 `[250406][250131]`→`[2025-01-31]` 多码规则验证）+ 3 待审
+  - 幂等：重复 execute → `already_ok` 零改动；GAL-2025=142/147 新格式、GAL-2026=49/50 新格式
+  - **shared_cid 守卫**：一个 115 目录被多行引用（重复行/共用磁链行）→ 只处理持名行，其余跳过防改名互踢
+  - 修复：`fs_move` web 端点 payload 为 `{fid, pid}`（非 `file_ids/to_cid`）
+
+#### 待人工审阅清单（11 项）
+| 类型 | 数量 | 明细 |
+|---|---|---|
+| shared_cid | 5 | Gaslight 本体/パック 两行共用磁链（1 目录）；魔法騎士リーンフォリア 1代/1+2 两行（1 目录）；顔のない月 同月表记差异两行（1 目录）——建议合并行 |
+| ambiguous | 5 | 同名/近似目录多候选：恋愛、はじめまして / 僕に抱かれ喘ぐ妻…2 / 猫忍えくすはーとSPIN！2 / ユニオリズム B2-STYLE / ストレイ・シープ Vol.1 |
+| not_dir | 1 | ムスコに魅せられて（磁链为单文件种子） |
+| no_dn_date | 1 | ディメンション凸ラバース！！（英文版资源无日期码） |
 
 ### Phase 5：集成验证（2026 全链路）
 

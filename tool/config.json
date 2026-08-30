@@ -47,7 +47,7 @@
     "NSW"
   ],
   "per_page": 50,
-  "115_save_path": "/我的下载/Getchu",
+  "115_save_path": "/GAL",
   "115_cookies_path": "115-cookies.txt",
-  "organize_name_format": "[{date}][{company}]{name}"
+  "organize_name_format": "[{dn_date}][{company}]{name}"
 }

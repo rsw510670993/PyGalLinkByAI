@@ -933,11 +933,14 @@ def cmd_115_organize(args):
     try:
         from tool.organize_115 import organize_batch
 
+        # 安全约定: 默认预览，--execute 才实际改名/移动/重置状态
+        dry_run = not bool(getattr(args, "execute", False))
         result = organize_batch(
             year=args.year,
             month=args.month,
             name=args.name,
-            dry_run=bool(args.dry_run),
+            dry_run=dry_run,
+            limit=getattr(args, "limit", None),
         )
         _print(result)
     except Exception as e:
@@ -1420,7 +1423,8 @@ def build_parser():
     p_115_organize.add_argument("--year", type=int, help="年份（不填=全部）")
     p_115_organize.add_argument("--month", type=int, help="月份（不填=整年）")
     p_115_organize.add_argument("--name", type=str, help="仅处理指定游戏")
-    p_115_organize.add_argument("--dry-run", action="store_true", dest="dry_run", help="预览模式，不实际重命名")
+    p_115_organize.add_argument("--limit", type=int, help="最多处理N个（调试用）")
+    p_115_organize.add_argument("--execute", action="store_true", help="实际执行（默认仅预览）")
     p_115_organize.set_defaults(func=cmd_115_organize)
 
     p_update = sub.add_parser("update_game")
