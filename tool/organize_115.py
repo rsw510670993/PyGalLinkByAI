@@ -728,13 +728,69 @@ def organize_batch(year=None, month=None, name=None, dry_run=True, limit=None):
         summary = {}
         for r in results:
             summary[r["status"]] = summary.get(r["status"], 0) + 1
+
+        # 持久化待人工审阅清单（shared_cid/ambiguous/not_dir/no_dn_date/missing_in_115/conflict/error）
+        _REVIEW_STATUSES = ("shared_cid", "ambiguous", "not_dir", "no_dn_date",
+                            "missing_in_115", "conflict", "error")
+        pending = [r for r in results if r.get("status") in _REVIEW_STATUSES]
+        _save_review_list(pending, year=year, month=month, name=name, dry_run=dry_run)
+
         return {
             "year": year, "month": month, "name": name,
             "dry_run": dry_run,
             "db_backup": backup_path,
             "total": len(results),
             "summary": summary,
+            "review_file": str(_review_path()),
+            "review_pending": len(pending),
             "results": results,
         }
     finally:
         conn.close()
+
+
+def _review_path():
+    from .runtime import runtime_paths
+
+    return os.path.join(str(runtime_paths()["status_dir"]), "review_115.json")
+
+
+def _save_review_list(pending, year=None, month=None, name=None, dry_run=True):
+    """待审清单 → status/review_115.json（每次 organize 运行覆盖刷新）"""
+    from .runtime import write_json_atomic
+
+    conn = open_db()
+    try:
+        for r in pending:
+            rec = get_folder_record(conn, r["date"], r["name"])
+            r["dn_date"] = r.get("dn_date")
+            r["current_folder"] = (rec or {}).get("folder_name")
+            r["current_path"] = (rec or {}).get("folder_path")
+    except Exception:
+        pass
+    finally:
+        conn.close()
+    _ADVICE = {
+        "shared_cid": "多个游戏行引用同一115目录（重复行/共用磁链）→ 建议合并行，或清理冗余folder记录后重跑 organize",
+        "ambiguous": "115中命中多个候选目录 → 人工指定正确目录后用 --name 单独整理",
+        "not_dir": "磁链为单文件种子（非目录）→ 人工决定是否文件级整理",
+        "no_dn_date": "磁链无日期码（英文版等）→ 人工确定发布时间后手动设 release_ts 再整理",
+        "missing_in_115": "标记已下载但115找不到 → submitted_115已重置为0，重新提交磁链即可",
+        "conflict": "目标目录已有同名项 → 人工比对内容后合并/删除",
+        "error": "执行报错 → 查看 message 重试",
+    }
+    for r in pending:
+        r["advice"] = _ADVICE.get(r.get("status"))
+    payload = {
+        "updated_at": int(time.time()),
+        "updated_at_str": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "scope": {"year": year, "month": month, "name": name, "dry_run": dry_run},
+        "hint": "重新运行 `115 organize --year ... --execute` 刷新本清单；处理后项自动消失；`115 review [--status xxx]` 随时查看",
+        "total": len(pending),
+        "items": pending,
+    }
+    try:
+        write_json_atomic(_review_path(), payload)
+    except Exception:
+        pass
+    return payload

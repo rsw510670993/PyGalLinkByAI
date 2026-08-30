@@ -948,6 +948,40 @@ def cmd_115_organize(args):
 
 
 
+def cmd_115_review(args):
+    """查看115整理待人工审阅清单（status/review_115.json）"""
+    import json as _json
+
+    paths = runtime_paths()
+    path = os.path.join(str(paths["status_dir"]), "review_115.json")
+    if not os.path.exists(path):
+        _print({"status": "ok", "message": "尚无待审清单（先运行 115 organize 生成）", "path": path})
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = _json.load(f)
+    except Exception as e:
+        _print({"status": "error", "message": f"读取失败: {e}"})
+        return
+    # 过滤
+    status_filter = getattr(args, "status", None)
+    items = data.get("items") or []
+    if status_filter:
+        items = [r for r in items if r.get("status") == status_filter]
+    _print({
+        "status": "ok",
+        "path": path,
+        "updated_at": data.get("updated_at_str"),
+        "scope": data.get("scope"),
+        "total": len(items),
+        "items": [
+            {k: r.get(k) for k in ("date", "name", "status", "message", "advice",
+                                   "old_path", "target_path", "dn_date")}
+            for r in items
+        ],
+    })
+
+
 def cmd_115_check_all_worker(args):
     import tool.core
 
@@ -1426,6 +1460,9 @@ def build_parser():
     p_115_organize.add_argument("--limit", type=int, help="最多处理N个（调试用）")
     p_115_organize.add_argument("--execute", action="store_true", help="实际执行（默认仅预览）")
     p_115_organize.set_defaults(func=cmd_115_organize)
+    p_115_review = _115_sub.add_parser("review", help="查看115整理待人工审阅清单")
+    p_115_review.add_argument("--status", type=str, help="按状态过滤(shared_cid/ambiguous/not_dir/no_dn_date/missing_in_115)")
+    p_115_review.set_defaults(func=cmd_115_review)
 
     p_update = sub.add_parser("update_game")
     p_update.add_argument("--date", type=str, required=True)

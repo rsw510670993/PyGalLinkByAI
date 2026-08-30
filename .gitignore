@@ -166,7 +166,8 @@ uninstall.py
 .trae/
 getchu.db
 .python-version
-status/
+status/*
+!status/review_115.json
 logs/
 tool/115-cookies.txt
 
