@@ -106,6 +106,8 @@ def open_db(db_path=None, timeout_s=30):
     conn = sqlite3.connect(db_path or get_db_path(), timeout=timeout_s)
     conn.execute("PRAGMA busy_timeout = 30000")
     conn.execute("PRAGMA journal_mode = WAL")
+    # 排序溢出用内存临时表（/var/tmp 在本机受限，避免大查询 "unable to open database file"）
+    conn.execute("PRAGMA temp_store = MEMORY")
     return conn
 
 

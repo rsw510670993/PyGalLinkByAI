@@ -551,29 +551,36 @@ def cmd_nyaa_stop(args):
 def cmd_magnet_relabel(args):
     import tool.relabel as rl
 
-    months = [int(args.month)] if getattr(args, "month", None) else list(range(1, 13))
     dry_run = not getattr(args, "execute", False)
     plans = []
-    for month in months:
-        try:
-            plan = rl.relabel_month(
-                int(args.year), month,
-                force=bool(getattr(args, "force", False)),
-                dry_run=dry_run,
-            )
-        except Exception as e:  # noqa: BLE001
-            plan = {"year": int(args.year), "month": month, "errors": [str(e)]}
-        plans.append(plan)
+    years = None
+    if getattr(args, "all", False):
+        plans, years = rl.relabel_all(force=bool(getattr(args, "force", False)), dry_run=dry_run)
+    else:
+        months = [int(args.month)] if getattr(args, "month", None) else list(range(1, 13))
+        for month in months:
+            try:
+                plan = rl.relabel_month(
+                    int(args.year), month,
+                    force=bool(getattr(args, "force", False)),
+                    dry_run=dry_run,
+                )
+            except Exception as e:  # noqa: BLE001
+                plan = {"year": int(args.year), "month": month, "errors": [str(e)]}
+            plans.append(plan)
 
     summary = {
         "dry_run": dry_run,
         "force": bool(getattr(args, "force", False)),
+        "all_years": bool(getattr(args, "all", False)),
+        "years": years,
         "months": len(plans),
         "with_link": sum(int(p.get("with_link") or 0) for p in plans),
         "already": sum(int(p.get("already") or 0) for p in plans),
+        "migrated": sum(int(p.get("migrated") or 0) for p in plans),
         "no_dn": sum(int(p.get("no_dn") or 0) for p in plans),
         "no_dn_date": sum(int(p.get("no_dn_date") or 0) for p in plans),
-        "name_conflict": sum(int(p.get("name_conflict") or 0) for p in plans),
+        "dn_mismatch": sum(int(p.get("dn_mismatch") or 0) for p in plans),
         "applied": sum(int(p.get("applied") or 0) for p in plans),
         "changed_rows": sum(len(p.get("changes") or []) for p in plans),
         "errors": [e for p in plans for e in (p.get("errors") or [])],
@@ -1312,10 +1319,11 @@ def build_parser():
     magnet_sub = p_magnet.add_subparsers(dest="action", required=True)
 
     p_magnet_relabel = magnet_sub.add_parser(
-        "relabel", help="按dn时间戳重标注发布时间/公司名/游戏名（默认预览，--execute 执行）"
+        "relabel", help="按dn时间戳重标注发布时间/公司名/游戏名并搬月（默认预览，--execute 执行）"
     )
-    p_magnet_relabel.add_argument("--year", type=int, required=True)
+    p_magnet_relabel.add_argument("--year", type=int, help="目标年份（按getchu登记月桶）")
     p_magnet_relabel.add_argument("--month", type=int, help="仅处理指定月份")
+    p_magnet_relabel.add_argument("--all", action="store_true", help="全库历史数据执行")
     p_magnet_relabel.add_argument("--execute", action="store_true", help="实际写入（默认仅预览）")
     p_magnet_relabel.add_argument("--force", action="store_true", help="对已重标注行强制重做")
     p_magnet_relabel.set_defaults(func=cmd_magnet_relabel)

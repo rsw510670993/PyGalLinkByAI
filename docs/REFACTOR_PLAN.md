@@ -115,24 +115,36 @@
   - 幂等复验：第二次运行 total=0（无任务），零请求零写入
   - 2026磁链覆盖：85/267（9-12月未发售83条除外，1-8月覆盖率 85/184≈46%，剩余为sukebei确无资源的小众作品）
 
-### Phase 3：磁链解析与重标注（已完成 2026-08-30）
+### Phase 3：磁链解析与重标注 v2（已完成 2026-08-30，全库 4529 条历史数据）
 
-- [x] P3-1 dn 解析内置于 `tool/relabel.py`（`parse_magnet_dn` / `extract_dn_parts`）
-  - 结构：`[发布者标签] [YYMMDD日期码]([getchu id]) [公司段] 游戏名段 [+ 特典] [尾部标记]`
-  - 日期码=首个6位数字段（兼容多日期码如 Rance35th `[250406][250131]`）；7+位数字段取 getchu_id（仅空缺时回填）
-  - 公司段=日期码后第一个「后面还有自由文本」的非数字括号段（噪音词过滤 serial/crack 等）
-- [x] P3-2 重标注 `tool/relabel.py`：**dn 为唯一时间权威**（延续 organize v2 哲学）
-  - `release_ts`（新列）← dn [YYMMDD] → YYYY-MM-DD；`release_date`（getchu发售日）保留仅展示；`date`（日历月桶）不变
-  - `company` / `name` ← dn 公司段/游戏名段（清洗：去尾部[标记]、「 + 」特典段、版次词、连续重复词压缩），原值保留 `name_orig` / `company_orig`（仅真实变更时记录）
-  - 名字清洗与 Phase1 规则分组同源（delete 列表）+ dn 特有版次词（DL版/DVD Version 等）
-  - 守卫：同月 PK 冲突 + **跨月重名**（目标名已被其他行占用→不改名，防错配磁链产生影子行）
-  - 级联：改名同步 getchu_115_folders / nyaa_candidates / dedup_cache 引用 + reconcile_state 哈希刷新（保持 Phase 1 幂等）
-- [x] P3-3 `cli.py` 新增 `magnet` 子命令组：`magnet relabel --year [--month] [--execute] [--force]`（默认预览）、`magnet status`、`magnet parse --magnet`
-- [x] P3-4 2026 年执行（备份 `db_backups/getchu.db.before_relabel.20260830_175907`）：
-  - 85 条有磁链：84 条重标注（1 条英文版资源无日期码，正确跳过）；49 条仅补 release_ts、31 条改名（大部分为 `〜→～` 规范化）、6 条公司修正（POISON 品牌纠正、だーくニャー！品牌、WAFFLE 大小写、わるきゅ～れ 半角波线）
-  - 7 条 dn 发布月与 getchu 发售月不一致（预售/早期发布场景，如 LOOPERS PLUS getchu=2026-01 dn=2025-10-24）——release_ts 如实记录
-  - 2 条旧流程错配被重标注揭示：`にょにんじま1＋2`→dn 实为 2 代资源（已按 dn 改名）；`流星ワールドアクター Gaslight Bullet`(2026-03 本体行) 挂的是パック磁链→跨月重名守卫拦截改名（release_ts 仍记录），列入遗留数据质量问题
-  - 幂等复验：第二次 execute already=84 / applied=0 / 零写入
+**v2 核心（用户裁定）：`date`/`name`/`company` 为"展示层"，随 dn 时间戳搬月；`getchu_date`/`getchu_name`/`getchu_company` 为"爬取身份层"，永不改变 —— 防止重复爬取、保持 reconcile 幂等。**
+
+- [x] P3-0 身份/展示分层（`dedup_service.ensure_identity_schema`）
+  - 新增身份列：`getchu_date` / `getchu_name`（backfill=COALESCE(name_orig,name)）/ `getchu_company`
+  - 爬虫 anchor 查询、canonical 去重判定、reconcile 成员定位、`_month_rows_hash` 全部改用身份列
+  - 验证：搬月 120 行后重爬 `dedup_month(2026,1)` → inserted=0、ai_calls=0、reconcile skipped=rows_unchanged
+- [x] P3-1 dn 解析 `tool/relabel.py::extract_dn_parts`
+  - 前导日期码段：连续 `[YYMMDD]` / `[YYYYMMDD]`（汉化组8位格式）；非法月日数字段（getchu id `[713538]`）终结该段
+  - **多码选择规则**：优先取与 getchu 登记发售日精确一致的码（`release_date` 提示），否则取最后一码
+    - 数据依据：`[种子发布日][游戏发售日]` girlcelly 惯例（第二码 166/202 命中）；汉化合集包 `[游戏A发售日][游戏B发售日]` 两码都可能是本作
+  - 公司段=码段后首个「后随自由文本」非数字括号段；`_clean_dn_name` 增加汉化后缀剥离（完全汉化硬盘版/汉化版/中文版/硬盘版/简体/繁体/官方中文版 等）
+- [x] P3-2 关联守卫 `_name_related`（防历史错配磁链污染日历）
+  - 评分归一（exact 30 / partial≥0.85→25 / partial→12 / main 25）+ 短名(<4字)包含 + 审查遮字通配（`屈○2`→`屈.2`）+ 子序列包含（dn 插入注释 `（ナース）`）
+  - `nyaa_match._norm` 增强：全半角数字/字母/`*＊`/`／`/`＝`/`（）`/`、`/波浪线删除/`・`删除；2026 全年 81 条已知磁链回归 0 不达标
+  - 改名护栏：提取名 vs getchu 名关联分 ≥12 才允许改名（防合集包 dn 取出另一作名）
+  - 残留 10 条 dn_mismatch（历史"取第一条"错配/无日期码英文版/损坏 dn），独立人工审阅清单
+- [x] P3-3 落库语义（`_apply_row`）
+  - `release_ts` ← dn 日期码；`date` ← dn 年月（**展示月=真实发售月**）；`name`/`company` ← dn 清洗值
+  - PK 冲突降级链：`(nd,nn)`→`(date,nn)`→`(nd,name)`→key_conflict；`getchu_id` 仅空缺回填
+  - `name_orig`/`company_orig` 仅真实变更时记录（首次原值永久保留）；`nyaa_name` 与实际 dn 同步（修正 70 条历史漂移）
+  - `_cascade_move`：改名/搬月同步 115_folders / candidates / dedup_cache 引用（4 条搬月行的 115 folder 记录已验证同步）
+- [x] P3-4 CLI：`magnet relabel --all|--year|--month [--execute] [--force]` / `magnet status` / `magnet parse`
+- [x] P3-5 全库执行（备份 `db_backups/getchu.db.before_relabel_full.20260830_185909`）：
+  - 4628 有磁链 → 4618 重标注完成（99.8%）；改名 2351、改公司 331、**搬月 120**（含跨年 33，如 Summer Pockets RB 2024-09→2020-06、三極姫3 2018-09→2013-09）
+  - 搬月方向抽验：64 条"早于 getchu 登记>1月"样本核对 dn 日期=初回版真实发售日，getchu 登记为再版/DL 再贩 → 符合"真实发售时间"要求
+  - 2026 复核：7 条搬出（LOOPERS PLUS 2026-01→2025-10 等），日历 2026 分桶与 `games --year --month` 输出同步；`release_month_diff=0`（展示月恒等于 release_ts 月）
+  - 幂等复验：`already=4618 / applied=0 / 零写入`
+- [x] P3-6 基础设施修复：`open_db` 增加 `PRAGMA temp_store=MEMORY`（本机 /var/tmp 受限导致大排序查询 "unable to open database file"）
 
 ### Phase 4：115 存在性检查与目录整理
 

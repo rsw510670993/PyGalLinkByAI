@@ -41,7 +41,40 @@ class DedupAIError(Exception):
 # schema
 # ---------------------------------------------------------------------------
 
+def ensure_identity_schema(conn):
+    """爬虫身份列：getchu_date/getchu_name/getchu_company。
+
+    date/name/company 是展示字段（Phase3 dn重标注会改动），
+    爬虫/去重/对账永远以 getchu 登记值为身份，防止重复爬取与误合并。
+    """
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(getchu_games)")
+    cols = {row[1] for row in cursor.fetchall()}
+    for col, ddl in [
+        ("getchu_date", "TEXT"),
+        ("getchu_name", "TEXT"),
+        ("getchu_company", "TEXT"),
+    ]:
+        if col not in cols:
+            cursor.execute(f"ALTER TABLE getchu_games ADD COLUMN {col} {ddl}")
+    # 一次性回填：身份 = 建列时的登记值（重标注历史值经 *_orig 恢复）
+    cursor.execute(
+        "UPDATE getchu_games SET getchu_date=date"
+        " WHERE getchu_date IS NULL OR getchu_date=''"
+    )
+    cursor.execute(
+        "UPDATE getchu_games SET getchu_name=COALESCE(name_orig, name)"
+        " WHERE getchu_name IS NULL OR getchu_name=''"
+    )
+    cursor.execute(
+        "UPDATE getchu_games SET getchu_company=COALESCE(company_orig, company)"
+        " WHERE getchu_company IS NULL OR getchu_company=''"
+    )
+    conn.commit()
+
+
 def ensure_dedup_schema(conn):
+    ensure_identity_schema(conn)
     cursor = conn.cursor()
     cursor.execute("PRAGMA table_info(getchu_games)")
     cols = {row[1] for row in cursor.fetchall()}
@@ -331,15 +364,18 @@ def reconcile_month(year, month, conn=None, config=None, use_ai=True, dry_run=Tr
         rows = []
         for r in conn.execute(
             """
-            SELECT name, company, link, downloaded, submitted_115, getchu_id
-            FROM getchu_games WHERE date=?
+            SELECT getchu_name, getchu_company, date, name, link, downloaded,
+                   submitted_115, getchu_id
+            FROM getchu_games WHERE getchu_date=?
             """,
             (month_key,),
         ).fetchall():
             rows.append({
+                # 匹配/展示用 getchu 登记身份（重标注不影响对账）
                 "name": r[0], "company": r[1] or "",
-                "has_link": bool(r[2]), "downloaded": int(r[3] or 0),
-                "submitted_115": int(r[4] or 0), "getchu_id": r[5],
+                "cur_date": r[2], "cur_name": r[3],
+                "has_link": bool(r[4]), "downloaded": int(r[5] or 0),
+                "submitted_115": int(r[6] or 0), "getchu_id": r[7],
             })
         plan["rows_total"] = len(rows)
         if len(rows) < 2:
@@ -462,8 +498,10 @@ def _pick_reconcile_canonical(rows, idxs):
 
 
 def _month_rows_hash(conn, month_key):
+    """行集合哈希（按 getchu 登记身份，重标注不改变哈希 → 幂等不被打破）"""
     rows = conn.execute(
-        "SELECT company, name FROM getchu_games WHERE date=? ORDER BY name",
+        "SELECT getchu_company, getchu_name FROM getchu_games"
+        " WHERE getchu_date=? ORDER BY getchu_name",
         (month_key,),
     ).fetchall()
     raw = "\n".join(f"{c or ''}|{n}" for c, n in rows)
@@ -499,7 +537,7 @@ def _record_edition_suggestions(conn, month_key, editions):
         if not row_name or not of_name:
             continue
         comp = conn.execute(
-            "SELECT company FROM getchu_games WHERE date=? AND name=?",
+            "SELECT getchu_company FROM getchu_games WHERE getchu_date=? AND getchu_name=?",
             (month_key, row_name),
         ).fetchone()
         conn.execute(
@@ -542,19 +580,32 @@ def _execute_reconcile(conn, month_key, merges):
         if not merged:
             continue
         try:
-            # ② 读取被并行的完整数据
+            # ② 读取规范行当前展示键（重标注后 date/name 可能 ≠ getchu 身份）
+            can_row = conn.execute(
+                "SELECT date, name FROM getchu_games WHERE getchu_date=? AND getchu_name=?",
+                (month_key, canonical),
+            ).fetchone()
+            if not can_row:
+                executed.append({"canonical": canonical, "merged": merged,
+                                 "error": "canonical行不存在"})
+                continue
+            cdate, cname = can_row
+
+            # ③ 读取被并行的完整数据（按getchu身份定位）
             placeholders = ",".join("?" for _ in merged)
             merged_rows = conn.execute(
-                f"SELECT * FROM getchu_games WHERE date=? AND name IN ({placeholders})",
+                f"SELECT * FROM getchu_games WHERE getchu_date=? AND getchu_name IN ({placeholders})",
                 (month_key, *merged),
             ).fetchall()
             cur = conn.execute("PRAGMA table_info(getchu_games)")
             col_names = [r[1] for r in cur.fetchall()]
             name_i = col_names.index("name")
+            gname_i = col_names.index("getchu_name")
             merged_full = [dict(zip(col_names, r)) for r in merged_rows]
+            # 实际命中的 getchu 名（防 record 缺失时 members 幽灵项）
+            hit_names = {r[gname_i] for r in merged_rows}
 
-            # ③ 合并数据到规范行（fill-if-null / MAX）
-            sets, params = [], []
+            # ④ 合并数据到规范行（fill-if-null / MAX），用规范行当前展示键定位
             for col in _RECONCILE_MERGE_COLS:
                 if col == "company":
                     continue
@@ -566,7 +617,7 @@ def _execute_reconcile(conn, month_key, merges):
                         conn.execute(
                             f"UPDATE getchu_games SET {col}=? WHERE date=? AND name=?"
                             f" AND ({col} IS NULL OR {col}='')",
-                            (mr[col], month_key, canonical),
+                            (mr[col], cdate, cname),
                         )
             for col in _RECONCILE_MAX_COLS:
                 if col not in col_names:
@@ -575,27 +626,28 @@ def _execute_reconcile(conn, month_key, merges):
                     conn.execute(
                         f"UPDATE getchu_games SET {col}=MAX(COALESCE({col},0), ?)"
                         f" WHERE date=? AND name=?",
-                        (int(mr.get(col) or 0), month_key, canonical),
+                        (int(mr.get(col) or 0), cdate, cname),
                     )
             conn.execute(
                 "UPDATE getchu_games SET dedup_source=?, dedup_reason=?, dedup_updated_at=?"
                 " WHERE date=? AND name=?",
                 ("reconcile_" + mg.get("source", "rule"),
-                 mg.get("reason") or "", now_str, month_key, canonical),
+                 mg.get("reason") or "", now_str, cdate, cname),
             )
 
-            # ④ getchu_115_folders 引用迁移
-            for m in merged:
+            # ⑤ getchu_115_folders 引用迁移（成员当前展示键 → 规范行当前展示键）
+            for mr in merged_full:
+                m_date, m_name = mr.get("date"), mr.get("name")
                 fr = conn.execute(
                     "SELECT cid, pid, pick_code, folder_name, folder_path, target_name,"
                     " date_code, company, status FROM getchu_115_folders WHERE date=? AND name=?",
-                    (month_key, m),
+                    (m_date, m_name),
                 ).fetchone()
                 if not fr:
                     continue
                 exists = conn.execute(
                     "SELECT 1 FROM getchu_115_folders WHERE date=? AND name=?",
-                    (month_key, canonical),
+                    (cdate, cname),
                 ).fetchone()
                 if exists:
                     conn.execute(
@@ -609,20 +661,22 @@ def _execute_reconcile(conn, month_key, merges):
                             company=COALESCE(company,?),
                             status=CASE WHEN status IN ('already_ok','renamed') THEN status ELSE ? END
                            WHERE date=? AND name=?""",
-                        (*fr, month_key, canonical),
+                        (*fr, cdate, cname),
                     )
                     conn.execute(
                         "DELETE FROM getchu_115_folders WHERE date=? AND name=?",
-                        (month_key, m),
+                        (m_date, m_name),
                     )
                 else:
                     conn.execute(
                         "UPDATE getchu_115_folders SET name=? WHERE date=? AND name=?",
-                        (canonical, month_key, m),
+                        (cname, m_date, m_name),
                     )
 
-            # ⑤ dedup_cache 指向修正
+            # ⑥ dedup_cache 指向修正（target 语义 = getchu 登记名，不变）
             for m in merged:
+                if m not in hit_names:
+                    continue
                 conn.execute(
                     "UPDATE dedup_cache SET target_name=?, updated_at=? WHERE target_name=?",
                     (canonical, now_str, m),
@@ -630,25 +684,26 @@ def _execute_reconcile(conn, month_key, merges):
                 conn.execute(
                     """UPDATE dedup_cache SET verdict='dup', canonical_name=NULL,
                         target_name=?, updated_at=?
-                       WHERE company=(SELECT company FROM getchu_games WHERE date=? AND name=?)
+                       WHERE company=(SELECT getchu_company FROM getchu_games
+                                      WHERE getchu_date=? AND getchu_name=?)
                          AND base_name=?""",
                     (canonical, now_str, month_key, canonical, m),
                 )
 
-            # ⑥ 归档被并行完整数据（可回溯）→ 删除 → 审计
+            # ⑦ 归档被并行完整数据（可回溯）→ 删除（按当前展示键）→ 审计
             for mr in merged_full:
                 conn.execute(
                     """
                     INSERT INTO reconcile_archive (date, name, row_json, merged_into)
                     VALUES (?, ?, ?, ?)
                     """,
-                    (month_key, mr.get("name"),
+                    (mr.get("date"), mr.get("name"),
                      json.dumps(mr, ensure_ascii=False), canonical),
                 )
-            for m in merged:
+            for mr in merged_full:
                 conn.execute(
                     "DELETE FROM getchu_games WHERE date=? AND name=?",
-                    (month_key, m),
+                    (mr.get("date"), mr.get("name")),
                 )
                 conn.execute(
                     """
@@ -657,7 +712,8 @@ def _execute_reconcile(conn, month_key, merges):
                          canonical_name, confidence, source, reason)
                     VALUES (?, ?, ?, ?, 'merged', ?, ?, ?, ?)
                     """,
-                    (month_key, mg.get("source"), m, m, canonical,
+                    (month_key, mg.get("source"), mr.get("getchu_name"),
+                     mr.get("getchu_name"), canonical,
                      mg.get("confidence"), "reconcile_" + mg.get("source", "rule"),
                      mg.get("reason") or ""),
                 )
@@ -724,9 +780,9 @@ def dedup_month(year, month, conn=None, config=None, use_ai=True, reconcile=True
             groups[key]["members"].append(g.name)
         stats["groups"] = len(groups)
 
-        # 3. 已入库锚点
+        # 3. 已入库锚点（按 getchu 登记身份；重标注行 date/name 已变，不影响锚定）
         rows = conn.execute(
-            "SELECT name, company FROM getchu_games WHERE date LIKE ?",
+            "SELECT getchu_name, getchu_company FROM getchu_games WHERE getchu_date LIKE ?",
             (f"{month_key}%",),
         ).fetchall()
         anchor_names = {(r[0] or "", r[1] or "") for r in rows}
@@ -879,9 +935,9 @@ def dedup_month(year, month, conn=None, config=None, use_ai=True, reconcile=True
 
             if verdict == "unique":
                 canonical = (r.get("canonical_name") or base).strip() or base
-                # 防御：canonical 已存在（AI 与锚点撞名）→ 视为 dup
+                # 防御：canonical 已存在（AI 与锚点撞名）→ 视为 dup（按getchu身份查）
                 exist = conn.execute(
-                    "SELECT name FROM getchu_games WHERE date=? AND name=?",
+                    "SELECT getchu_name FROM getchu_games WHERE getchu_date=? AND getchu_name=?",
                     (month_key, canonical),
                 ).fetchone()
                 if exist:
@@ -923,18 +979,20 @@ def dedup_month(year, month, conn=None, config=None, use_ai=True, reconcile=True
                     # 目标不可解析 → 降级为 unique 入库
                     canonical = base
                     exist = conn.execute(
-                        "SELECT 1 FROM getchu_games WHERE date=? AND name=?",
+                        "SELECT 1 FROM getchu_games WHERE getchu_date=? AND getchu_name=?",
                         (month_key, canonical),
                     ).fetchone()
                     if not exist:
                         conn.execute(
                             """
                             INSERT INTO getchu_games
-                                (date, name, company, raw_name, dedup_source,
+                                (date, name, company, getchu_date, getchu_name,
+                                 getchu_company, raw_name, dedup_source,
                                  dedup_confidence, dedup_reason, dedup_updated_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
-                            (month_key, canonical, company, rep_raw, source or "rule",
+                            (month_key, canonical, company, month_key, canonical,
+                             company, rep_raw, source or "rule",
                              conf, reason or "dup目标不可解析", now_str),
                         )
                         stats["inserted"] += 1
@@ -944,20 +1002,22 @@ def dedup_month(year, month, conn=None, config=None, use_ai=True, reconcile=True
 
             if verdict == "unique":
                 canonical = (r.get("canonical_name") or base).strip() or base
-                # 防御：canonical 已存在（AI 与锚点撞名）→ 视为 dup
+                # 防御：canonical 已存在（AI 与锚点撞名）→ 视为 dup（按getchu身份查）
                 exist = conn.execute(
-                    "SELECT name FROM getchu_games WHERE date=? AND name=?",
+                    "SELECT 1 FROM getchu_games WHERE getchu_date=? AND getchu_name=?",
                     (month_key, canonical),
                 ).fetchone()
                 if not exist:
                     conn.execute(
                         """
                         INSERT INTO getchu_games
-                            (date, name, company, raw_name, dedup_source,
+                            (date, name, company, getchu_date, getchu_name,
+                             getchu_company, raw_name, dedup_source,
                              dedup_confidence, dedup_reason, dedup_updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
-                        (month_key, canonical, company, rep_raw, source,
+                        (month_key, canonical, company, month_key, canonical,
+                         company, rep_raw, source,
                          conf, reason, now_str),
                     )
                     stats["inserted"] += 1
