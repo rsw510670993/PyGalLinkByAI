@@ -284,6 +284,316 @@ def cmd_spider_stop(args):
         _print({"status": "error", "message": str(e), "pid": int(pid)})
 
 
+
+# ---------------------------------------------------------------------------
+# crawl: 爬取 getchu + AI 去重入库（新流程 Phase 1）
+# ---------------------------------------------------------------------------
+
+def _crawl_status_default():
+    return {
+        "running": False,
+        "pid": None,
+        "start_year": None,
+        "end_year": None,
+        "month": None,
+        "current_year": None,
+        "current_month": None,
+        "months_done": 0,
+        "months_total": 0,
+        "raw_fetched": 0,
+        "inserted": 0,
+        "dup_logged": 0,
+        "ai_calls": 0,
+        "cache_hits": 0,
+        "reconcile_merged": 0,
+        "reconcile_editions": 0,
+        "reconcile_skipped": 0,
+        "reconcile_ai_calls": 0,
+        "errors": [],
+        "month_stats": [],
+        "started_at": None,
+        "updated_at": None,
+        "stopped_reason": None,
+    }
+
+
+def cmd_crawl_status(args):
+    paths = runtime_paths()
+    status = read_json(paths["crawl_status_path"], _crawl_status_default())
+    pid = status.get("pid")
+    if status.get("running") and pid and not pid_is_running(int(pid)):
+        status["running"] = False
+        status["stopped_reason"] = "not_running"
+        write_json_atomic(paths["crawl_status_path"], status)
+    _print(status)
+
+
+def cmd_crawl_start(args):
+    paths = runtime_paths()
+    status = read_json(paths["crawl_status_path"], _crawl_status_default())
+    pid = status.get("pid")
+    if status.get("running") and pid and pid_is_running(int(pid)):
+        _print({"status": "error", "message": "crawl任务已在运行中", "pid": int(pid)})
+        return
+
+    start_year = int(args.start_year)
+    end_year = int(args.end_year)
+    if start_year > end_year:
+        start_year, end_year = end_year, start_year
+    month = int(args.month) if getattr(args, "month", None) else 0
+
+    os.makedirs(paths["status_dir"], exist_ok=True)
+    os.makedirs(paths["log_dir"], exist_ok=True)
+
+    launch_log = daily_log_path("crawl_launch")
+    launch_fp = open(launch_log, "ab", buffering=0)
+
+    cmd = [
+        sys.executable,
+        os.path.join(_base_dir(), "crawl_worker.py"),
+        "--start-year", str(start_year),
+        "--end-year", str(end_year),
+        "--month", str(month),
+    ]
+    if getattr(args, "no_ai", False):
+        cmd.append("--no-ai")
+    if getattr(args, "no_reconcile", False):
+        cmd.append("--no-reconcile")
+
+    p = subprocess.Popen(
+        cmd,
+        cwd=_base_dir(),
+        stdout=launch_fp,
+        stderr=launch_fp,
+        start_new_session=True,
+    )
+    started = False
+    for _ in range(10):
+        time.sleep(0.2)
+        status = read_json(paths["crawl_status_path"], _crawl_status_default())
+        if status.get("pid") == p.pid:
+            started = True
+            break
+
+    if not started:
+        try:
+            if pid_is_running(int(p.pid)):
+                terminate_pid(int(p.pid), signal.SIGTERM)
+        except Exception:
+            pass
+        _print(
+            {
+                "status": "error",
+                "message": "crawl任务启动失败，请检查写权限（status/logs/getchu.db）与Python依赖",
+            }
+        )
+        return
+
+    _print({"status": "success", "message": "crawl任务已启动", "pid": p.pid})
+
+
+def cmd_crawl_stop(args):
+    paths = runtime_paths()
+    status = read_json(paths["crawl_status_path"], _crawl_status_default())
+    pid = status.get("pid")
+    if not pid:
+        _print({"status": "error", "message": "未找到运行中的crawl任务"})
+        return
+    try:
+        if pid_is_running(int(pid)):
+            terminate_pid(int(pid), signal.SIGTERM)
+        status["running"] = False
+        status["stopped_reason"] = "stopped"
+        write_json_atomic(paths["crawl_status_path"], status)
+        _print({"status": "success", "message": "停止请求已发送", "pid": int(pid)})
+    except Exception as e:
+        _print({"status": "error", "message": str(e), "pid": int(pid)})
+
+
+def cmd_crawl_reconcile(args):
+    import tool.dedup_service as ds
+
+    months = [int(args.month)] if getattr(args, "month", None) else list(range(1, 13))
+    dry_run = not getattr(args, "execute", False)
+    plans = []
+    for month in months:
+        try:
+            plan = ds.reconcile_month(int(args.year), month, use_ai=not getattr(args, "no_ai", False), dry_run=dry_run)
+        except Exception as e:  # noqa: BLE001
+            plan = {"year": int(args.year), "month": month, "errors": [str(e)]}
+        plans.append(plan)
+
+    summary = {
+        "dry_run": dry_run,
+        "months": len(plans),
+        "merge_groups": sum(len(p.get("merges") or []) for p in plans),
+        "rows_would_merge": sum(
+            len(m.get("members") or []) - 1
+            for p in plans for m in (p.get("merges") or [])
+        ),
+        "ai_calls": sum(int(p.get("ai_calls") or 0) for p in plans),
+        "editions_suggestions": sum(len(p.get("editions") or []) for p in plans),
+        "errors": [e for p in plans for e in (p.get("errors") or [])],
+    }
+    _print({"summary": summary, "plans": plans})
+
+
+# ---------------------------------------------------------------------------
+# nyaa: sukebei.nyaa 磁链获取（新流程 Phase 2）
+# ---------------------------------------------------------------------------
+
+def _nyaa_status_default():
+    return {
+        "running": False,
+        "pid": None,
+        "year": None,
+        "month": None,
+        "current": None,
+        "done": 0,
+        "total": 0,
+        "selected": 0,
+        "low_score": 0,
+        "no_result": 0,
+        "skip_cache": 0,
+        "errors": [],
+        "results": [],
+        "started_at": None,
+        "updated_at": None,
+        "stopped_reason": None,
+    }
+
+
+def cmd_nyaa_status(args):
+    paths = runtime_paths()
+    status = read_json(paths["nyaa_status_path"], _nyaa_status_default())
+    pid = status.get("pid")
+    if status.get("running") and pid and not pid_is_running(int(pid)):
+        status["running"] = False
+        status["stopped_reason"] = "not_running"
+        write_json_atomic(paths["nyaa_status_path"], status)
+    _print(status)
+
+
+def cmd_nyaa_start(args):
+    paths = runtime_paths()
+    status = read_json(paths["nyaa_status_path"], _nyaa_status_default())
+    pid = status.get("pid")
+    if status.get("running") and pid and pid_is_running(int(pid)):
+        _print({"status": "error", "message": "nyaa任务已在运行中", "pid": int(pid)})
+        return
+
+    os.makedirs(paths["status_dir"], exist_ok=True)
+    os.makedirs(paths["log_dir"], exist_ok=True)
+
+    launch_log = daily_log_path("nyaa_launch")
+    launch_fp = open(launch_log, "ab", buffering=0)
+
+    cmd = [
+        sys.executable,
+        os.path.join(_base_dir(), "nyaa_worker.py"),
+        "--year", str(int(args.year)),
+        "--month", str(int(getattr(args, "month", None) or 0)),
+    ]
+    if getattr(args, "force", False):
+        cmd.append("--force")
+    if getattr(args, "limit", None):
+        cmd += ["--limit", str(int(args.limit))]
+
+    p = subprocess.Popen(
+        cmd,
+        cwd=_base_dir(),
+        stdout=launch_fp,
+        stderr=launch_fp,
+        start_new_session=True,
+    )
+    started = False
+    for _ in range(10):
+        time.sleep(0.2)
+        status = read_json(paths["nyaa_status_path"], _nyaa_status_default())
+        if status.get("pid") == p.pid:
+            started = True
+            break
+
+    if not started:
+        try:
+            if pid_is_running(int(p.pid)):
+                terminate_pid(int(p.pid), signal.SIGTERM)
+        except Exception:
+            pass
+        _print({"status": "error", "message": "nyaa任务启动失败，请检查写权限与网络"})
+        return
+
+    _print({"status": "success", "message": "nyaa任务已启动", "pid": p.pid})
+
+
+def cmd_nyaa_stop(args):
+    paths = runtime_paths()
+    status = read_json(paths["nyaa_status_path"], _nyaa_status_default())
+    pid = status.get("pid")
+    if not pid:
+        _print({"status": "error", "message": "未找到运行中的nyaa任务"})
+        return
+    try:
+        if pid_is_running(int(pid)):
+            terminate_pid(int(pid), signal.SIGTERM)
+        status["running"] = False
+        status["stopped_reason"] = "stopped"
+        write_json_atomic(paths["nyaa_status_path"], status)
+        _print({"status": "success", "message": "停止请求已发送", "pid": int(pid)})
+    except Exception as e:
+        _print({"status": "error", "message": str(e), "pid": int(pid)})
+
+
+# ---------------------------------------------------------------------------
+# magnet: 磁链解析与重标注（新流程 Phase 3）
+# ---------------------------------------------------------------------------
+
+def cmd_magnet_relabel(args):
+    import tool.relabel as rl
+
+    months = [int(args.month)] if getattr(args, "month", None) else list(range(1, 13))
+    dry_run = not getattr(args, "execute", False)
+    plans = []
+    for month in months:
+        try:
+            plan = rl.relabel_month(
+                int(args.year), month,
+                force=bool(getattr(args, "force", False)),
+                dry_run=dry_run,
+            )
+        except Exception as e:  # noqa: BLE001
+            plan = {"year": int(args.year), "month": month, "errors": [str(e)]}
+        plans.append(plan)
+
+    summary = {
+        "dry_run": dry_run,
+        "force": bool(getattr(args, "force", False)),
+        "months": len(plans),
+        "with_link": sum(int(p.get("with_link") or 0) for p in plans),
+        "already": sum(int(p.get("already") or 0) for p in plans),
+        "no_dn": sum(int(p.get("no_dn") or 0) for p in plans),
+        "no_dn_date": sum(int(p.get("no_dn_date") or 0) for p in plans),
+        "name_conflict": sum(int(p.get("name_conflict") or 0) for p in plans),
+        "applied": sum(int(p.get("applied") or 0) for p in plans),
+        "changed_rows": sum(len(p.get("changes") or []) for p in plans),
+        "errors": [e for p in plans for e in (p.get("errors") or [])],
+    }
+    _print({"summary": summary, "plans": plans})
+
+
+def cmd_magnet_status(args):
+    import tool.relabel as rl
+
+    _print(rl.relabel_status())
+
+
+def cmd_magnet_parse(args):
+    import tool.relabel as rl
+
+    _print(rl.extract_dn_parts(args.magnet))
+
+
+
 def cmd_download_status(args):
     paths = runtime_paths()
     status = read_json(paths["download_status_path"], _download_status_default())
@@ -954,6 +1264,68 @@ def build_parser():
     p_games.add_argument("--year", type=int)
     p_games.add_argument("--month", type=int)
     p_games.set_defaults(func=cmd_games)
+
+    p_crawl = sub.add_parser("crawl", help="爬取getchu+AI去重入库（新流程）")
+    crawl_sub = p_crawl.add_subparsers(dest="action", required=True)
+
+    p_crawl_status = crawl_sub.add_parser("status")
+    p_crawl_status.set_defaults(func=cmd_crawl_status)
+
+    p_crawl_start = crawl_sub.add_parser("start")
+    p_crawl_start.add_argument("--start-year", type=int, required=True)
+    p_crawl_start.add_argument("--end-year", type=int, required=True)
+    p_crawl_start.add_argument("--month", type=int, help="仅处理指定月份")
+    p_crawl_start.add_argument("--no-ai", action="store_true", dest="no_ai", help="禁用AI去重，仅规则分组")
+    p_crawl_start.add_argument("--no-reconcile", action="store_true", dest="no_reconcile",
+                               help="跳过存量行再去重阶段")
+    p_crawl_start.set_defaults(func=cmd_crawl_start)
+
+    p_crawl_stop = crawl_sub.add_parser("stop")
+    p_crawl_stop.set_defaults(func=cmd_crawl_stop)
+
+    p_crawl_reconcile = crawl_sub.add_parser(
+        "reconcile", help="存量行再去重：合并同一作品不同表记的行（默认预览，--execute 执行）"
+    )
+    p_crawl_reconcile.add_argument("--year", type=int, required=True)
+    p_crawl_reconcile.add_argument("--month", type=int, help="仅处理指定月份")
+    p_crawl_reconcile.add_argument("--execute", action="store_true", help="实际执行合并（默认仅预览）")
+    p_crawl_reconcile.add_argument("--no-ai", action="store_true", dest="no_ai", help="仅规则合并，不调用AI")
+    p_crawl_reconcile.set_defaults(func=cmd_crawl_reconcile)
+
+    p_nyaa = sub.add_parser("nyaa", help="sukebei.nyaa磁链获取（新流程Phase 2）")
+    nyaa_sub = p_nyaa.add_subparsers(dest="action", required=True)
+
+    p_nyaa_status = nyaa_sub.add_parser("status")
+    p_nyaa_status.set_defaults(func=cmd_nyaa_status)
+
+    p_nyaa_start = nyaa_sub.add_parser("start")
+    p_nyaa_start.add_argument("--year", type=int, required=True)
+    p_nyaa_start.add_argument("--month", type=int, help="仅处理指定月份")
+    p_nyaa_start.add_argument("--force", action="store_true", help="忽略搜索历史强制重搜")
+    p_nyaa_start.add_argument("--limit", type=int, help="最多处理N个游戏")
+    p_nyaa_start.set_defaults(func=cmd_nyaa_start)
+
+    p_nyaa_stop = nyaa_sub.add_parser("stop")
+    p_nyaa_stop.set_defaults(func=cmd_nyaa_stop)
+
+    p_magnet = sub.add_parser("magnet", help="磁链解析与重标注（新流程Phase 3）")
+    magnet_sub = p_magnet.add_subparsers(dest="action", required=True)
+
+    p_magnet_relabel = magnet_sub.add_parser(
+        "relabel", help="按dn时间戳重标注发布时间/公司名/游戏名（默认预览，--execute 执行）"
+    )
+    p_magnet_relabel.add_argument("--year", type=int, required=True)
+    p_magnet_relabel.add_argument("--month", type=int, help="仅处理指定月份")
+    p_magnet_relabel.add_argument("--execute", action="store_true", help="实际写入（默认仅预览）")
+    p_magnet_relabel.add_argument("--force", action="store_true", help="对已重标注行强制重做")
+    p_magnet_relabel.set_defaults(func=cmd_magnet_relabel)
+
+    p_magnet_status = magnet_sub.add_parser("status")
+    p_magnet_status.set_defaults(func=cmd_magnet_status)
+
+    p_magnet_parse = magnet_sub.add_parser("parse", help="解析单条磁链（调试用）")
+    p_magnet_parse.add_argument("--magnet", type=str, required=True)
+    p_magnet_parse.set_defaults(func=cmd_magnet_parse)
 
     p_spider = sub.add_parser("spider")
     spider_sub = p_spider.add_subparsers(dest="action", required=True)
