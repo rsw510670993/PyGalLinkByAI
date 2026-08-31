@@ -159,16 +159,61 @@ def load_delete_list(config=None):
 
 
 def rule_base_name(name, delete_list=None):
-    """剥除版次后缀 → base_name（与旧 deduplicate_games 同源逻辑）。"""
+    """剥除版次后缀 → base_name（词边界感知，不破坏相邻字符）。
+
+    修复旧缺陷：'Nintendo Switch2版' 被剥成 '2版'（任意位置子串替换）。
+    现在 token 前后必须是"非字母数字"边界才删除：
+      - '進撃の巨人3 Nintendo Switch2版' → token 'Nintendo Switch' 后紧跟 '2'（字母数字）→ 不剥，保留原文
+      - '小金井荘と金色の揚羽蝶 Nintendo Switch版' → 'Nintendo Switch' 后是 '版'（非字母数字）→ 剥除
+    """
     if not name:
         return ""
     delete_list = delete_list if delete_list is not None else load_delete_list()
-    base = name
+    base = _PLATFORM_EDITION_RE.sub(" ", name)
     for token in delete_list:
-        if token and token in base:
-            base = base.replace(token, " ")
+        if not token:
+            continue
+        pat = re.compile(
+            r"(?<![0-9A-Za-zぁ-んァ-ヶ一-龠々ー])"
+            + re.escape(token)
+            + r"(?![0-9A-Za-z])"
+        )
+        base = pat.sub(" ", base)
     base = re.sub(r"\s+", " ", base).strip()
     return base or name
+
+
+# 平台版次整体剥除：平台词 + 可选空格 + 附带数字 + 版 → 一并移除（不留 2版/5版 残片）
+#   '進撃の巨人3 Nintendo Switch2版'  → '進撃の巨人3'
+#   '進撃の巨人3 PlayStation 5版'     → '進撃の巨人3'
+#   '小金井荘と金色の揚羽蝶 Nintendo Switch版' → '小金井荘と金色の揚羽蝶'
+_PLATFORM_EDITION_RE = re.compile(
+    r"(?<![0-9A-Za-z])("
+    r"ニンテンドースイッチ2|ニンテンドースイッチ|Nintendo\s*Switch|"
+    r"プレイステーション[1-9]|PlayStation\s*[1-9]|PlayStation|"
+    r"SWITCH|Switch|PS[1-9]|NSW"
+    r")\s*[0-9]?\s*版?(?![0-9A-Za-z])"
+)
+
+
+def _strip_platform_edition(name):
+    if not name:
+        return ""
+    return re.sub(r"\s+", " ", _PLATFORM_EDITION_RE.sub(" ", name)).strip()
+
+
+# 平台词（词边界化后仍能识别）；用于识别平台版行
+PLATFORM_TOKENS = (
+    "Nintendo Switch2", "Nintendo Switch", "ニンテンドースイッチ2", "ニンテンドースイッチ",
+    "Switch2", "SWITCH", "Switch", "PlayStation5", "PlayStation 5", "PlayStation4",
+    "PlayStation 4", "PS5", "PS4", "プレイステーション5", "プレイステーション4",
+)
+
+
+def has_platform_suffix(name):
+    """名字含平台版次词（Nintendo Switch2版 / PlayStation 5版 等）→ 独立行，禁 dup"""
+    n = name or ""
+    return any(t in n for t in PLATFORM_TOKENS)
 
 
 def rule_rep_rank(raw_name):
@@ -278,6 +323,7 @@ def _build_ai_prompt(eid_groups, anchors):
 1. "unique" = 独立作品，与其它条目/锚点都不是同一作品。
 2. "dup" = 与某个锚点或另一个待判定条目是同一作品的不同版次（初回版/通常版/DL版/限定版/特典付き等）。
    - 廉価版・再販・合算合集（○○1+2 等）与本体视为不同作品（unique）。
+   - 平台版（Nintendo Switch2版/Switch版/PlayStation 5版/PS4版/PS5版等）与本体是同一作品的不同平台版本：判 dup 到本体或组内代表；整组只有平台版时，代表判 unique 且 canonical_name 必须剥离平台词与版次（例：進撃の巨人3 Nintendo Switch2版 → 進撃の巨人3）。
    - 判 dup 时 target 必须是锚点 A* 或另一个条目 E* 的编号。
 3. canonical_name：unique 时给出作品本体名（剥离版次后缀，保留原文写法与用字，默认用 base）。
 4. confidence 0~1，reason 用不超过 20 字的日文/中文简述。
@@ -309,11 +355,16 @@ def _sim_ratio(a, b):
 
 
 def _reconcile_candidates(rows):
-    """同公司内规范化名相似度高的行索引集合（候选池，减少AI token）。"""
+    """同公司内规范化名相似度高的行索引集合（候选池，减少AI token）。
+
+    平台版行（Nintendo Switch2版/PlayStation 5版 等）是独立商品，不进候选池。
+    """
     norm = [(i, _norm_s(r["name"])) for i, r in enumerate(rows)]
     cand = set()
     for (i, ni), (j, nj) in [(a, b) for ai, a in enumerate(norm) for b in norm[ai + 1:]]:
         if rows[i]["company"] != rows[j]["company"] or not ni or not nj:
+            continue
+        if has_platform_suffix(rows[i]["name"]) or has_platform_suffix(rows[j]["name"]):
             continue
         if ni == nj or _sim_ratio(ni, nj) >= 0.72:
             cand.add(i)
@@ -770,13 +821,14 @@ def dedup_month(year, month, conn=None, config=None, use_ai=True, reconcile=True
 
         month_key = f"{year}-{month:02d}"
 
-        # 2. 规则分组
+        # 2. 规则分组（同月同公司才归组；公司为空的行绝不与有公司的合并）
         groups = {}
         for g in raw_games:
             base = rule_base_name(g.name, delete_list)
-            key = (g.company or "", base)
+            comp = g.company or ""
+            key = (comp if comp else "\x00独立(无公司)", base)
             if key not in groups:
-                groups[key] = {"company": g.company or "", "base_name": base, "members": []}
+                groups[key] = {"company": comp, "base_name": base, "members": []}
             groups[key]["members"].append(g.name)
         stats["groups"] = len(groups)
 
@@ -793,6 +845,20 @@ def dedup_month(year, month, conn=None, config=None, use_ai=True, reconcile=True
         resolved = []   # (group_key, cache_row_like_dict, source)
         pending = []
         for (company, base), g in sorted(groups.items()):
+            if all(has_platform_suffix(m) for m in g["members"]):
+                # 全平台版组（Switch2版/PS5版等）→ 合并为本体：canonical=剥平台后的base
+                # 跳过AI（确定性规则），如進撃の巨人3 Switch2版/PS5版 → 進撃の巨人3
+                resolved.append({
+                    "company": company, "base_name": base, "members": g["members"],
+                    "verdict": "unique", "canonical_name": base,
+                    "target_company": None, "target_name": None,
+                    "rep_raw": min(g["members"], key=rule_rep_rank),
+                    "confidence": 1.0,
+                    "reason": "平台版组合并为本体", "model": "rule_platform",
+                    "source": "rule_platform",
+                })
+                stats["platform_groups"] = stats.get("platform_groups", 0) + 1
+                continue
             ck = _cache_key(company, base)
             cached = conn.execute(
                 "SELECT verdict, canonical_name, target_company, target_name, rep_raw,"
@@ -954,6 +1020,23 @@ def dedup_month(year, month, conn=None, config=None, use_ai=True, reconcile=True
                 if t:
                     tc2, tn2 = t
 
+            if verdict == "dup" and tn2:
+                # dup 目标存在性校验（cache重放目标可能已被删/合并）→ 不存在则降级 unique
+                tgt_exist = conn.execute(
+                    "SELECT 1 FROM getchu_games WHERE getchu_date=? AND getchu_name=?",
+                    (month_key, tn2),
+                ).fetchone()
+                if not tgt_exist:
+                    verdict = "unique"
+                    canonical = base
+                    tn2 = tc2 = None
+                    reason = (reason + " | dup目标已不存在,降级unique").strip(" |")
+            if verdict == "dup" and tc2 is not None and (tc2 or "") != (company or ""):
+                # 同月同公司约束: dup 目标公司与成员不一致 → 拒绝合并，降级 unique
+                verdict = "unique"
+                tn2 = tc2 = None
+                r["target"] = None
+                reason = (reason + " | dup被拒:目标公司不同").strip(" |")
             if verdict == "dup":
                 if tn2:
                     stats["dup_logged"] += 1
