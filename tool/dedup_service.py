@@ -366,7 +366,9 @@ def _reconcile_candidates(rows):
             continue
         if has_platform_suffix(rows[i]["name"]) or has_platform_suffix(rows[j]["name"]):
             continue
-        if ni == nj or _sim_ratio(ni, nj) >= 0.72:
+        # 前缀包含（短方≥6字符且是长方开头）→ 同作特典/版次差异候选
+        prefix_hit = (len(ni) >= 6 and nj.startswith(ni)) or (len(nj) >= 6 and ni.startswith(nj))
+        if ni == nj or prefix_hit or _sim_ratio(ni, nj) >= 0.60:
             cand.add(i)
             cand.add(j)
     return sorted(cand)
@@ -383,7 +385,9 @@ _RECONCILE_PROMPT = """你是galgame数据库的数据清洗助手。以下是�
    - 全半角/假名/英字表记差异、多余空格
    - 误录的孤立后缀字（如末尾多出的一个"版"字）
    - 同一作品的特典BOX版与普通版（TREASURE BOX等）→ merges（canonical 取普通版行）
-   - 注意：タペストリー絵柄のR18/全年齢違い、抱き枕カバー、SET内容違い等是【不同商品】，绝对不要放进 merges，归入 editions。
+   - 同一作品的特典付き版与普通版（B2タペストリー付き限定版、抱き枕カバーセット付き、Sofmapセット等）→ merges（canonical 取普通版行）
+   - 注意：タペストリー絵柄のR18/全年齢違い等【内容違い】是不同商品，归入 editions。
+   - 同公司同系列资料片（大戦略SSB2 アルティメットEX／パワーアップ版等同base不同扩展）如果无法确定是否同一作品，宁可疑而不判，归入 editions。
    - members 必须是2个以上 R 编号，canonical 必须是 members 之一（优先信息更全、命名更正式完整的行）。
    - 标题本体不同的（续作、别的作品、独立资料片）绝对不要合并。
 2. editions：某行是另一行的版次/特典違い（TREASURE BOX/限定版/DL版/特典内容違い等）时单独输出，不合并，仅供人工复核。
