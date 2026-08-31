@@ -687,6 +687,22 @@ def _execute_reconcile(conn, month_key, merges):
                  mg.get("reason") or "", now_str, cdate, cname),
             )
 
+            # ④.5 同步成员组的 dedup_cache → dup(指向canonical)，防止重跑时重插→再合并抖动
+            mcomp = conn.execute(
+                "SELECT getchu_company FROM getchu_games WHERE getchu_date=? AND getchu_name=?",
+                (month_key, canonical),
+            ).fetchone()
+            mcomp = (mcomp[0] if mcomp else "") or ""
+            for m_name in merged:
+                m_ck = _cache_key(mcomp, rule_base_name(m_name))
+                conn.execute(
+                    """UPDATE dedup_cache SET verdict='dup', canonical_name=NULL,
+                        target_company=?, target_name=?, reason=COALESCE(reason,'')||' | 已reconcile并入',
+                        updated_at=?
+                        WHERE cache_key=? AND verdict!='dup'""",
+                    (mcomp, canonical, now_str, m_ck),
+                )
+
             # ⑤ getchu_115_folders 引用迁移（成员当前展示键 → 规范行当前展示键）
             for mr in merged_full:
                 m_date, m_name = mr.get("date"), mr.get("name")
