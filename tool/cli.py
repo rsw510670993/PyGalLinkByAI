@@ -410,6 +410,160 @@ def cmd_crawl_stop(args):
         _print({"status": "error", "message": str(e), "pid": int(pid)})
 
 
+def _edition_rows(year=None):
+    """dedup_log 中 verdict=edition_of 的建议，过滤已被并/已删/已决定的行"""
+    import tool.dedup_service as ds
+    from tool.runtime import load_decisions
+    from tool.core import open_db
+
+    conn = open_db()
+    try:
+        sql = ("SELECT date, company, raw_name, canonical_name, confidence, reason"
+               " FROM dedup_log WHERE verdict='edition_of'")
+        params = []
+        if year:
+            sql += " AND date LIKE ?"
+            params.append(f"{year}-%")
+        sql += " ORDER BY date, raw_name"
+        rows = conn.execute(sql, params).fetchall()
+        cur_names = {
+            (r[0], r[1]) for r in conn.execute(
+                "SELECT getchu_date, getchu_name FROM getchu_games")
+        }
+    finally:
+        conn.close()
+    decided = {
+        (d["kind"], d["date"], d["name"])
+        for d in load_decisions().get("items", [])
+        if d.get("kind") == "edition"
+    }
+    out = []
+    for date, comp, raw, can, conf, reason in rows:
+        if (date, raw) not in cur_names or (date, can) not in cur_names:
+            continue  # 行已被合并/删除 → 建议已过时
+        if ("edition", date, raw) in decided:
+            continue
+        out.append({"date": date, "company": comp, "name": raw,
+                    "of": can, "confidence": conf, "reason": reason})
+    return out
+
+
+def cmd_dedup_overview(args):
+    import json as _json
+    import os as _os
+    from tool.runtime import runtime_paths, load_decisions
+    from tool.core import open_db
+
+    conn = open_db()
+    try:
+        cur_names = {
+            (r[0], r[1]) for r in conn.execute(
+                "SELECT getchu_date, getchu_name FROM getchu_games")
+        }
+        decided = {
+            (d.get("kind"), d.get("date"), d.get("name"))
+            for d in load_decisions().get("items", [])
+        }
+        editions = 0
+        for date, raw, can in conn.execute(
+                "SELECT date, raw_name, canonical_name FROM dedup_log WHERE verdict='edition_of'"):
+            if (date, raw) not in cur_names or (date, can) not in cur_names:
+                continue
+            if ("edition", date, raw) in decided:
+                continue
+            editions += 1
+        dnm = conn.execute(
+            "SELECT COUNT(*) FROM getchu_games"
+            " WHERE link IS NOT NULL AND link != '' AND release_ts IS NULL").fetchone()[0]
+    finally:
+        conn.close()
+    rv115 = 0
+    try:
+        path = _os.path.join(str(runtime_paths()["status_dir"]), "review_115.json")
+        with open(path, "r", encoding="utf-8") as f:
+            data = _json.load(f)
+        for it in data.get("items") or []:
+            if not it.get("manual"):
+                continue
+            if ("review115", it.get("date"), it.get("name")) in decided:
+                continue
+            rv115 += 1
+    except Exception:
+        pass
+    _print({"status": "ok", "editions": editions, "review115": rv115, "dnmismatch": dnm})
+
+
+def cmd_dedup_dnmismatch(args):
+    """dn_mismatch 待审行明细（有链无release_ts），含dn文本"""
+    from tool.core import open_db
+    from tool.relabel import parse_magnet_dn
+
+    conn = open_db()
+    try:
+        rows = conn.execute(
+            "SELECT getchu_date, getchu_name, getchu_company, date, name, link, release_date"
+            " FROM getchu_games WHERE link IS NOT NULL AND link != '' AND release_ts IS NULL"
+            " ORDER BY getchu_date").fetchall()
+    finally:
+        conn.close()
+    items = []
+    for gd, gn, gc, d, n, link, rd in rows:
+        items.append({"getchu_date": gd, "getchu_name": gn, "getchu_company": gc,
+                      "date": d, "name": n, "release_date": rd,
+                      "dn": parse_magnet_dn(link) or ""})
+    _print({"status": "ok", "total": len(items), "items": items})
+
+
+def cmd_dedup_editions(args):
+    items = _edition_rows(args.year)
+    _print({"status": "ok", "total": len(items), "items": items})
+
+
+def cmd_dedup_merge(args):
+    """人工确认合并：member 行并入 canonical 行（走 _execute_reconcile 全套：备份/归档/迁移/缓存）"""
+    import tool.dedup_service as ds
+    from tool.core import open_db
+
+    conn = open_db()
+    try:
+        ds.ensure_dedup_schema(conn)
+        merges = [{
+            "canonical": args.canonical,
+            "members": [args.canonical, args.member],
+            "source": "manual",
+            "confidence": 1.0,
+            "reason": args.reason or "人工审核确认合并",
+        }]
+        executed = ds._execute_reconcile(conn, f"{args.year}-{args.month:02d}", merges)
+    finally:
+        conn.close()
+    _print({"status": "ok", "executed": executed})
+
+
+def cmd_dedup_decide(args):
+    """记录人工审核决定：edition=保持独立 / review115=已处理 / 其他自定义"""
+    from tool.runtime import record_decision, load_decisions, decisions_path
+
+    record_decision(args.kind, args.date, args.name, args.decision,
+                    note=getattr(args, "note", None))
+    if args.kind == "edition" and args.decision in ("keep", "independent"):
+        # 决定保持独立 → 删除 edition_of 建议行（不再出现在清单）
+        from tool.core import open_db
+        conn = open_db()
+        try:
+            conn.execute(
+                "DELETE FROM dedup_log WHERE verdict='edition_of' AND date=? AND raw_name=?",
+                (args.date, args.name),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    _print({"status": "ok", "decided": record_decision(args.kind, args.date, args.name,
+                                                        args.decision, note=getattr(args, "note", None)),
+            "decisions_file": decisions_path(),
+            "total": len(load_decisions().get("items", []))})
+
+
 def cmd_crawl_reconcile(args):
     import tool.dedup_service as ds
 
@@ -592,6 +746,44 @@ def cmd_magnet_status(args):
     import tool.relabel as rl
 
     _print(rl.relabel_status())
+
+
+def cmd_magnet_setts(args):
+    """人工设定 release_ts（dn_mismatch 行审核后手动定时间）：同步展示月到该时间"""
+    import re as _re
+    from tool.core import open_db
+
+    ts = (args.ts or "").strip()
+    if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}", ts):
+        _print({"status": "error", "message": "ts 格式须为 YYYY-MM-DD"})
+        return
+    conn = open_db()
+    try:
+        row = conn.execute(
+            "SELECT date, name, release_ts FROM getchu_games"
+            " WHERE getchu_date=? AND getchu_name=?",
+            (args.date, args.name),
+        ).fetchone()
+        if not row:
+            _print({"status": "error", "message": "行不存在: " + args.date + " " + args.name})
+            return
+        old_date = row[0]
+        conn.execute(
+            "UPDATE getchu_games SET release_ts=?, date=?, dedup_updated_at=datetime('now','localtime')"
+            " WHERE getchu_date=? AND getchu_name=?",
+            (ts, ts[:7], args.date, args.name),
+        )
+        conn.commit()
+        # folder记录键同步（date, name）→ 若有记录则更新date
+        conn.execute(
+            "UPDATE getchu_115_folders SET date=? WHERE date=? AND name=?",
+            (ts[:7], row[0], row[1]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    _print({"status": "ok", "getchu_date": args.date, "name": args.name,
+            "release_ts": ts, "date_moved": old_date + "→" + ts[:7]})
 
 
 def cmd_magnet_parse(args):
@@ -946,6 +1138,15 @@ def cmd_115_organize(args):
     except Exception as e:
         _print({"status": "error", "message": f"整理失败: {str(e)}"})
 
+
+
+def cmd_115_resolve(args):
+    """标记115整理待审项已处理"""
+    from tool.runtime import record_decision
+
+    r = record_decision("review115", args.date, args.name, args.decision or "resolved",
+                        note=getattr(args, "note", None))
+    _print({"status": "ok", "decided": r})
 
 
 def cmd_115_review(args):
@@ -1337,6 +1538,29 @@ def build_parser():
     p_crawl_reconcile.add_argument("--execute", action="store_true", help="实际执行合并（默认仅预览）")
     p_crawl_reconcile.add_argument("--no-ai", action="store_true", dest="no_ai", help="仅规则合并，不调用AI")
     p_crawl_reconcile.set_defaults(func=cmd_crawl_reconcile)
+    p_dedup = sub.add_parser("dedup", help="去重审核（edition建议/人工合并/决定）")
+    dedup_sub = p_dedup.add_subparsers(dest="dedup_cmd", required=True)
+    p_dedup_overview = dedup_sub.add_parser("overview", help="待审数量总览")
+    p_dedup_overview.set_defaults(func=cmd_dedup_overview)
+    p_dedup_dnm = dedup_sub.add_parser("dnmismatch", help="无日期码待审行明细")
+    p_dedup_dnm.set_defaults(func=cmd_dedup_dnmismatch)
+    p_dedup_editions = dedup_sub.add_parser("editions", help="列出待审版次/特典建议")
+    p_dedup_editions.add_argument("--year", type=int, default=None)
+    p_dedup_editions.set_defaults(func=cmd_dedup_editions)
+    p_dedup_merge = dedup_sub.add_parser("merge", help="人工确认合并（member并入canonical）")
+    p_dedup_merge.add_argument("--year", type=int, required=True)
+    p_dedup_merge.add_argument("--month", type=int, required=True)
+    p_dedup_merge.add_argument("--canonical", required=True, help="保留的行(getchu登记名)")
+    p_dedup_merge.add_argument("--member", required=True, help="被并入的行(getchu登记名)")
+    p_dedup_merge.add_argument("--reason", default=None)
+    p_dedup_merge.set_defaults(func=cmd_dedup_merge)
+    p_dedup_decide = dedup_sub.add_parser("decide", help="记录审核决定")
+    p_dedup_decide.add_argument("--kind", required=True, help="edition/review115")
+    p_dedup_decide.add_argument("--date", required=True)
+    p_dedup_decide.add_argument("--name", required=True)
+    p_dedup_decide.add_argument("--decision", required=True)
+    p_dedup_decide.add_argument("--note", default=None)
+    p_dedup_decide.set_defaults(func=cmd_dedup_decide)
 
     p_nyaa = sub.add_parser("nyaa", help="sukebei.nyaa磁链获取（新流程Phase 2）")
     nyaa_sub = p_nyaa.add_subparsers(dest="action", required=True)
@@ -1370,6 +1594,11 @@ def build_parser():
     p_magnet_status = magnet_sub.add_parser("status")
     p_magnet_status.set_defaults(func=cmd_magnet_status)
 
+    p_magnet_setts = magnet_sub.add_parser("setts", help="人工设定release_ts(dn_mismatch审核)")
+    p_magnet_setts.add_argument("--date", required=True, help="getchu登记月 YYYY-MM")
+    p_magnet_setts.add_argument("--name", required=True, help="getchu登记名")
+    p_magnet_setts.add_argument("--ts", required=True, help="发布时间 YYYY-MM-DD")
+    p_magnet_setts.set_defaults(func=cmd_magnet_setts)
     p_magnet_parse = magnet_sub.add_parser("parse", help="解析单条磁链（调试用）")
     p_magnet_parse.add_argument("--magnet", type=str, required=True)
     p_magnet_parse.set_defaults(func=cmd_magnet_parse)
@@ -1465,6 +1694,12 @@ def build_parser():
     p_115_review = _115_sub.add_parser("review", help="查看115整理待人工审阅清单")
     p_115_review.add_argument("--status", type=str, help="按状态过滤(shared_cid/ambiguous/not_dir/no_dn_date/missing_in_115)")
     p_115_review.add_argument("--todo", action="store_true", help="仅显示人工处理项(manual)")
+    p_115_resolve = _115_sub.add_parser("resolve", help="标记115整理待审项已处理")
+    p_115_resolve.add_argument("--date", required=True)
+    p_115_resolve.add_argument("--name", required=True)
+    p_115_resolve.add_argument("--decision", default="resolved")
+    p_115_resolve.add_argument("--note", default=None)
+    p_115_resolve.set_defaults(func=cmd_115_resolve)
     p_115_review.set_defaults(func=cmd_115_review)
 
     p_update = sub.add_parser("update_game")

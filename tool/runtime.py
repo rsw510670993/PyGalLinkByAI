@@ -146,3 +146,31 @@ def pid_is_running(pid):
 
 def terminate_pid(pid, sig=signal.SIGTERM):
     os.kill(pid, sig)
+
+
+def decisions_path(config_path=None):
+    """人工审核决定文件路径（status/review_decisions.json）"""
+    return os.path.join(str(runtime_paths(config_path)["status_dir"]), "review_decisions.json")
+
+
+def load_decisions(config_path=None):
+    """读取人工审核决定 {items: [{kind, date, name, decision, at}]}"""
+    try:
+        with open(decisions_path(config_path), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {"items": []}
+    except Exception:
+        return {"items": []}
+
+
+def record_decision(kind, date, name, decision, note=None, config_path=None):
+    """记录一条人工审核决定（幂等：同kind+date+name覆盖）"""
+    data = load_decisions(config_path)
+    items = [i for i in data.get("items", [])
+             if not (i.get("kind") == kind and i.get("date") == date and i.get("name") == name)]
+    items.append({
+        "kind": kind, "date": date, "name": name, "decision": decision,
+        "note": note, "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    })
+    write_json_atomic(decisions_path(config_path), {"items": items})
+    return {"kind": kind, "date": date, "name": name, "decision": decision}
