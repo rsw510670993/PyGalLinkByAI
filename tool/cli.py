@@ -960,6 +960,60 @@ def cmd_egs_status(args):
         conn.close()
 
 
+def cmd_egs_games(args):
+    from tool.egs_core import open_egs_db
+    conn = open_egs_db(args.db)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='egs_games'")
+        if cur.fetchone() is None:
+            _print({"data": [], "current_page": int(args.page), "per_page": int(args.per_page),
+                    "total": 0, "year": args.year, "month": args.month, "q": args.q})
+            return
+
+        conditions = []
+        params = []
+        if args.year is not None:
+            conditions.append("substr(date,1,4) = ?")
+            params.append(f"{int(args.year):04d}")
+        if args.month is not None:
+            conditions.append("substr(date,6,2) = ?")
+            params.append(f"{int(args.month):02d}")
+        if args.q:
+            q = str(args.q).strip()
+            if q:
+                conditions.append("(name LIKE ? OR company LIKE ? OR name_kana LIKE ?)")
+                like = f"%{q}%"
+                params.extend([like, like, like])
+        where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+        total = cur.execute(f"SELECT COUNT(*) FROM egs_games{where}", params).fetchone()[0]
+        page = max(1, int(args.page))
+        per_page = max(1, int(args.per_page))
+        start = (page - 1) * per_page
+        rows = cur.execute(
+            f"""
+            SELECT egs_id, date, name, company, release_ts, name_kana, brand_kind,
+                   genre, getchu_id, dmm, dlsite_id, official_url,
+                   link, downloaded, submitted_115
+              FROM egs_games{where}
+             ORDER BY date, release_ts, egs_id
+             LIMIT ? OFFSET ?
+            """,
+            params + [per_page, start],
+        ).fetchall()
+        _print({
+            "data": [dict(r) for r in rows],
+            "current_page": page,
+            "per_page": per_page,
+            "total": int(total or 0),
+            "year": args.year,
+            "month": args.month,
+            "q": args.q or "",
+        })
+    finally:
+        conn.close()
+
+
 def build_parser():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -1092,6 +1146,15 @@ def build_parser():
     p_egs_status = egs_sub.add_parser("status")
     p_egs_status.add_argument("--db", type=str, dest="db")
     p_egs_status.set_defaults(func=cmd_egs_status)
+
+    p_egs_games = egs_sub.add_parser("games")
+    p_egs_games.add_argument("--page", type=int, default=1)
+    p_egs_games.add_argument("--per-page", type=int, default=50, dest="per_page")
+    p_egs_games.add_argument("--year", type=int)
+    p_egs_games.add_argument("--month", type=int)
+    p_egs_games.add_argument("--q", type=str, default="")
+    p_egs_games.add_argument("--db", type=str)
+    p_egs_games.set_defaults(func=cmd_egs_games)
 
     p_auto = sub.add_parser("auto")
     auto_sub = p_auto.add_subparsers(dest="action", required=True)

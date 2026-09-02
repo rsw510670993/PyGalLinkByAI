@@ -93,6 +93,22 @@ if ($action === 'games') {
     json_response($data);
 }
 
+if ($action === 'egs_games') {
+    $page = as_int($_GET['page'] ?? 1, 1);
+    $perPage = as_int($_GET['per_page'] ?? 50, 50);
+    $year = as_int($_GET['year'] ?? null, null);
+    $month = as_int($_GET['month'] ?? null, null);
+    $q = isset($_GET['q']) ? trim((string)$_GET['q']) : '';
+
+    $args = ['egs', 'games', '--page', strval(max(1, $page)), '--per-page', strval(max(1, $perPage))];
+    if ($year !== null) { $args[] = '--year'; $args[] = strval($year); }
+    if ($month !== null) { $args[] = '--month'; $args[] = strval($month); }
+    if ($q !== '') { $args[] = '--q'; $args[] = $q; }
+
+    [$code, $data] = run_cli($args);
+    json_response($data);
+}
+
 if ($action === 'calendar') {
     $year = as_int($_GET['year'] ?? null, null);
     $args = ['calendar'];
