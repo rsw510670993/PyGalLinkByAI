@@ -165,6 +165,9 @@ cython_debug/
 uninstall.py
 .trae/
 getchu.db
+egs.db
+egs.db-shm
+egs.db-wal
 .python-version
 status/
 logs/

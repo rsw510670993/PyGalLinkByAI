@@ -919,6 +919,47 @@ def cmd_auto_idle_run(args):
     )
 
 
+def cmd_egs_crawl(args):
+    from tool.egs_core import crawl_egs_range
+    start_year = int(args.start_year)
+    end_year = int(args.end_year or args.start_year)
+    stats = crawl_egs_range(start_year, end_year, month=args.month, db_path=args.db)
+    _print(stats)
+
+
+def cmd_egs_status(args):
+    from tool.egs_core import open_egs_db
+    conn = open_egs_db(args.db)
+    try:
+        cur = conn.cursor()
+        tables = [r[0] for r in cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        ).fetchall()]
+        if "egs_games" not in tables:
+            _print({"exists": False, "tables": tables})
+            return
+        total = cur.execute("SELECT COUNT(*) FROM egs_games").fetchone()[0]
+        by_year = cur.execute(
+            "SELECT substr(date,1,4) AS year, COUNT(*) FROM egs_games GROUP BY year ORDER BY year"
+        ).fetchall()
+        by_month = cur.execute(
+            "SELECT date, COUNT(*) FROM egs_games GROUP BY date ORDER BY date"
+        ).fetchall()
+        has_link = cur.execute(
+            "SELECT COUNT(*) FROM egs_games WHERE link IS NOT NULL AND link != ''"
+        ).fetchone()[0]
+        _print({
+            "exists": True,
+            "db": conn.execute("SELECT file FROM pragma_database_list WHERE name='main'").fetchone()[0],
+            "total": total,
+            "by_year": [{"year": r[0], "count": r[1]} for r in by_year],
+            "by_month": [{"month": r[0], "count": r[1]} for r in by_month],
+            "has_link": has_link,
+        })
+    finally:
+        conn.close()
+
+
 def build_parser():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -1037,6 +1078,20 @@ def build_parser():
     p_delete.add_argument("--date", type=str, required=True)
     p_delete.add_argument("--name", type=str, required=True)
     p_delete.set_defaults(func=cmd_delete_game)
+
+    p_egs = sub.add_parser("egs")
+    egs_sub = p_egs.add_subparsers(dest="egs_action", required=True)
+
+    p_egs_crawl = egs_sub.add_parser("crawl")
+    p_egs_crawl.add_argument("--start-year", type=int, required=True, dest="start_year")
+    p_egs_crawl.add_argument("--end-year", type=int, dest="end_year")
+    p_egs_crawl.add_argument("--month", type=int, dest="month")
+    p_egs_crawl.add_argument("--db", type=str, dest="db")
+    p_egs_crawl.set_defaults(func=cmd_egs_crawl)
+
+    p_egs_status = egs_sub.add_parser("status")
+    p_egs_status.add_argument("--db", type=str, dest="db")
+    p_egs_status.set_defaults(func=cmd_egs_status)
 
     p_auto = sub.add_parser("auto")
     auto_sub = p_auto.add_subparsers(dest="action", required=True)
