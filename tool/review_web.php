@@ -37,6 +37,12 @@ input { padding:6px 8px; border:1px solid #dcdfe6; border-radius:4px; font-size:
 .msg.err { background:#fdecea; color:#c0392b; display:block; }
 .loading { color:#7f8c8d; font-size:13px; padding:14px; }
 .hint { color:#95a5a6; font-size:12px; margin-top:6px; }
+.mergegroup { display:flex; flex-direction:column; gap:4px; }
+.mg-row { display:flex; align-items:center; gap:6px; }
+.mg-arrow { display:inline-block; text-align:center; color:#e67e22; font-size:11px; padding-left:2px; }
+.mg-member { background:#fdf2e9; border:1px solid #f5cba7; border-radius:4px; padding:4px 8px; }
+.mg-canonical { background:#e8f8f0; border:1px solid #a9dfbf; border-radius:4px; padding:4px 8px; font-weight:600; }
+.ops { display:flex; gap:6px; align-items:center; justify-content:flex-start; }
 </style>
 </head>
 <body>
@@ -54,7 +60,7 @@ input { padding:6px 8px; border:1px solid #dcdfe6; border-radius:4px; font-size:
 
 <div id="tab-editions" class="card">
     <table id="tbl-editions"><thead>
-        <tr><th>月份</th><th>公司</th><th>行（建议并入→）</th><th>本体行</th><th>置信</th><th>理由</th><th>操作</th></tr>
+        <tr><th>月份</th><th>公司</th><th>合并组（上=要并入的行 → 下=合并对象）</th><th>置信</th><th>理由</th><th>操作</th></tr>
     </thead><tbody></tbody></table>
     <div class="hint">「合并」将被建议行并入本体行（保留本体，被并行归档可回溯）；「保持独立」记录决定并不再提示。</div>
 </div>
@@ -111,10 +117,13 @@ async function loadEditions(){
         const tr = document.createElement('tr');
         const [y, m] = it.date.split('-');
         tr.innerHTML = `<td>${esc(it.date)}</td><td>${esc(it.company||'')}</td>`
-            + `<td class="name">${esc(it.name)}</td><td class="name">${esc(it.of)}</td>`
+            + `<td><div class="mergegroup">`
+            + `<div class="mg-row"><span class="mg-arrow">└要并入→</span><span class="mg-member name">${esc(it.name)}</span></div>`
+            + `<div class="mg-row"><span class="mg-arrow">└合并对象</span><span class="mg-canonical name">${esc(it.of)}</span></div>`
+            + `</div></td>`
             + `<td>${esc(it.confidence)}</td><td class="name">${esc(it.reason||'')}</td>`
-            + `<td><button class="btn-merge" data-y="${y}" data-m="${m}" data-can="${esc(it.of)}" data-mem="${esc(it.name)}">合并</button> `
-            + `<button class="btn-keep" data-date="${it.date}" data-name="${esc(it.name)}">保持独立</button></td>`;
+            + `<td><div class="ops"><button class="btn-merge" data-y="${y}" data-m="${m}" data-can="${esc(it.of)}" data-mem="${esc(it.name)}">合并</button>`
+            + `<button class="btn-keep" data-date="${it.date}" data-name="${esc(it.name)}">保持独立</button></div></td>`;
         tb.appendChild(tr);
     }
     tb.querySelectorAll('.btn-merge').forEach(b => b.onclick = () => doEditionMerge(b));
