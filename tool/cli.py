@@ -992,9 +992,7 @@ def cmd_egs_games(args):
         start = (page - 1) * per_page
         rows = cur.execute(
             f"""
-            SELECT egs_id, date, name, company, release_ts, name_kana, brand_kind,
-                   genre, getchu_id, dmm, dlsite_id, official_url,
-                   link, downloaded, submitted_115
+            SELECT date, name, company, release_ts, brand_kind
               FROM egs_games{where}
              ORDER BY date, release_ts, egs_id
              LIMIT ? OFFSET ?
