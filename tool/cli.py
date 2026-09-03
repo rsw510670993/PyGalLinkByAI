@@ -1012,6 +1012,18 @@ def cmd_egs_games(args):
         conn.close()
 
 
+def cmd_egs_magnet(args):
+    from tool.egs_magnet import run_magnet
+    stats = run_magnet(
+        year=int(args.year),
+        month=int(args.month) if args.month else None,
+        force=bool(args.force),
+        limit=int(args.limit or 0),
+        db_path=args.db,
+    )
+    _print(stats)
+
+
 def build_parser():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -1153,6 +1165,16 @@ def build_parser():
     p_egs_games.add_argument("--q", type=str, default="")
     p_egs_games.add_argument("--db", type=str)
     p_egs_games.set_defaults(func=cmd_egs_games)
+
+    p_egs_magnet = egs_sub.add_parser("magnet")
+    p_egs_magnet.add_argument("--year", type=int, required=True)
+    p_egs_magnet.add_argument("--month", type=int)
+    p_egs_magnet.add_argument("--force", action="store_true",
+                              help="忽略搜索历史强制重搜")
+    p_egs_magnet.add_argument("--limit", type=int, default=0,
+                              help="最多处理N个游戏，0=不限")
+    p_egs_magnet.add_argument("--db", type=str)
+    p_egs_magnet.set_defaults(func=cmd_egs_magnet)
 
     p_auto = sub.add_parser("auto")
     auto_sub = p_auto.add_subparsers(dest="action", required=True)

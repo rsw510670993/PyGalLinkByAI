@@ -179,9 +179,14 @@ CREATE INDEX idx_egs_games_release_ts ON egs_games(release_ts);
 - [x] 在 `tool/cli.py` 增加 `egs crawl` / `egs status`
 - [x] 抓取 2026 全年 PC+18禁：**412 行**已入库，重复执行不产生写入
 - [x] `.gitignore` 增加 `egs.db*`
+- [x] 新增 EGS 磁链获取核心：
+  - `tool/egs_match.py`：sukebei 候选评分/择优
+  - `tool/egs_magnet.py`：sukebei 搜索、候选落库、择优回填 `link/nyaa_name/size/infohash_hex`
+  - `tool/cli.py`：`egs magnet --year YYYY [--month MM] [--force] [--limit N]`
+  - 磁链候选/搜索历史落在 `egs_nyaa_candidates` / `egs_nyaa_search_log`，均以 `egs_id` 为主键维度
 
 ### 尚未做（按用户确认留到后续）
-- [ ] EGS 下载链接获取（nyaa 等）
+- [ ] EGS 磁链获取的 Web/API 状态展示
 - [ ] EGS 搬月/重标注逻辑
 - [ ] 115 整理新规
 - [ ] Web/calendar 切换
