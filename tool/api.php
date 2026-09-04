@@ -109,6 +109,38 @@ if ($action === 'egs_games') {
     json_response($data);
 }
 
+if ($action === 'egs_update') {
+    $body = read_json_body();
+    $egsId = as_int($body['egs_id'] ?? null, null);
+    if (!$egsId) {
+        json_response(['success' => false, 'message' => '缺少 egs_id']);
+    }
+
+    $args = ['egs', 'update', '--egs-id', strval($egsId)];
+    if (!empty($body['new_date'])) { $args[] = '--new-date'; $args[] = strval($body['new_date']); }
+    if (!empty($body['new_name'])) { $args[] = '--new-name'; $args[] = strval($body['new_name']); }
+    if (!empty($body['new_company'])) { $args[] = '--new-company'; $args[] = strval($body['new_company']); }
+    if (array_key_exists('new_link', $body)) { $args[] = '--new-link'; $args[] = strval($body['new_link']); }
+    if (array_key_exists('new_nyaa_name', $body)) { $args[] = '--new-nyaa-name'; $args[] = strval($body['new_nyaa_name']); }
+    if (array_key_exists('new_downloaded', $body) && $body['new_downloaded'] !== null) {
+        $args[] = '--new-downloaded';
+        $args[] = strval(intval($body['new_downloaded']));
+    }
+
+    [$code, $data] = run_cli($args);
+    json_response($data);
+}
+
+if ($action === 'egs_delete') {
+    $body = read_json_body();
+    $egsId = as_int($body['egs_id'] ?? null, null);
+    if (!$egsId) {
+        json_response(['success' => false, 'message' => '缺少 egs_id']);
+    }
+    [$code, $data] = run_cli(['egs', 'delete', '--egs-id', strval($egsId)]);
+    json_response($data);
+}
+
 if ($action === 'calendar') {
     $year = as_int($_GET['year'] ?? null, null);
     $args = ['calendar'];

@@ -992,7 +992,8 @@ def cmd_egs_games(args):
         start = (page - 1) * per_page
         rows = cur.execute(
             f"""
-            SELECT date, name, company, release_ts, brand_kind
+            SELECT egs_id, date, name, company, release_ts, brand_kind,
+                   link, nyaa_name, downloaded
               FROM egs_games{where}
              ORDER BY date, release_ts, egs_id
              LIMIT ? OFFSET ?
@@ -1022,6 +1023,25 @@ def cmd_egs_magnet(args):
         db_path=args.db,
     )
     _print(stats)
+
+
+def cmd_egs_update(args):
+    from tool.egs_core import update_egs_game_record
+    _print(update_egs_game_record(
+        egs_id=int(args.egs_id),
+        new_date=args.new_date,
+        new_name=args.new_name,
+        new_company=args.new_company,
+        new_link=args.new_link,
+        new_nyaa_name=args.new_nyaa_name,
+        new_downloaded=args.new_downloaded,
+        db_path=args.db,
+    ))
+
+
+def cmd_egs_delete(args):
+    from tool.egs_core import delete_egs_game_record
+    _print(delete_egs_game_record(int(args.egs_id), db_path=args.db))
 
 
 def build_parser():
@@ -1175,6 +1195,23 @@ def build_parser():
                               help="最多处理N个游戏，0=不限")
     p_egs_magnet.add_argument("--db", type=str)
     p_egs_magnet.set_defaults(func=cmd_egs_magnet)
+
+    p_egs_update = egs_sub.add_parser("update")
+    p_egs_update.add_argument("--egs-id", type=int, required=True, dest="egs_id")
+    p_egs_update.add_argument("--new-date", type=str, dest="new_date")
+    p_egs_update.add_argument("--new-name", type=str, dest="new_name")
+    p_egs_update.add_argument("--new-company", type=str, dest="new_company")
+    p_egs_update.add_argument("--new-link", type=str, dest="new_link")
+    p_egs_update.add_argument("--new-nyaa-name", type=str, dest="new_nyaa_name")
+    p_egs_update.add_argument("--new-downloaded", type=int,
+                              choices=[0, 1], dest="new_downloaded")
+    p_egs_update.add_argument("--db", type=str)
+    p_egs_update.set_defaults(func=cmd_egs_update)
+
+    p_egs_delete = egs_sub.add_parser("delete")
+    p_egs_delete.add_argument("--egs-id", type=int, required=True, dest="egs_id")
+    p_egs_delete.add_argument("--db", type=str)
+    p_egs_delete.set_defaults(func=cmd_egs_delete)
 
     p_auto = sub.add_parser("auto")
     auto_sub = p_auto.add_subparsers(dest="action", required=True)

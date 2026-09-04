@@ -291,3 +291,85 @@ def crawl_egs_range(start_year: int, end_year: int, month: int | None = None,
         return stats
     finally:
         conn.close()
+
+
+
+def update_egs_game_record(egs_id: int, new_date: str | None = None,
+                           new_name: str | None = None,
+                           new_company: str | None = None,
+                           new_link: str | None = None,
+                           new_nyaa_name: str | None = None,
+                           new_downloaded: int | None = None,
+                           db_path: str | None = None) -> dict:
+    """按 egs_id 修改展示层字段；原始 EGS 身份层保持不变。"""
+    if not egs_id:
+        return {"success": False, "message": "缺少 egs_id"}
+
+    if new_date is not None:
+        new_date = str(new_date).strip()
+        if new_date and not re.fullmatch(r"\d{4}-\d{2}", new_date):
+            return {"success": False, "message": "年月格式应为 YYYY-MM"}
+
+    updates = {}
+    if new_date:
+        updates["date"] = new_date
+    if new_name is not None:
+        new_name = str(new_name).strip()
+        if new_name:
+            updates["name"] = new_name
+    if new_company is not None:
+        new_company = str(new_company).strip()
+        if new_company:
+            updates["company"] = new_company
+    if new_link is not None:
+        updates["link"] = str(new_link).strip()
+    if new_nyaa_name is not None:
+        updates["nyaa_name"] = str(new_nyaa_name).strip()
+    if new_downloaded is not None:
+        updates["downloaded"] = 1 if int(new_downloaded) else 0
+
+    if not updates:
+        return {"success": True, "message": "无变更", "egs_id": egs_id}
+
+    conn = open_egs_db(db_path)
+    try:
+        row = conn.execute(
+            "SELECT date, name FROM egs_games WHERE egs_id = ?", (egs_id,)
+        ).fetchone()
+        if row is None:
+            return {"success": False, "message": "未找到记录"}
+
+        if "date" in updates or "name" in updates:
+            target_date = updates.get("date", row["date"])
+            target_name = updates.get("name", row["name"])
+            conflict = conn.execute(
+                "SELECT 1 FROM egs_games WHERE date = ? AND name = ? AND egs_id <> ?",
+                (target_date, target_name, egs_id),
+            ).fetchone()
+            if conflict:
+                return {"success": False, "message": "目标年月/游戏名称已存在"}
+
+        updates["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        cols = list(updates.keys())
+        sets = ", ".join(f"{c} = ?" for c in cols)
+        values = [updates[c] for c in cols] + [egs_id]
+        conn.execute(f"UPDATE egs_games SET {sets} WHERE egs_id = ?", values)
+        conn.commit()
+        return {"success": True, "message": "更新成功", "egs_id": egs_id}
+    finally:
+        conn.close()
+
+
+def delete_egs_game_record(egs_id: int, db_path: str | None = None) -> dict:
+    """按 egs_id 删除展示行；候选/搜索历史可保留用于回溯。"""
+    if not egs_id:
+        return {"success": False, "message": "缺少 egs_id"}
+    conn = open_egs_db(db_path)
+    try:
+        cur = conn.execute("DELETE FROM egs_games WHERE egs_id = ?", (egs_id,))
+        conn.commit()
+        if cur.rowcount <= 0:
+            return {"success": False, "message": "未找到记录"}
+        return {"success": True, "message": "删除成功", "egs_id": egs_id}
+    finally:
+        conn.close()
