@@ -37,6 +37,16 @@ HEADERS = {
 }
 REQUEST_INTERVAL = 2.5
 MAX_PER_QUERY = 10
+REQUEST_TIMEOUT = 15
+MAX_ATTEMPTS = 2          # 原始请求 + 重试 1 次
+TIMEOUT_ABORT_LIMIT = 20  # 累计超时达到该值则终止本轮
+
+
+class TimeoutLimitExceeded(Exception):
+    """sukebei 累计超时超过阈值，用于终止整轮任务。"""
+
+
+_timeout_count = 0
 
 
 def ensure_egs_magnet_schema(conn: sqlite3.Connection) -> None:
@@ -81,12 +91,13 @@ def ensure_egs_magnet_schema(conn: sqlite3.Connection) -> None:
 
 
 def _search_once(session: requests.Session, query: str, logger: logging.Logger):
-    """单轮 sukebei 搜索，失败重试 3 次。"""
+    """单轮 sukebei 搜索；15s 超时、重试 1 次，累计超时超过阈值则终止。"""
+    global _timeout_count
     url = SUKEBEI_URL + "?f=0&c=1_3&q=" + quote(query)
     last_err = None
-    for attempt in range(3):
+    for attempt in range(MAX_ATTEMPTS):
         try:
-            resp = session.get(url, timeout=25)
+            resp = session.get(url, timeout=REQUEST_TIMEOUT)
             if resp.status_code == 429:
                 wait = 15 * (attempt + 1)
                 logger.warning("sukebei 429，等待%ss重试: %s", wait, query[:40])
@@ -94,10 +105,25 @@ def _search_once(session: requests.Session, query: str, logger: logging.Logger):
                 continue
             resp.raise_for_status()
             return _parse_result_page(resp.text)
+        except requests.Timeout as e:
+            _timeout_count += 1
+            last_err = e
+            logger.warning(
+                "超时(第%s次, 累计%s/%s) %s: %s",
+                attempt + 1, _timeout_count, TIMEOUT_ABORT_LIMIT,
+                query[:40], e,
+            )
+            if _timeout_count >= TIMEOUT_ABORT_LIMIT:
+                raise TimeoutLimitExceeded(
+                    f"累计超时达到 {_timeout_count} 次，终止本轮 EGS 磁链获取"
+                ) from e
+            if attempt + 1 < MAX_ATTEMPTS:
+                time.sleep(3)
         except Exception as e:  # noqa: BLE001
             last_err = e
             logger.warning("搜索失败(第%s次) %s: %s", attempt + 1, query[:40], e)
-            time.sleep(3 * (attempt + 1))
+            if attempt + 1 < MAX_ATTEMPTS:
+                time.sleep(3 * (attempt + 1))
     raise RuntimeError(f"搜索失败: {query[:40]}: {last_err}")
 
 
@@ -326,12 +352,14 @@ def run_magnet(year: int, month: int | None = None, force: bool = False,
                limit: int = 0, db_path: str | None = None,
                logger: logging.Logger | None = None) -> dict:
     """同步执行一轮 EGS 磁链搜索。"""
+    global _timeout_count
     own_logger = logger is None
     if own_logger:
         logging.basicConfig(level=logging.INFO,
                             format="%(asctime)s - %(levelname)s - %(message)s")
         logger = logging.getLogger("egs_magnet")
 
+    _timeout_count = 0
     conn = open_egs_db(db_path)
     try:
         ensure_egs_magnet_schema(conn)
@@ -339,13 +367,26 @@ def run_magnet(year: int, month: int | None = None, force: bool = False,
         status = {
             "year": year, "month": month, "force": force, "limit": limit,
             "total": len(rows), "selected": 0, "low_score": 0,
-            "no_result": 0, "skip_cache": 0, "error": 0, "results": [],
+            "no_result": 0, "skip_cache": 0, "error": 0,
+            "timeout_count": 0, "timeout_aborted": False, "results": [],
         }
         session = requests.Session()
         session.headers.update(HEADERS)
         for row in rows:
             try:
                 st, result = process_game(conn, session, row, logger, force=force)
+            except TimeoutLimitExceeded as e:
+                st = "error"
+                result = {
+                    "egs_id": row["egs_id"], "date": row["date"],
+                    "name": row["name"], "error": str(e),
+                }
+                logger.error("处理失败 %s / %s: %s", row["date"], row["name"], e)
+                status["error"] += 1
+                status["results"].append(result)
+                status["timeout_count"] = _timeout_count
+                status["timeout_aborted"] = True
+                break
             except Exception as e:  # noqa: BLE001
                 st = "error"
                 result = {
@@ -353,6 +394,7 @@ def run_magnet(year: int, month: int | None = None, force: bool = False,
                     "name": row["name"], "error": str(e),
                 }
                 logger.exception("处理失败 %s / %s", row["date"], row["name"])
+            status["timeout_count"] = _timeout_count
             status[st] = status.get(st, 0) + 1
             if result:
                 status["results"].append(result)
