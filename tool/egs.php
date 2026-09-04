@@ -11,7 +11,10 @@
         .ym-col { width: 96px; max-width: 96px; white-space: nowrap; }
         .game-name-cell { width: 320px; min-width: 260px; max-width: 420px; white-space: normal; word-wrap: break-word; }
         .company-col { width: 180px; max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .actions-col { width: 180px; max-width: 180px; white-space: nowrap; }
+        .actions-col { width: 220px; max-width: 220px; white-space: nowrap; }
+        .editable-cell { cursor: pointer; transition: background-color .15s; }
+        .editable-cell:hover { background-color: rgba(13,110,253,.08); text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; }
+        .editable-cell input { width: 100%; border: 1px solid #0d6efd; border-radius: 3px; padding: 2px 4px; font-size: inherit; font-family: inherit; }
     </style>
 </head>
 <body class="bg-light">
@@ -63,7 +66,7 @@
         <div class="card-header d-flex justify-content-between align-items-center">
             <div class="d-flex align-items-center gap-2">
                 <button id="toggle-select" class="btn btn-outline-secondary btn-sm" type="button">全选</button>
-                <button id="batch-delete" class="btn btn-outline-danger btn-sm" type="button" disabled>批量删除</button>
+                <button id="batch-115-download" class="btn btn-success btn-sm" type="button" disabled>批量115云下载</button>
             </div>
             <span id="page-info" class="text-muted small">加载中...</span>
         </div>
@@ -86,6 +89,37 @@
         <div class="card-footer d-flex justify-content-between align-items-center">
             <button id="prev-page" class="btn btn-outline-primary btn-sm">上一页</button>
             <button id="next-page" class="btn btn-outline-primary btn-sm">下一页</button>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="checkModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">磁链校验与115提交</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="check-modal-egs-id">
+                <div class="mb-2">
+                    <label class="form-label mb-0 small">游戏</label>
+                    <div id="modal-game-name" class="fw-semibold"></div>
+                </div>
+                <div class="mb-2">
+                    <label class="form-label mb-0 small">磁力链接</label>
+                    <textarea id="modal-magnet" class="form-control" rows="2" readonly></textarea>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label mb-0 small">115 保存路径</label>
+                    <input id="modal-save-path" class="form-control">
+                </div>
+                <div class="d-flex gap-2 mb-3">
+                    <button id="modal-check-btn" class="btn btn-outline-info btn-sm">检查115是否存在</button>
+                    <button id="modal-submit-btn" class="btn btn-success btn-sm">提交到115</button>
+                </div>
+                <div id="modal-result" class="small" style="white-space:pre-wrap;word-break:break-all;"></div>
+            </div>
         </div>
     </div>
 </div>
@@ -126,9 +160,12 @@
                     <textarea id="edit-link" class="form-control" rows="2"></textarea>
                 </div>
             </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-                <button type="button" class="btn btn-primary" id="edit-save-btn">保存</button>
+            <div class="modal-footer d-flex justify-content-between">
+                <button type="button" class="btn btn-outline-danger btn-sm" id="edit-delete-btn">删除记录</button>
+                <div>
+                    <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary btn-sm" id="edit-save-btn">保存</button>
+                </div>
             </div>
         </div>
     </div>
@@ -171,23 +208,30 @@
                 const ymText = ym ? ym.replace('-', '/') : '';
                 const magnet = row.link || '';
                 const nyaaName = row.nyaa_name || '';
+                const downloaded = parseInt(row.downloaded || 0, 10) === 1;
+                const submitted = parseInt(row.submitted_115 || 0, 10) === 1;
+                const rowClass = downloaded ? 'table-success' : submitted ? 'table-info' : '';
+                const canMagnet = !!magnet;
                 return `
-                    <tr data-egs-id="${esc(row.egs_id)}"
+                    <tr class="${rowClass}"
+                        data-egs-id="${esc(row.egs_id)}"
                         data-date="${esc(ym)}"
                         data-name="${esc(row.name)}"
                         data-company="${esc(row.company || '')}"
                         data-nyaa-name="${esc(nyaaName)}"
                         data-magnet="${esc(magnet)}"
-                        data-downloaded="${esc(row.downloaded || 0)}">
+                        data-downloaded="${esc(row.downloaded || 0)}"
+                        data-submitted-115="${esc(row.submitted_115 || 0)}"
+                        data-submitted-pick-code="${esc(row.submitted_pick_code || '')}">
                         <td class="check-col text-center">
                             <input type="checkbox" class="game-checkbox form-check-input">
                         </td>
                         <td class="ym-col">${esc(ymText)}</td>
-                        <td class="game-name-cell">${esc(row.name)}${nyaaName ? `<div class="text-muted small"${magnet ? ' style="display:none;"' : ''}>${esc(nyaaName)}</div>` : ''}</td>
+                        <td class="game-name-cell editable-cell">${esc(row.name)}${nyaaName ? `<div class="text-muted small"${magnet ? ' style="display:none;"' : ''}>${esc(nyaaName)}</div>` : ''}</td>
                         <td class="company-col">${esc(row.company || '')}</td>
                         <td class="actions-col">
-                            <button type="button" class="btn btn-outline-primary btn-sm edit-btn">编辑</button>
-                            <button type="button" class="btn btn-outline-danger btn-sm delete-btn">删除</button>
+                            <button type="button" class="btn btn-success btn-sm btn-115-submit" ${canMagnet ? '' : 'disabled'}>115云下载</button>
+                            <button type="button" class="btn btn-outline-secondary btn-sm magnet-check-btn" ${canMagnet ? '' : 'disabled'}>校验</button>
                         </td>
                     </tr>
                 `;
@@ -221,7 +265,7 @@
         const anyChecked = boxes.some(cb => cb.checked);
         const allChecked = boxes.length > 0 && boxes.every(cb => cb.checked);
         document.getElementById('toggle-select').textContent = allChecked ? '全不选' : '全选';
-        document.getElementById('batch-delete').disabled = !anyChecked;
+        document.getElementById('batch-115-download').disabled = !anyChecked;
     }
 
     document.getElementById('toggle-select').addEventListener('click', () => {
@@ -235,77 +279,217 @@
         if (e.target.matches('input.game-checkbox')) updateSelectionButtons();
     });
 
-    document.getElementById('batch-delete').addEventListener('click', async function () {
+    function yearFromRow(tr) {
+        return (tr.dataset.date || '').split('-')[0] || '';
+    }
+
+    async function updateEgsRow(egsId, body) {
+        const res = await fetch('api.php?action=egs_update', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ egs_id: egsId, ...body })
+        });
+        return await res.json();
+    }
+
+    async function submit115(tr, btn) {
+        const magnet = tr.dataset.magnet || '';
+        const year = yearFromRow(tr);
+        if (!magnet || !year) return;
+
+        const origText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = '提交中...';
+        try {
+            const res = await fetch('api.php?action=115_submit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ magnet, dir: `/GAL/GAL-${year}` })
+            });
+            const data = await res.json();
+            if (data.success) {
+                await updateEgsRow(tr.dataset.egsId, {
+                    new_submitted_115: 1,
+                    new_submitted_pick_code: data.pick_code || ''
+                });
+                btn.className = 'btn btn-success btn-sm disabled';
+                btn.textContent = '✓已提交';
+                setTimeout(() => load(), 300);
+            } else {
+                btn.className = 'btn btn-outline-danger btn-sm disabled';
+                btn.textContent = '✗失败';
+                alert('提交失败：' + (data.message || ''));
+            }
+        } catch (err) {
+            btn.className = 'btn btn-outline-danger btn-sm disabled';
+            btn.textContent = '✗失败';
+            alert('提交失败：' + err.message);
+        } finally {
+            setTimeout(() => {
+                btn.disabled = false;
+                btn.className = 'btn btn-success btn-sm btn-115-submit';
+                btn.textContent = origText;
+            }, 1500);
+        }
+    }
+
+    document.getElementById('games-body').addEventListener('click', e => {
+        const submitBtn = e.target.closest('.btn-115-submit');
+        const checkBtn = e.target.closest('.magnet-check-btn');
+        const nameCell = e.target.closest('.editable-cell');
+
+        if (submitBtn) {
+            const tr = submitBtn.closest('tr');
+            submit115(tr, submitBtn);
+            return;
+        }
+
+        if (checkBtn) {
+            const tr = checkBtn.closest('tr');
+            document.getElementById('check-modal-egs-id').value = tr.dataset.egsId || '';
+            document.getElementById('modal-game-name').textContent = tr.dataset.name || '-';
+            document.getElementById('modal-magnet').value = tr.dataset.magnet || '';
+            document.getElementById('modal-save-path').value = `/GAL/GAL-${yearFromRow(tr)}`;
+            document.getElementById('modal-result').textContent = '';
+            document.getElementById('modal-check-btn').disabled = false;
+            document.getElementById('modal-submit-btn').disabled = false;
+            new bootstrap.Modal(document.getElementById('checkModal')).show();
+            return;
+        }
+
+        if (nameCell) {
+            const tr = nameCell.closest('tr');
+            const date = tr.dataset.date || '';
+            const parts = date.split('-');
+            document.getElementById('edit-egs-id').value = tr.dataset.egsId || '';
+            document.getElementById('edit-year').value = parts[0] || '';
+            document.getElementById('edit-month').value = parts[1] ? parseInt(parts[1], 10) : '';
+            document.getElementById('edit-name').value = tr.dataset.name || '';
+            document.getElementById('edit-company').value = tr.dataset.company || '';
+            document.getElementById('edit-nyaa-name').value = tr.dataset.nyaaName || '';
+            document.getElementById('edit-link').value = tr.dataset.magnet || '';
+            new bootstrap.Modal(document.getElementById('editModal')).show();
+        }
+    });
+
+    document.getElementById('modal-check-btn').addEventListener('click', async function () {
+        const magnet = document.getElementById('modal-magnet').value.trim();
+        const dir = document.getElementById('modal-save-path').value.trim();
+        const egsId = document.getElementById('check-modal-egs-id').value;
+        if (!magnet) return;
+
+        this.disabled = true;
+        const resultEl = document.getElementById('modal-result');
+        resultEl.textContent = '检查中...';
+        try {
+            const res = await fetch('api.php?action=115_check', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ magnet, dir })
+            });
+            const data = await res.json();
+            let msg = '';
+            if (data.exists) {
+                msg += '该磁链已存在于 115 网盘\n';
+                if (data.in_offline_tasks) msg += '（离线任务列表中）\n';
+                msg += '置信度: ' + (data.confidence === 'high' ? '高' : data.confidence === 'low' ? '低' : '无') + '\n';
+                if (data.matched_files && data.matched_files.length > 0) {
+                    msg += '\n匹配文件:\n';
+                    data.matched_files.forEach(f => { msg += '  - ' + f.name + '\n'; });
+                }
+                if (egsId) await updateEgsRow(egsId, { new_downloaded: 1 });
+                setTimeout(() => {
+                    bootstrap.Modal.getInstance(document.getElementById('checkModal')).hide();
+                    load();
+                }, 300);
+            } else {
+                msg += '未在 115 网盘找到该磁链\n';
+                if (data.infohash_hex) msg += 'InfoHash: ' + data.infohash_hex + '\n';
+                if (data.dn) msg += '文件名: ' + data.dn;
+                msg += '\n\n可点击「提交到115」将其加入离线下载';
+            }
+            resultEl.textContent = msg;
+        } catch (err) {
+            resultEl.textContent = '检查失败: ' + err.message;
+        } finally {
+            this.disabled = false;
+        }
+    });
+
+    document.getElementById('modal-submit-btn').addEventListener('click', async function () {
+        const magnet = document.getElementById('modal-magnet').value.trim();
+        const dir = document.getElementById('modal-save-path').value.trim();
+        const egsId = document.getElementById('check-modal-egs-id').value;
+        if (!magnet) return;
+
+        this.disabled = true;
+        const resultEl = document.getElementById('modal-result');
+        resultEl.textContent = '提交中...';
+        try {
+            const res = await fetch('api.php?action=115_submit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ magnet, dir })
+            });
+            const data = await res.json();
+            if (data.success) {
+                resultEl.textContent = '提交成功！\nPick Code: ' + (data.pick_code || '') + '\n文件将保存到: ' + dir;
+                if (egsId) await updateEgsRow(egsId, {
+                    new_submitted_115: 1,
+                    new_submitted_pick_code: data.pick_code || ''
+                });
+                setTimeout(() => {
+                    bootstrap.Modal.getInstance(document.getElementById('checkModal')).hide();
+                    load();
+                }, 300);
+            } else {
+                resultEl.textContent = '提交失败: ' + (data.message || '');
+            }
+        } catch (err) {
+            resultEl.textContent = '提交失败: ' + err.message;
+        } finally {
+            this.disabled = false;
+        }
+    });
+
+    document.getElementById('batch-115-download').addEventListener('click', async function () {
         const rows = Array.from(document.querySelectorAll('#games-body tr'))
             .filter(tr => tr.querySelector('input.game-checkbox')?.checked);
-
         if (!rows.length) return;
-        if (!confirm(`确定删除选中的 ${rows.length} 条记录吗？`)) return;
 
         const btn = this;
         btn.disabled = true;
-        btn.textContent = '删除中...';
+        btn.textContent = '提交中...';
         let success = 0, fail = 0;
 
         for (const tr of rows) {
-            const egsId = tr.dataset.egsId;
+            const submitBtn = tr.querySelector('.btn-115-submit');
+            if (!tr.dataset.magnet || !yearFromRow(tr)) { fail++; continue; }
             try {
-                const res = await fetch('api.php?action=egs_delete', {
+                const res = await fetch('api.php?action=115_submit', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ egs_id: parseInt(egsId, 10) })
+                    body: JSON.stringify({ magnet: tr.dataset.magnet, dir: `/GAL/GAL-${yearFromRow(tr)}` })
                 });
                 const data = await res.json();
-                if (data.success) success++; else fail++;
+                if (data.success) {
+                    await updateEgsRow(tr.dataset.egsId, {
+                        new_submitted_115: 1,
+                        new_submitted_pick_code: data.pick_code || ''
+                    });
+                    success++;
+                } else {
+                    fail++;
+                }
             } catch {
                 fail++;
             }
         }
 
         btn.disabled = false;
-        btn.textContent = '批量删除';
-        alert(`删除完成：成功 ${success} 条，失败 ${fail} 条`);
+        btn.textContent = '批量115云下载';
+        alert(`提交完成：成功 ${success} 条，失败 ${fail} 条`);
         load();
-    });
-
-    document.getElementById('games-body').addEventListener('click', e => {
-        const editBtn = e.target.closest('.edit-btn');
-        const deleteBtn = e.target.closest('.delete-btn');
-        if (!editBtn && !deleteBtn) return;
-
-        const tr = (editBtn || deleteBtn).closest('tr');
-        const egsId = parseInt(tr.dataset.egsId, 10);
-        const date = tr.dataset.date || '';
-        const name = tr.dataset.name || '';
-
-        if (editBtn) {
-            const parts = date.split('-');
-            document.getElementById('edit-egs-id').value = egsId;
-            document.getElementById('edit-year').value = parts[0] || '';
-            document.getElementById('edit-month').value = parts[1] ? parseInt(parts[1], 10) : '';
-            document.getElementById('edit-name').value = name;
-            document.getElementById('edit-company').value = tr.dataset.company || '';
-            document.getElementById('edit-nyaa-name').value = tr.dataset.nyaaName || '';
-            document.getElementById('edit-link').value = tr.dataset.magnet || '';
-            new bootstrap.Modal(document.getElementById('editModal')).show();
-            return;
-        }
-
-        if (deleteBtn) {
-            if (!confirm(`确定删除该记录吗？\n\n${date} / ${name}`)) return;
-            deleteBtn.disabled = true;
-            fetch('api.php?action=egs_delete', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ egs_id: egsId })
-            }).then(r => r.json()).then(data => {
-                if (!data.success) alert('删除失败：' + (data.message || ''));
-                load();
-            }).catch(err => {
-                alert('删除失败：' + err.message);
-                deleteBtn.disabled = false;
-            });
-        }
     });
 
     document.getElementById('edit-save-btn').addEventListener('click', async function () {
@@ -328,12 +512,7 @@
         btn.disabled = true;
         btn.textContent = '保存中...';
         try {
-            const res = await fetch('api.php?action=egs_update', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body)
-            });
-            const data = await res.json();
+            const data = await updateEgsRow(egsId, body);
             if (data.success) {
                 bootstrap.Modal.getInstance(document.getElementById('editModal')).hide();
                 load();
@@ -345,6 +524,37 @@
         } finally {
             btn.disabled = false;
             btn.textContent = '保存';
+        }
+    });
+
+    document.getElementById('edit-delete-btn').addEventListener('click', async function () {
+        const egsId = parseInt(document.getElementById('edit-egs-id').value, 10);
+        const name = document.getElementById('edit-name').value.trim();
+        const year = document.getElementById('edit-year').value.trim();
+        const month = document.getElementById('edit-month').value.trim();
+        if (!confirm(`确定删除该记录吗？\n\n${year}-${month} / ${name}`)) return;
+
+        const btn = this;
+        btn.disabled = true;
+        btn.textContent = '删除中...';
+        try {
+            const res = await fetch('api.php?action=egs_delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ egs_id: egsId })
+            });
+            const data = await res.json();
+            if (data.success) {
+                bootstrap.Modal.getInstance(document.getElementById('editModal')).hide();
+                load();
+            } else {
+                alert('删除失败：' + (data.message || ''));
+            }
+        } catch (err) {
+            alert('删除失败：' + err.message);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = '删除记录';
         }
     });
 

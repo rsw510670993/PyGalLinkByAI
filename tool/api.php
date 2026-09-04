@@ -126,6 +126,14 @@ if ($action === 'egs_update') {
         $args[] = '--new-downloaded';
         $args[] = strval(intval($body['new_downloaded']));
     }
+    if (array_key_exists('new_submitted_115', $body) && $body['new_submitted_115'] !== null) {
+        $args[] = '--new-submitted-115';
+        $args[] = strval(intval($body['new_submitted_115']));
+    }
+    if (array_key_exists('new_submitted_pick_code', $body) && $body['new_submitted_pick_code'] !== null) {
+        $args[] = '--new-submitted-pick-code';
+        $args[] = strval($body['new_submitted_pick_code']);
+    }
 
     [$code, $data] = run_cli($args);
     json_response($data);

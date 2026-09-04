@@ -300,6 +300,8 @@ def update_egs_game_record(egs_id: int, new_date: str | None = None,
                            new_link: str | None = None,
                            new_nyaa_name: str | None = None,
                            new_downloaded: int | None = None,
+                           new_submitted_115: int | None = None,
+                           new_submitted_pick_code: str | None = None,
                            db_path: str | None = None) -> dict:
     """按 egs_id 修改展示层字段；原始 EGS 身份层保持不变。"""
     if not egs_id:
@@ -327,6 +329,10 @@ def update_egs_game_record(egs_id: int, new_date: str | None = None,
         updates["nyaa_name"] = str(new_nyaa_name).strip()
     if new_downloaded is not None:
         updates["downloaded"] = 1 if int(new_downloaded) else 0
+    if new_submitted_115 is not None:
+        updates["submitted_115"] = 1 if int(new_submitted_115) else 0
+    if new_submitted_pick_code is not None:
+        updates["submitted_pick_code"] = str(new_submitted_pick_code).strip()
 
     if not updates:
         return {"success": True, "message": "无变更", "egs_id": egs_id}

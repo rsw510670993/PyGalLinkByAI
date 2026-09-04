@@ -993,7 +993,7 @@ def cmd_egs_games(args):
         rows = cur.execute(
             f"""
             SELECT egs_id, date, name, company, release_ts, brand_kind,
-                   link, nyaa_name, downloaded
+                   link, nyaa_name, downloaded, submitted_115, submitted_pick_code
               FROM egs_games{where}
              ORDER BY date, release_ts, egs_id
              LIMIT ? OFFSET ?
@@ -1035,6 +1035,8 @@ def cmd_egs_update(args):
         new_link=args.new_link,
         new_nyaa_name=args.new_nyaa_name,
         new_downloaded=args.new_downloaded,
+        new_submitted_115=args.new_submitted_115,
+        new_submitted_pick_code=args.new_submitted_pick_code,
         db_path=args.db,
     ))
 
@@ -1205,6 +1207,10 @@ def build_parser():
     p_egs_update.add_argument("--new-nyaa-name", type=str, dest="new_nyaa_name")
     p_egs_update.add_argument("--new-downloaded", type=int,
                               choices=[0, 1], dest="new_downloaded")
+    p_egs_update.add_argument("--new-submitted-115", type=int,
+                              choices=[0, 1], dest="new_submitted_115")
+    p_egs_update.add_argument("--new-submitted-pick-code", type=str,
+                              dest="new_submitted_pick_code")
     p_egs_update.add_argument("--db", type=str)
     p_egs_update.set_defaults(func=cmd_egs_update)
 
