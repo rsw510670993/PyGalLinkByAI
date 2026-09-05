@@ -293,6 +293,7 @@
                 const reviewStatus = row.review_status || '';
                 const blacklisted = parseInt(row.review_blacklisted || 0, 10) === 1;
                 const showReview = candidateCount > 0 && !magnet && !blacklisted && reviewStatus !== 'rejected';
+                const pendingReview = showReview && (!reviewStatus || reviewStatus === 'pending');
                 const canMagnet = !!magnet;
                 const reviewBadge = pendingReview
                     ? '<span class="badge text-bg-warning ms-1">待审核</span>'
