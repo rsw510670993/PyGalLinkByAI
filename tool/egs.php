@@ -46,7 +46,7 @@
                         <?php endfor; ?>
                     </select>
                 </div>
-                <div class="col-12 col-md-3">
+                <div class="col-12 col-md-4">
                     <label class="form-label mb-1" for="q">搜索</label>
                     <input id="q" class="form-control" type="search" placeholder="游戏名 / 公司 / 假名">
                 </div>
@@ -65,13 +65,12 @@
                         <option value="CIRCLE">社团</option>
                     </select>
                 </div>
-                <div class="col-6 col-md-2 d-grid">
+                <!-- 上行放不下的操作按钮固定拆到第二行：筛选条件一行 + 操作按钮一行 -->
+                <div class="col-12 d-flex gap-2">
                     <button class="btn btn-primary" type="submit">筛选</button>
+                    <button id="review-blacklist-btn" class="btn btn-outline-secondary ms-auto" type="button">审核黑名单</button>
                 </div>
             </form>
-            <div class="d-flex justify-content-end mt-2">
-                <button id="review-blacklist-btn" class="btn btn-outline-secondary btn-sm" type="button">审核黑名单</button>
-            </div>
         </div>
     </div>
 
