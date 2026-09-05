@@ -404,7 +404,7 @@ def process_game(conn: sqlite3.Connection, session: requests.Session, row,
                 selected_infohash=excluded.selected_infohash, tried_at=excluded.tried_at,
                 review_status='none', reviewed_at=excluded.reviewed_at, review_note=NULL
             """,
-            (egs_id, date, name, len(cands), best_score, best_key, tried_at),
+            (egs_id, date, name, len(cands), best_score, best_key, tried_at, tried_at),
         )
         conn.commit()
         result["selected_title"] = best.get("nyaa_title")
