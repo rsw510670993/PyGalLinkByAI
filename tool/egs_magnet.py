@@ -118,6 +118,21 @@ def ensure_egs_magnet_schema(conn: sqlite3.Connection) -> None:
          )
         """
     )
+    # 审核采用后同样只保留被采用的候选。
+    conn.execute(
+        """
+        DELETE FROM egs_nyaa_candidates
+         WHERE EXISTS (
+             SELECT 1
+               FROM egs_nyaa_search_log l
+              WHERE l.egs_id = egs_nyaa_candidates.egs_id
+                AND l.review_status = 'approved'
+                AND l.selected_infohash IS NOT NULL
+                AND l.selected_infohash != ''
+                AND COALESCE(egs_nyaa_candidates.infohash_hex, '') != l.selected_infohash
+         )
+        """
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_egs_nyaa_candidates_egs_id ON egs_nyaa_candidates(egs_id)")
     conn.commit()
 
@@ -676,6 +691,14 @@ def decide_review(egs_id: int, decision: str, candidate_id: int | None = None,
                     "UPDATE egs_nyaa_candidates SET selected=1 WHERE id=? AND egs_id=?",
                     (int(candidate_id), egs_id),
                 )
+                # 采用后也只保留被采用的那条候选。
+                conn.execute(
+                    "DELETE FROM egs_nyaa_candidates WHERE egs_id=? AND id != ?",
+                    (egs_id, int(candidate_id)),
+                )
+            else:
+                # 手动磁链审核通过时，原候选都不保留。
+                conn.execute("DELETE FROM egs_nyaa_candidates WHERE egs_id=?", (egs_id,))
             conn.execute(
                 """
                 UPDATE egs_games
