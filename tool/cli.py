@@ -1009,6 +1009,22 @@ def cmd_egs_games(args):
         if args.brand_kind:
             conditions.append("brand_kind = ?")
             params.append(str(args.brand_kind).strip().upper())
+        if getattr(args, "review", "") == "pending":
+            conditions.append("""
+                (link IS NULL OR link = '')
+                AND NOT EXISTS (
+                    SELECT 1 FROM egs_review_company_blacklist b
+                     WHERE b.company IN (egs_games.company, egs_games.egs_company)
+                )
+                AND EXISTS (
+                    SELECT 1 FROM egs_nyaa_candidates c
+                     WHERE c.egs_id = egs_games.egs_id
+                )
+                AND COALESCE((
+                    SELECT l.review_status FROM egs_nyaa_search_log l
+                     WHERE l.egs_id = egs_games.egs_id
+                ), 'pending') = 'pending'
+            """)
         if args.q:
             q = str(args.q).strip()
             if q:
@@ -1067,6 +1083,7 @@ def cmd_egs_games(args):
             "total": int(total or 0),
             "year": args.year,
             "month": args.month,
+            "review": getattr(args, "review", "") or "",
             "q": args.q or "",
         })
     finally:
@@ -1290,6 +1307,7 @@ def build_parser():
     p_egs_games.add_argument("--month", type=int)
     p_egs_games.add_argument("--q", type=str, default="")
     p_egs_games.add_argument("--brand-kind", type=str, dest="brand_kind", default="")
+    p_egs_games.add_argument("--review", type=str, choices=["", "pending"], default="")
     p_egs_games.add_argument("--db", type=str)
     p_egs_games.set_defaults(func=cmd_egs_games)
 

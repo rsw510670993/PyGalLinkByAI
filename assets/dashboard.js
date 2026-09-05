@@ -72,7 +72,7 @@
                 const preflight = await api(`pipeline_preflight&pipeline_action=check&start_year=${startYear}&end_year=${endYear}&month=${month}`);
                 if (Number(preflight.count || 0) > 0) {
                     $('pending-review-count').textContent = preflight.count;
-                    $('pending-review-link').href = `${basePath}/tool/egs.php?year=${startYear}${month >= 1 && month <= 12 ? `&month=${month}` : ''}`;
+                    $('pending-review-link').href = `${basePath}/tool/egs.php?review=pending`;
                     bootstrap.Modal.getOrCreateInstance($('pendingReviewModal')).show();
                     return;
                 }

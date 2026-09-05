@@ -46,9 +46,16 @@
                         <?php endfor; ?>
                     </select>
                 </div>
-                <div class="col-12 col-md-4">
+                <div class="col-12 col-md-3">
                     <label class="form-label mb-1" for="q">搜索</label>
                     <input id="q" class="form-control" type="search" placeholder="游戏名 / 公司 / 假名">
+                </div>
+                <div class="col-6 col-md-2">
+                    <label class="form-label mb-1" for="review">审核</label>
+                    <select id="review" class="form-select">
+                        <option value="">全部</option>
+                        <option value="pending">待审核</option>
+                    </select>
                 </div>
                 <div class="col-6 col-md-2">
                     <label class="form-label mb-1" for="brand-kind">公司/社团</label>
@@ -267,6 +274,7 @@
         const month = document.getElementById('month').value;
         const q = document.getElementById('q').value.trim();
         const brandKind = document.getElementById('brand-kind').value;
+        const review = document.getElementById('review').value;
         const params = new URLSearchParams({
             action: 'egs_games',
             page: currentPage,
@@ -276,6 +284,7 @@
         if (month) params.set('month', month);
         if (q) params.set('q', q);
         if (brandKind) params.set('brand_kind', brandKind);
+        if (review) params.set('review', review);
         return params.toString();
     }
 
@@ -904,6 +913,8 @@
         document.getElementById('q').value = params.get('q') || '';
         const brandKind = params.get('brand_kind');
         document.getElementById('brand-kind').value = brandKind === 'CIRCLE' || brandKind === 'CORPORATION' ? brandKind : '';
+        const review = params.get('review');
+        document.getElementById('review').value = review === 'pending' ? 'pending' : '';
         load();
     }
     initFilters();

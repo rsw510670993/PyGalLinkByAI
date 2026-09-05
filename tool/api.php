@@ -133,12 +133,17 @@ if ($action === 'egs_games') {
     if (!in_array($brandKind, ['CIRCLE', 'CORPORATION'], true)) {
         $brandKind = '';
     }
+    $review = trim(strval($_GET['review'] ?? ''));
+    if (!in_array($review, ['pending'], true)) {
+        $review = '';
+    }
 
     $args = ['egs', 'games', '--page', strval(max(1, $page)), '--per-page', strval(max(1, $perPage))];
     if ($year !== null) { $args[] = '--year'; $args[] = strval($year); }
     if ($month !== null) { $args[] = '--month'; $args[] = strval($month); }
     if ($q !== '') { $args[] = '--q'; $args[] = $q; }
     if ($brandKind !== '') { $args[] = '--brand-kind'; $args[] = $brandKind; }
+    if ($review !== '') { $args[] = '--review'; $args[] = $review; }
 
     [$code, $data] = run_cli($args);
     json_response($data);
