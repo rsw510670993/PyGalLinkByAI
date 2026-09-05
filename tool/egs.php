@@ -50,6 +50,9 @@
                     <button class="btn btn-primary" type="submit">筛选</button>
                 </div>
             </form>
+            <div class="d-flex justify-content-end mt-2">
+                <button id="review-blacklist-btn" class="btn btn-outline-secondary btn-sm" type="button">审核黑名单</button>
+            </div>
         </div>
     </div>
 
@@ -154,6 +157,39 @@
     </div>
 </div>
 
+<div class="modal fade" id="blacklistModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">审核黑名单</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="table-responsive mb-3" style="max-height:240px;overflow:auto;">
+                    <table class="table table-sm align-middle mb-0">
+                        <thead><tr><th>公司</th><th>备注</th><th class="text-end">操作</th></tr></thead>
+                        <tbody id="blacklist-body"></tbody>
+                    </table>
+                </div>
+                <div class="row g-2">
+                    <div class="col-12 col-md-6">
+                        <label class="form-label mb-0 small" for="blacklist-company">公司名</label>
+                        <input id="blacklist-company" class="form-control form-control-sm">
+                    </div>
+                    <div class="col-12 col-md-6">
+                        <label class="form-label mb-0 small" for="blacklist-note">备注</label>
+                        <input id="blacklist-note" class="form-control form-control-sm">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">关闭</button>
+                <button type="button" class="btn btn-primary btn-sm" id="blacklist-add-btn">添加</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <div class="modal fade" id="editModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content">
@@ -243,13 +279,16 @@
                 const rowClass = downloaded ? 'table-success' : submitted ? 'table-info' : '';
                 const candidateCount = parseInt(row.candidate_count || 0, 10);
                 const reviewStatus = row.review_status || '';
-                const statusPending = !reviewStatus || reviewStatus === 'pending';
-                const pendingReview = candidateCount > 0 && statusPending && (!magnet || !!reviewStatus);
-                const canMagnet = !!magnet && !pendingReview;
+                const blacklisted = parseInt(row.review_blacklisted || 0, 10) === 1;
+                const showReview = candidateCount > 0 && !magnet && !blacklisted;
+                const pendingReview = showReview && (!reviewStatus || reviewStatus === 'pending');
+                const canMagnet = !!magnet;
                 const reviewBadge = pendingReview
                     ? '<span class="badge text-bg-warning ms-1">待审核</span>'
-                    : reviewStatus === 'rejected' ? '<span class="badge text-bg-secondary ms-1">已拒绝</span>' : '';
-                const reviewBtn = candidateCount > 0
+                    : (!blacklisted && !magnet && reviewStatus === 'rejected')
+                        ? '<span class="badge text-bg-secondary ms-1">已拒绝</span>'
+                        : '';
+                const reviewBtn = showReview
                     ? '<button type="button" class="btn btn-outline-warning btn-sm review-btn">审核</button>'
                     : '';
                 return `
@@ -497,6 +536,83 @@
             egs_id: parseInt(document.getElementById('review-modal-egs-id').value, 10),
             decision: 'reopen'
         });
+    });
+
+    async function loadBlacklist() {
+        const tbody = document.getElementById('blacklist-body');
+        tbody.innerHTML = '<tr><td colspan="3" class="text-center text-muted py-2">加载中...</td></tr>';
+        try {
+            const res = await fetch('api.php?action=egs_review_blacklist', { cache: 'no-store' });
+            const data = await res.json();
+            if (!data.success) throw new Error(data.message || '读取失败');
+            const rows = data.data || [];
+            if (!rows.length) {
+                tbody.innerHTML = '<tr><td colspan="3" class="text-center text-muted py-2">暂无公司</td></tr>';
+                return;
+            }
+            tbody.innerHTML = rows.map(row => `
+                <tr>
+                    <td class="fw-semibold">${esc(row.company)}</td>
+                    <td class="small text-muted">${esc(row.note || '')}</td>
+                    <td class="text-end">
+                        <button type="button" class="btn btn-outline-danger btn-sm blacklist-remove-btn" data-company="${esc(row.company)}">删除</button>
+                    </td>
+                </tr>
+            `).join('');
+        } catch (err) {
+            tbody.innerHTML = `<tr><td colspan="3" class="text-center text-danger py-2">${esc(err.message)}</td></tr>`;
+        }
+    }
+
+    document.getElementById('review-blacklist-btn').addEventListener('click', loadBlacklist);
+
+    document.getElementById('blacklist-add-btn').addEventListener('click', async function () {
+        const btn = this;
+        const company = document.getElementById('blacklist-company').value.trim();
+        const note = document.getElementById('blacklist-note').value.trim();
+        if (!company) return;
+        btn.disabled = true;
+        btn.textContent = '保存中...';
+        try {
+            const res = await fetch('api.php?action=egs_review_blacklist_add', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ company, note })
+            });
+            const data = await res.json();
+            if (!data.success) throw new Error(data.message || '保存失败');
+            document.getElementById('blacklist-company').value = '';
+            document.getElementById('blacklist-note').value = '';
+            await loadBlacklist();
+            load();
+        } catch (err) {
+            alert('添加失败：' + err.message);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = '添加';
+        }
+    });
+
+    document.getElementById('blacklist-body').addEventListener('click', async e => {
+        const btn = e.target.closest('.blacklist-remove-btn');
+        if (!btn) return;
+        const company = btn.dataset.company || '';
+        if (!confirm(`确定从审核黑名单移除 ${company} 吗？`)) return;
+        btn.disabled = true;
+        try {
+            const res = await fetch('api.php?action=egs_review_blacklist_remove', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ company })
+            });
+            const data = await res.json();
+            if (!data.success) throw new Error(data.message || '删除失败');
+            await loadBlacklist();
+            load();
+        } catch (err) {
+            alert('删除失败：' + err.message);
+            btn.disabled = false;
+        }
     });
 
     document.getElementById('games-body').addEventListener('click', e => {

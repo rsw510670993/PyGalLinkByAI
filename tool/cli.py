@@ -987,10 +987,11 @@ def cmd_egs_status(args):
 
 
 def cmd_egs_games(args):
-    from tool.egs_core import open_egs_db
+    from tool.egs_core import open_egs_db, ensure_review_blacklist_schema
     conn = open_egs_db(args.db)
     try:
         cur = conn.cursor()
+        ensure_review_blacklist_schema(conn)
         cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='egs_games'")
         if cur.fetchone() is None:
             _print({"data": [], "current_page": int(args.page), "per_page": int(args.per_page),
@@ -1037,6 +1038,12 @@ def cmd_egs_games(args):
             , (SELECT l.review_status FROM egs_nyaa_search_log l
                 WHERE l.egs_id = egs_games.egs_id) AS review_status
             """
+        review_select += """
+        , EXISTS (
+              SELECT 1 FROM egs_review_company_blacklist b
+               WHERE b.company IN (egs_games.company, egs_games.egs_company)
+          ) AS review_blacklisted
+        """
         rows = cur.execute(
             f"""
             SELECT egs_id, date, name, company, release_ts, brand_kind,
@@ -1110,6 +1117,28 @@ def cmd_egs_review_decide(args):
         note=args.note,
         db_path=args.db,
     ))
+
+
+def cmd_egs_review_blacklist(args):
+    from tool.egs_core import (
+        list_review_company_blacklist,
+        add_review_company_blacklist,
+        remove_review_company_blacklist,
+    )
+    if args.action == "add":
+        _print(add_review_company_blacklist(args.company, args.note, db_path=args.db))
+    elif args.action == "remove":
+        _print(remove_review_company_blacklist(args.company, db_path=args.db))
+    else:
+        conn = None
+        from tool.egs_core import open_egs_db, ensure_review_blacklist_schema
+        conn = open_egs_db(args.db)
+        try:
+            ensure_review_blacklist_schema(conn)
+            _print({"success": True, "data": list_review_company_blacklist(conn)})
+        finally:
+            if conn:
+                conn.close()
 
 
 def build_parser():
@@ -1304,6 +1333,21 @@ def build_parser():
     p_egs_review_decide.add_argument("--note", type=str)
     p_egs_review_decide.add_argument("--db", type=str)
     p_egs_review_decide.set_defaults(func=cmd_egs_review_decide)
+
+    p_egs_review_blacklist = egs_sub.add_parser("review_blacklist")
+    egs_blacklist_sub = p_egs_review_blacklist.add_subparsers(dest="action", required=True)
+    p_blacklist_list = egs_blacklist_sub.add_parser("list")
+    p_blacklist_list.add_argument("--db", type=str)
+    p_blacklist_list.set_defaults(func=cmd_egs_review_blacklist)
+    p_blacklist_add = egs_blacklist_sub.add_parser("add")
+    p_blacklist_add.add_argument("--company", required=True)
+    p_blacklist_add.add_argument("--note", default="")
+    p_blacklist_add.add_argument("--db", type=str)
+    p_blacklist_add.set_defaults(func=cmd_egs_review_blacklist)
+    p_blacklist_remove = egs_blacklist_sub.add_parser("remove")
+    p_blacklist_remove.add_argument("--company", required=True)
+    p_blacklist_remove.add_argument("--db", type=str)
+    p_blacklist_remove.set_defaults(func=cmd_egs_review_blacklist)
 
     p_auto = sub.add_parser("auto")
     auto_sub = p_auto.add_subparsers(dest="action", required=True)

@@ -109,6 +109,78 @@ def ensure_egs_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def ensure_review_blacklist_schema(conn: sqlite3.Connection) -> None:
+    """公司级审核黑名单：低分候选只入库，不在列表显示审核入口。"""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS egs_review_company_blacklist (
+            company    TEXT COLLATE NOCASE PRIMARY KEY,
+            note       TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO egs_review_company_blacklist (company, note)
+        VALUES (?, ?)
+        """,
+        ("kawaiinium", "移植老游戏到NS/PS平台，低分候选多为原版资源，不显示审核"),
+    )
+    conn.commit()
+
+
+def list_review_company_blacklist(conn: sqlite3.Connection) -> list[dict]:
+    ensure_review_blacklist_schema(conn)
+    return [
+        dict(r) for r in conn.execute(
+            "SELECT company, note, created_at FROM egs_review_company_blacklist ORDER BY company"
+        ).fetchall()
+    ]
+
+
+def add_review_company_blacklist(company: str, note: str | None = None,
+                                 db_path: str | None = None) -> dict:
+    company = (company or "").strip()
+    if not company:
+        return {"success": False, "message": "公司名不能为空"}
+    conn = open_egs_db(db_path)
+    try:
+        ensure_review_blacklist_schema(conn)
+        conn.execute(
+            """
+            INSERT INTO egs_review_company_blacklist (company, note)
+            VALUES (?, ?)
+            ON CONFLICT(company) DO UPDATE SET note=excluded.note
+            """,
+            (company, (note or "").strip() or None),
+        )
+        conn.commit()
+        return {"success": True, "message": "已加入黑名单", "company": company}
+    finally:
+        conn.close()
+
+
+def remove_review_company_blacklist(company: str,
+                                    db_path: str | None = None) -> dict:
+    company = (company or "").strip()
+    if not company:
+        return {"success": False, "message": "公司名不能为空"}
+    conn = open_egs_db(db_path)
+    try:
+        ensure_review_blacklist_schema(conn)
+        cur = conn.execute(
+            "DELETE FROM egs_review_company_blacklist WHERE company=?",
+            (company,),
+        )
+        conn.commit()
+        if cur.rowcount:
+            return {"success": True, "message": "已移除黑名单", "company": company}
+        return {"success": False, "message": "黑名单中不存在该公司"}
+    finally:
+        conn.close()
+
+
 def build_month_sql(year: int, month: int) -> str:
     if not (1 <= month <= 12):
         raise ValueError("month must be 1..12")

@@ -206,6 +206,33 @@ if ($action === 'egs_review_decide') {
     json_response($data);
 }
 
+if ($action === 'egs_review_blacklist') {
+    [$code, $data] = run_cli(['egs', 'review_blacklist', 'list']);
+    json_response($data);
+}
+
+if ($action === 'egs_review_blacklist_add') {
+    $body = read_json_body();
+    $company = trim(strval($body['company'] ?? ''));
+    if ($company === '') {
+        json_response(['success' => false, 'message' => '公司名不能为空']);
+    }
+    $args = ['egs', 'review_blacklist', 'add', '--company', $company];
+    if (!empty($body['note'])) { $args[] = '--note'; $args[] = strval($body['note']); }
+    [$code, $data] = run_cli($args);
+    json_response($data);
+}
+
+if ($action === 'egs_review_blacklist_remove') {
+    $body = read_json_body();
+    $company = trim(strval($body['company'] ?? ''));
+    if ($company === '') {
+        json_response(['success' => false, 'message' => '公司名不能为空']);
+    }
+    [$code, $data] = run_cli(['egs', 'review_blacklist', 'remove', '--company', $company]);
+    json_response($data);
+}
+
 if ($action === 'calendar') {
     $year = as_int($_GET['year'] ?? null, null);
     $args = ['calendar'];
