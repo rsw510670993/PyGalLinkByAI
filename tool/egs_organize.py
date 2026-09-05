@@ -103,21 +103,26 @@ def resolve_dn_timestamp(link, release_ts=None):
 
 
 def compute_target_name(dn_date, company, name, config=None, date_code=None):
-    """目标文件夹名: [{dn_date}][{company}]{name}，如 [2012-01-27][みなとそふと]真剣…S
+    """目标文件夹名: [{compact_date}][{company}]{name}，如 [20260116][みなとそふと]真剣…S
 
-    占位符: {dn_date}=YYYY-MM-DD（推荐）；{date}/{date_code}=旧6位码（兼容）。
+    占位符: {compact_date}=YYYYMMDD（推荐）；{dn_date}=YYYY-MM-DD；{date}/{date_code}=旧6位码（兼容）。
     """
     if not dn_date:
         return None
     config = config or {}
-    fmt = config.get("organize_name_format", "[{dn_date}][{company}]{name}")
+    compact_date = str(dn_date).replace('-', '')
+    fmt = config.get("organize_name_format", "[{compact_date}][{company}]{name}")
     if company:
-        return fmt.format(dn_date=dn_date, date=date_code or dn_date,
-                          date_code=date_code or dn_date, company=company, name=name)
+        return fmt.format(dn_date=dn_date, compact_date=compact_date,
+                          date=date_code or compact_date,
+                          date_code=date_code or compact_date,
+                          company=company, name=name)
     # 无公司名：去掉公司占位段
     fmt2 = re.sub(r"\[{company}\]", "", fmt)
-    return fmt2.format(dn_date=dn_date, date=date_code or dn_date,
-                       date_code=date_code or dn_date, name=name)
+    return fmt2.format(dn_date=dn_date, compact_date=compact_date,
+                       date=date_code or compact_date,
+                       date_code=date_code or compact_date,
+                       name=name)
 
 
 def target_year_dir(dn_date):

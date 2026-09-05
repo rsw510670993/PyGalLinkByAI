@@ -96,7 +96,7 @@ class PipelineTests(unittest.TestCase):
         conn=sqlite3.connect(self.db)
         self.addCleanup(conn.close)
         organize.ensure_folder_schema(conn)
-        target='[2026-01-01][Brand]Game3'
+        target='[20260101][Brand]Game3'
         location=dict(cid='123',pid='12',name=target,parent_path='/GAL/GAL-2026',is_dir=True)
         with patch.object(organize,'locate_by_search',return_value=location), patch.object(organize,'read_config',return_value={}):
             result=organize.organize_single('2026-01','Game3',dry_run=True,conn=conn)
@@ -108,7 +108,7 @@ class PipelineTests(unittest.TestCase):
         conn=sqlite3.connect(self.db)
         self.addCleanup(conn.close)
         organize.ensure_folder_schema(conn)
-        target='[2026-01-01][Brand]Game1'
+        target='[20260101][Brand]Game1'
         location=dict(cid='123',pid='5',name=target,parent_path='/Old',is_dir=True)
         for children,expected in [([target],'conflict'),(None,'error')]:
             with patch.object(organize,'locate_by_search',return_value=location), patch.object(organize,'read_config',return_value={}), patch.object(organize,'resolve_cid',return_value='12'), patch.object(organize,'list_dir_children_names',return_value=children), patch.object(organize,'move_item') as move:
@@ -121,7 +121,7 @@ class PipelineTests(unittest.TestCase):
         conn=sqlite3.connect(self.db)
         self.addCleanup(conn.close)
         organize.ensure_folder_schema(conn)
-        target='[2026-01-01][Brand]Game1'
+        target='[20260101][Brand]Game1'
         location=dict(cid='123',pid='5',name='OldName',parent_path='/Old',is_dir=True)
         with patch.object(organize,'locate_by_search',return_value=location), patch.object(organize,'read_config',return_value={}), patch.object(organize,'resolve_cid',return_value='12'), patch.object(organize,'list_dir_children_names',return_value=[]), patch.object(organize,'rename_item',return_value={'success':True}) as rename, patch.object(organize,'get_item_name',return_value=target), patch.object(organize,'move_item',return_value={'success':True}) as move, patch.object(organize,'parent_crumbs_path',return_value='/GAL/GAL-2026'):
             result=organize.organize_single('2026-01','Game1',dry_run=False,conn=conn)
