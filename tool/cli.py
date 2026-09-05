@@ -57,7 +57,15 @@ def _download_status_default():
 
 
 def cmd_years(args):
-    years = tool.get_years_list()
+    if args.source == "egs":
+        from tool.egs_core import open_egs_db
+        conn = open_egs_db()
+        try:
+            years = [int(row[0]) for row in conn.execute("SELECT DISTINCT substr(date,1,4) FROM egs_games ORDER BY 1 DESC")]
+        finally:
+            conn.close()
+    else:
+        years = tool.get_years_list()
     _print({"years": years})
 
 
@@ -70,8 +78,8 @@ def cmd_calendar(args):
     start_year = base_year - 2
     end_year = base_year
 
-    conn = tool.core.open_db()
-    tool.core.ensure_getchu_schema(conn)
+    from tool.egs_core import open_egs_db
+    conn = open_egs_db()
     cursor = conn.cursor()
     cursor.execute(
         """
@@ -82,7 +90,7 @@ def cmd_calendar(args):
             SUM(CASE WHEN link IS NOT NULL AND link != '' THEN 1 ELSE 0 END) as magnet_total,
             SUM(CASE WHEN link IS NOT NULL AND link != '' AND COALESCE(downloaded, 0) = 1 THEN 1 ELSE 0 END) as magnet_downloaded,
             SUM(CASE WHEN link IS NOT NULL AND link != '' AND COALESCE(submitted_115, 0) = 1 THEN 1 ELSE 0 END) as magnet_submitted
-        FROM getchu_games
+        FROM egs_games
         WHERE CAST(substr(date, 1, 4) AS INTEGER) BETWEEN ? AND ?
         GROUP BY year, month
         ORDER BY year DESC, month DESC
@@ -322,6 +330,7 @@ def cmd_download_start(args):
             str(year),
             "--month",
             str(month),
+            "--source", args.source,
         ],
         cwd=_base_dir(),
         stdout=launch_fp,
@@ -532,7 +541,7 @@ def cmd_115_check_all_start(args):
     worker_args = [
         sys.executable,
         os.path.join(_base_dir(), "cli.py"),
-        "115", "check_all", "worker",
+        "115", "check_all", "worker", "--source", args.source,
     ]
     if args.year:
         worker_args += ["--year", str(args.year)]
@@ -620,6 +629,7 @@ def cmd_115_check_all_worker(args):
 
     status = {
         "running": True,
+        "source": args.source,
         "pid": os.getpid(),
         "year": int(args.year) if getattr(args, "year", None) else None,
         "month": int(args.month) if getattr(args, "month", None) else None,
@@ -634,10 +644,17 @@ def cmd_115_check_all_worker(args):
     }
     write_json_atomic(status_path, status)
 
-    conn = tool.core.open_db()
-    tool.core.ensure_getchu_schema(conn)
+    is_egs = args.source == "egs"
+    if is_egs:
+        from tool.egs_core import open_egs_db
+        conn = open_egs_db()
+    else:
+        conn = tool.core.open_db()
+        tool.core.ensure_getchu_schema(conn)
     cursor = conn.cursor()
     base_sql = "SELECT date, name, link FROM getchu_games WHERE link IS NOT NULL AND link != '' AND COALESCE(downloaded, 0) = 0"
+    if is_egs:
+        base_sql = base_sql.replace("SELECT date, name, link FROM getchu_games", "SELECT date, name, link, egs_id FROM egs_games")
     sql_params = []
     if args.year and args.month:
         base_sql += " AND substr(date, 1, 4) = ? AND CAST(substr(date, 6) AS INTEGER) = ?"
@@ -666,7 +683,8 @@ def cmd_115_check_all_worker(args):
     t = threading.Thread(target=_heartbeat, daemon=True)
     t.start()
 
-    for date, name, link in rows:
+    for row in rows:
+        date, name, link = tuple(row)[:3]
         try:
             status["current"] = {"date": date, "name": name}
             status["checked"] += 1
@@ -676,7 +694,15 @@ def cmd_115_check_all_worker(args):
             if err:
                 status["errors"].append(f"{date}/{name}: {err}")
             elif isinstance(result, dict) and result.get("exists"):
-                tool.core.set_downloaded_status(date, name, 1, result.get("infohash_hex"))
+                if is_egs:
+                    conn = open_egs_db()
+                    try:
+                        conn.execute("UPDATE egs_games SET downloaded = 1, infohash_hex = ?, updated_at = ? WHERE egs_id = ? AND link = ?", (result.get("infohash_hex"), now_ts(), row[3], link))
+                        conn.commit()
+                    finally:
+                        conn.close()
+                else:
+                    tool.core.set_downloaded_status(date, name, 1, result.get("infohash_hex"))
                 status["found_downloaded"] += 1
         except Exception as e:
             status["errors"].append(f"{date}/{name}: {e}")
@@ -1051,6 +1077,7 @@ def build_parser():
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_years = sub.add_parser("years")
+    p_years.add_argument("--source", choices=["getchu", "egs"], default="getchu")
     p_years.set_defaults(func=cmd_years)
 
     p_calendar = sub.add_parser("calendar")
@@ -1089,6 +1116,7 @@ def build_parser():
     p_download_start = download_sub.add_parser("start")
     p_download_start.add_argument("--year", type=int, required=True)
     p_download_start.add_argument("--month", type=int)
+    p_download_start.add_argument("--source", choices=["getchu", "egs"], default="getchu")
     p_download_start.set_defaults(func=cmd_download_start)
 
     p_download_stop = download_sub.add_parser("stop")
@@ -1134,6 +1162,7 @@ def build_parser():
     p_115_check_all_start = check_all_sub.add_parser("start")
     p_115_check_all_start.add_argument("--year", type=int)
     p_115_check_all_start.add_argument("--month", type=int)
+    p_115_check_all_start.add_argument("--source", choices=["getchu", "egs"], default="getchu")
     p_115_check_all_start.set_defaults(func=cmd_115_check_all_start)
 
     p_115_check_all_status = check_all_sub.add_parser("status")
@@ -1145,6 +1174,7 @@ def build_parser():
     p_115_check_all_worker = check_all_sub.add_parser("worker")
     p_115_check_all_worker.add_argument("--year", type=int)
     p_115_check_all_worker.add_argument("--month", type=int)
+    p_115_check_all_worker.add_argument("--source", choices=["getchu", "egs"], default="getchu")
     p_115_check_all_worker.set_defaults(func=cmd_115_check_all_worker)
 
     p_update = sub.add_parser("update_game")

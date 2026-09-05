@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>EGS 数据管理</title>
+    <title>EGS 数据 · pyGal</title>
     <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.1/css/bootstrap.min.css" rel="stylesheet">
     <style>
         #gamesTable { table-layout: fixed; }
@@ -18,18 +18,7 @@
     </style>
 </head>
 <body class="bg-light">
-<?php $base = rtrim(dirname(dirname($_SERVER['SCRIPT_NAME'])), '/'); ?>
-<nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-    <div class="container">
-        <a class="navbar-brand" href="#">EGS 数据管理</a>
-        <div class="navbar-nav">
-            <a class="nav-link" href="<?= $base ?>/index.php">首页</a>
-            <a class="nav-link" href="<?= $base ?>/tool/data.php">旧数据展示</a>
-            <a class="nav-link active" href="<?= $base ?>/tool/egs.php">EGS 数据</a>
-            <a class="nav-link" href="<?= $base ?>/calendar.php">年历</a>
-        </div>
-    </div>
-</nav>
+<?php require dirname(__DIR__) . '/includes/header.php'; ?>
 
 <div class="container mt-4">
     <div class="card mb-3">
@@ -578,7 +567,25 @@
         load();
     });
 
-    load();
+    async function initFilters() {
+        const params = new URLSearchParams(window.location.search);
+        const yearSelect = document.getElementById('year');
+        let years = [];
+        try {
+            const res = await fetch('api.php?action=years&source=egs').then(r => r.json());
+            years = Array.isArray(res.years) ? res.years : [];
+        } catch (e) {}
+        const selectedYear = params.has('year') ? params.get('year') : String(new Date().getFullYear());
+        if (/^\d{4}$/.test(selectedYear) && !years.includes(Number(selectedYear))) years.push(Number(selectedYear));
+        years.sort((a, b) => b - a);
+        yearSelect.innerHTML = '<option value="">全部</option>' + years.map(y => `<option value="${Number(y)}">${Number(y)}</option>`).join('');
+        yearSelect.value = selectedYear;
+        const month = Number(params.get('month'));
+        document.getElementById('month').value = month >= 1 && month <= 12 ? String(month) : '';
+        document.getElementById('q').value = params.get('q') || '';
+        load();
+    }
+    initFilters();
 })();
 </script>
 </body>

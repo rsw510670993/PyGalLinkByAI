@@ -172,3 +172,8 @@ egs.db-wal
 status/
 logs/
 tool/115-cookies.txt
+/db_backups/
+/thumbnails/
+*.db-shm
+*.db-wal
+/tool/config/key/

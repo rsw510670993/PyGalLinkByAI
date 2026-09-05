@@ -3,7 +3,7 @@
 输入：EGS_games 一行（已按 Phase 1 去重，一行一作品）+ nyaa 候选列表
 输出：每个候选的得分与维度明细；择优回填阈值 THRESHOLD
 
-评分维度（满分约 75）：
+评分维度（满分 65）：
 - 游戏名匹配: 完整包含 +30 / 最长公共块≥85% +25 / ≥60% +12
 - 公司名包含: +10
 - 时间接近:   nyaa发布日距EGS发售日 ≤7天+15 / ≤30天+10 / ≤60天+5；
@@ -15,6 +15,7 @@ from datetime import datetime
 from difflib import SequenceMatcher
 
 THRESHOLD = 40.0
+MAX_SCORE = 65.0
 
 
 def _norm(s):

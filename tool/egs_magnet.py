@@ -28,7 +28,7 @@ from bs4 import BeautifulSoup
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
 from tool.egs_core import open_egs_db
-from tool.egs_match import THRESHOLD, extract_infohash, select_best
+from tool.egs_match import MAX_SCORE, THRESHOLD, extract_infohash, select_best
 
 SUKEBEI_URL = "https://sukebei.nyaa.si/"
 HEADERS = {
@@ -90,40 +90,100 @@ def ensure_egs_magnet_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+class SearchStopped(Exception):
+    """Cooperative stop, including during rate-limit waits."""
+
+
+class RequestPacer:
+    """One request-start interval across queries, games, retries and months."""
+    def __init__(self, should_stop=None):
+        self.should_stop = should_stop
+        self.next_request_at = 0.0
+        self.metrics = {"requests": 0, "network_seconds": 0.0, "wait_seconds": 0.0,
+                        "retries": 0, "http_429": 0, "timeouts": 0, "early_stops": 0}
+
+    def check_stop(self):
+        if self.should_stop and self.should_stop():
+            raise SearchStopped()
+
+    def defer(self, seconds):
+        self.next_request_at = max(self.next_request_at, time.monotonic() + seconds)
+
+    def before_request(self):
+        self.check_stop()
+        started = time.monotonic()
+        try:
+            while True:
+                remaining = self.next_request_at - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(remaining, .2))
+                self.check_stop()
+        finally:
+            self.metrics["wait_seconds"] += time.monotonic() - started
+        self.check_stop()
+        self.next_request_at = time.monotonic() + REQUEST_INTERVAL
+        self.metrics["requests"] += 1
+
+
+def _retry_after(response, fallback):
+    from email.utils import parsedate_to_datetime
+    value = response.headers.get("Retry-After", "")
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        try:
+            seconds = parsedate_to_datetime(value).timestamp() - time.time()
+        except (TypeError, ValueError, OverflowError):
+            seconds = fallback
+    return max(fallback, seconds)
+
+
 def _search_once(session: requests.Session, query: str, logger: logging.Logger):
-    """单轮 sukebei 搜索；15s 超时、重试 1 次，累计超时超过阈值则终止。"""
+    """Rate-limited search. Exhausted failures propagate and are never empty results."""
     global _timeout_count
+    pacer = getattr(session, "_egs_pacer", None)
+    if pacer is None:
+        pacer = session._egs_pacer = RequestPacer()
     url = SUKEBEI_URL + "?f=0&c=1_3&q=" + quote(query)
     last_err = None
     for attempt in range(MAX_ATTEMPTS):
+        pacer.before_request()
+        if attempt:
+            pacer.metrics["retries"] += 1
+        started = time.monotonic()
         try:
-            resp = session.get(url, timeout=REQUEST_TIMEOUT)
+            try:
+                resp = session.get(url, timeout=REQUEST_TIMEOUT)
+            finally:
+                pacer.metrics["network_seconds"] += time.monotonic() - started
+            pacer.check_stop()
             if resp.status_code == 429:
-                wait = 15 * (attempt + 1)
-                logger.warning("sukebei 429，等待%ss重试: %s", wait, query[:40])
-                time.sleep(wait)
+                pacer.metrics["http_429"] += 1
+                wait = _retry_after(resp, 15 * (attempt + 1))
+                pacer.defer(wait)
+                last_err = RuntimeError("HTTP 429")
+                logger.warning("sukebei 429，后续请求等待%ss: %s", wait, query[:40])
                 continue
             resp.raise_for_status()
             return _parse_result_page(resp.text)
-        except requests.Timeout as e:
+        except requests.Timeout as exc:
             _timeout_count += 1
-            last_err = e
-            logger.warning(
-                "超时(第%s次, 累计%s/%s) %s: %s",
-                attempt + 1, _timeout_count, TIMEOUT_ABORT_LIMIT,
-                query[:40], e,
-            )
+            pacer.metrics["timeouts"] += 1
+            last_err = exc
+            logger.warning("超时(第%s次, 累计%s/%s) %s: %s", attempt + 1,
+                           _timeout_count, TIMEOUT_ABORT_LIMIT, query[:40], exc)
             if _timeout_count >= TIMEOUT_ABORT_LIMIT:
-                raise TimeoutLimitExceeded(
-                    f"累计超时达到 {_timeout_count} 次，终止本轮 EGS 磁链获取"
-                ) from e
+                raise TimeoutLimitExceeded(f"累计超时达到 {_timeout_count} 次，终止本轮 EGS 磁链获取") from exc
             if attempt + 1 < MAX_ATTEMPTS:
-                time.sleep(3)
-        except Exception as e:  # noqa: BLE001
-            last_err = e
-            logger.warning("搜索失败(第%s次) %s: %s", attempt + 1, query[:40], e)
+                pacer.defer(3)
+        except (SearchStopped, TimeoutLimitExceeded):
+            raise
+        except Exception as exc:
+            last_err = exc
+            logger.warning("搜索失败(第%s次) %s: %s", attempt + 1, query[:40], exc)
             if attempt + 1 < MAX_ATTEMPTS:
-                time.sleep(3 * (attempt + 1))
+                pacer.defer(3 * (attempt + 1))
     raise RuntimeError(f"搜索失败: {query[:40]}: {last_err}")
 
 
@@ -173,8 +233,8 @@ def _parse_result_page(html: str) -> list[dict]:
 
 
 def search_candidates(session: requests.Session, name: str, company: str,
-                      logger: logging.Logger) -> list[dict]:
-    """多轮关键词搜索并合并去重。"""
+                      logger: logging.Logger, game=None) -> list[dict]:
+    """Preserve query ordering and candidate ties; stop only at the score ceiling."""
     queries = []
     if company:
         queries.append(f"{name} {company}")
@@ -184,17 +244,19 @@ def search_candidates(session: requests.Session, name: str, company: str,
         queries.append(stripped)
 
     merged = {}
-    for q in queries:
-        try:
-            items = _search_once(session, q, logger)
-        except RuntimeError as e:
-            logger.error("%s", e)
-            items = []
-        for it in items:
-            key = it["infohash_hex"]
-            if key not in merged:
-                merged[key] = it
-        time.sleep(REQUEST_INTERVAL)
+    for query in dict.fromkeys(queries):
+        # Do not cache incomplete searches as no-result/low-score outcomes.
+        items = _search_once(session, query, logger)
+        for item in items:
+            merged.setdefault(item["infohash_hex"], item)
+        candidates = list(merged.values())[:MAX_PER_QUERY]
+        if game and candidates:
+            best, score, _ = select_best(game, candidates, THRESHOLD)
+            if best and score >= MAX_SCORE and extract_infohash(best.get("magnet")):
+                pacer = getattr(session, "_egs_pacer", None)
+                if pacer:
+                    pacer.metrics["early_stops"] += 1
+                break
         if len(merged) >= MAX_PER_QUERY:
             break
     return list(merged.values())[:MAX_PER_QUERY]
@@ -259,7 +321,7 @@ def process_game(conn: sqlite3.Connection, session: requests.Session, row,
 
     game = {"name": name, "company": company or "", "date": date,
             "release_date": release_ts}
-    cands = search_candidates(session, name, company or "", logger)
+    cands = search_candidates(session, name, company or "", logger, game=game)
     best, best_score, best_detail = select_best(game, cands, THRESHOLD)
     best_key = best.get("infohash_hex") if best else None
     _save_candidates(conn, egs_id, date, name, cands, best_key)
@@ -350,7 +412,7 @@ def pending_rows(conn: sqlite3.Connection, year: int, month: int | None = None,
 
 def run_magnet(year: int, month: int | None = None, force: bool = False,
                limit: int = 0, db_path: str | None = None,
-               logger: logging.Logger | None = None) -> dict:
+               logger: logging.Logger | None = None, should_stop=None, progress=None, pacer=None) -> dict:
     """同步执行一轮 EGS 磁链搜索。"""
     global _timeout_count
     own_logger = logger is None
@@ -360,21 +422,51 @@ def run_magnet(year: int, month: int | None = None, force: bool = False,
         logger = logging.getLogger("egs_magnet")
 
     _timeout_count = 0
+    started = time.monotonic()
+    pacer = pacer or RequestPacer(should_stop)
+    pacer.should_stop = should_stop
+    baseline = pacer.metrics.copy()
+    session = None
     conn = open_egs_db(db_path)
     try:
+        # Fail before any network traffic if SQLite/WAL cannot be written.
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("UPDATE egs_games SET downloaded=downloaded WHERE 0")
+        finally:
+            conn.rollback()
         ensure_egs_magnet_schema(conn)
         rows = pending_rows(conn, year, month=month, force=force, limit=limit)
+        scope_sql = "SELECT COUNT(*) AS total, SUM(link IS NOT NULL AND link != '') AS linked, SUM((link IS NULL OR link = '') AND release_ts > date('now','localtime')) AS unreleased, SUM((link IS NULL OR link = '') AND (release_ts IS NULL OR release_ts <= date('now','localtime')) AND EXISTS(SELECT 1 FROM egs_nyaa_search_log l WHERE l.egs_id=g.egs_id)) AS cached FROM egs_games g WHERE substr(date,1,4)=?"
+        scope_params = [str(year)]
+        if month:
+            scope_sql += " AND CAST(substr(date,6,2) AS INTEGER)=?"
+            scope_params.append(int(month))
+        scope = conn.execute(scope_sql, scope_params).fetchone()
         status = {
             "year": year, "month": month, "force": force, "limit": limit,
+            "scope_total": int(scope["total"] or 0),
+            "skip_linked": int(scope["linked"] or 0),
+            "skip_unreleased": int(scope["unreleased"] or 0),
+            "skip_history": 0 if force else int(scope["cached"] or 0),
             "total": len(rows), "selected": 0, "low_score": 0,
             "no_result": 0, "skip_cache": 0, "error": 0,
             "timeout_count": 0, "timeout_aborted": False, "results": [],
         }
         session = requests.Session()
         session.headers.update(HEADERS)
-        for row in rows:
+        session._egs_pacer = pacer
+        for index, row in enumerate(rows):
+            if should_stop and should_stop():
+                status["stopped"] = True
+                break
+            if progress:
+                progress(row["name"], index, len(rows))
             try:
                 st, result = process_game(conn, session, row, logger, force=force)
+            except SearchStopped:
+                status["stopped"] = True
+                break
             except TimeoutLimitExceeded as e:
                 st = "error"
                 result = {
@@ -387,7 +479,11 @@ def run_magnet(year: int, month: int | None = None, force: bool = False,
                 status["timeout_count"] = _timeout_count
                 status["timeout_aborted"] = True
                 break
+            except sqlite3.DatabaseError:
+                conn.rollback()
+                raise
             except Exception as e:  # noqa: BLE001
+                conn.rollback()
                 st = "error"
                 result = {
                     "egs_id": row["egs_id"], "date": row["date"],
@@ -398,8 +494,12 @@ def run_magnet(year: int, month: int | None = None, force: bool = False,
             status[st] = status.get(st, 0) + 1
             if result:
                 status["results"].append(result)
-            # 保持对 sukebei 的礼貌间隔，避免 429
-            time.sleep(REQUEST_INTERVAL)
+        status["metrics"] = {key: round(value - baseline[key], 3)
+                             for key, value in pacer.metrics.items()}
+        status["elapsed_seconds"] = round(time.monotonic() - started, 3)
+        logger.info("NYAA_SUMMARY %s", json.dumps({key: value for key, value in status.items() if key != "results"}, ensure_ascii=False))
         return status
     finally:
+        if session is not None:
+            session.close()
         conn.close()

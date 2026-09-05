@@ -19,9 +19,9 @@ function as_int($value, $default = null) {
     return intval($value);
 }
 
-function run_cli($args) {
+function run_cli($args, $entry = 'cli.py') {
     $root = realpath(__DIR__ . '/..');
-    $cli = __DIR__ . '/cli.py';
+    $cli = __DIR__ . '/' . $entry;
 
     $python = getenv('PYTHON_BIN');
     if (!$python) {
@@ -68,8 +68,28 @@ function run_cli($args) {
 
 $action = isset($_GET['action']) ? $_GET['action'] : '';
 
+if (in_array($action, ['pipeline_start', 'pipeline_status', 'pipeline_stop'], true)) {
+    if ($action !== 'pipeline_status' && ($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+        json_response(['status' => 'error', 'message' => '请使用 POST 请求']);
+    }
+    $body = read_json_body();
+    if ($action === 'pipeline_status') {
+        $args = ['status'];
+    } elseif ($action === 'pipeline_stop') {
+        $args = ['stop', '--job-id', strval($body['job_id'] ?? '')];
+    } else {
+        $args = ['start', '--action', strval($body['action'] ?? ''),
+                 '--start-year', strval(as_int($body['start_year'] ?? null, 0)),
+                 '--end-year', strval(as_int($body['end_year'] ?? null, 0)),
+                 '--month', strval(as_int($body['month'] ?? null, 0))];
+        if (($body['execute'] ?? false) === true) $args[] = '--execute';
+    }
+    [$code, $data] = run_cli($args, 'pipeline_entry.py');
+    json_response($data);
+}
+
 if ($action === 'years') {
-    [$code, $data] = run_cli(['years']);
+    [$code, $data] = run_cli(['years', '--source', ($_GET['source'] ?? '') === 'egs' ? 'egs' : 'getchu']);
     json_response($data);
 }
 
@@ -185,7 +205,7 @@ if ($action === 'start_download') {
     if ($year === null) {
         json_response(['status' => 'error', 'message' => '参数错误']);
     }
-    [$code, $data] = run_cli(['download', 'start', '--year', strval($year), '--month', strval($month)]);
+    [$code, $data] = run_cli(['download', 'start', '--year', strval($year), '--month', strval($month), '--source', ($body['source'] ?? '') === 'egs' ? 'egs' : 'getchu']);
     json_response($data);
 }
 
@@ -253,7 +273,7 @@ if ($action === '115_check_all_start') {
     $body = read_json_body();
     $year = $body['year'] ?? '';
     $month = $body['month'] ?? '';
-    $args = ['115', 'check_all', 'start'];
+    $args = ['115', 'check_all', 'start', '--source', ($body['source'] ?? '') === 'egs' ? 'egs' : 'getchu'];
     if ($year) { $args[] = '--year'; $args[] = strval($year); }
     if ($month) { $args[] = '--month'; $args[] = strval($month); }
     [$code, $data] = run_cli($args);
