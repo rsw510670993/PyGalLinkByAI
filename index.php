@@ -98,6 +98,7 @@
     </section>
 </main>
 <script>const basePath = <?= json_encode($base, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?>;</script>
+<script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.1/js/bootstrap.bundle.min.js"></script>
 <script src="<?= htmlspecialchars($base, ENT_QUOTES, 'UTF-8') ?>/assets/dashboard.js"></script>
 </body>
 </html>
