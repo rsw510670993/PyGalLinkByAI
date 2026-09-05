@@ -92,12 +92,12 @@
         <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title">跨年移动待人工确认</h5>
+                    <h5 class="modal-title">搬月 / 跨年移动待人工确认</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
                     <div class="alert alert-warning py-2 small">
-                        以下定位到的目录来自不同年份。请确认它确实是当前作品，而不是前作、复刻或旧数据。
+                        以下磁链日期与 EGS 展示月份不同，或来源目录年份不同。确认后将以磁链 dn 时间戳为准，写入实际发售月并更新展示月份。
                     </div>
                     <div class="table-responsive">
                         <table class="table table-sm align-middle">

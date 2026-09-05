@@ -75,6 +75,7 @@ def ensure_egs_schema(conn: sqlite3.Connection) -> None:
             name            TEXT    NOT NULL,             -- 初始=egs_name
             company         TEXT    NOT NULL,             -- 初始=egs_company
             release_ts      TEXT,                         -- YYYY-MM-DD，初始=egs_date
+            actual_release_ts TEXT,                         -- 实际发售日（YYYY-MM-DD），批准搬月后取磁链 dn
             name_kana       TEXT,
             brand_id        INTEGER,
             brand_kind      TEXT,
@@ -106,6 +107,10 @@ def ensure_egs_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_egs_games_release_ts ON egs_games(release_ts)"
     )
+    # 旧库迁移：实际发售日由搬月确认后写入，不参与 EGS 抓取 upsert 覆盖。
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(egs_games)")}
+    if "actual_release_ts" not in cols:
+        conn.execute("ALTER TABLE egs_games ADD COLUMN actual_release_ts TEXT")
     conn.commit()
 
 

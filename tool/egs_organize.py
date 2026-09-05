@@ -1,4 +1,4 @@
-"""EGS 115 整理：复用历史整理流程，按 EGS release_ts 命名并归入年份目录。"""
+"""EGS 115 整理：按磁链 dn 时间戳命名并归入年份目录；EGS 原始日期保留为身份层。"""
 
 import json
 import os
@@ -81,15 +81,9 @@ GAL_ROOT = "/GAL"
 
 
 def resolve_dn_timestamp(link, release_ts=None):
-    """优先使用 EGS 展示层发售日；缺失时仅接受唯一有效磁链日期。"""
+    """优先使用磁链 dn 时间戳；缺失/无效时回退 EGS release_ts。"""
     from datetime import datetime
-    if release_ts:
-        try:
-            value = datetime.strptime(str(release_ts), "%Y-%m-%d")
-            return value.strftime("%Y-%m-%d"), value.strftime("%y%m%d")
-        except ValueError:
-            pass
-    dn = parse_magnet_simple(link or "").get("dn", "")
+    dn = parse_magnet_simple(link or "").get("dn") or ""
     dates = set()
     for code in re.findall(r"\[(\d{6})\]", dn):
         try:
@@ -99,6 +93,12 @@ def resolve_dn_timestamp(link, release_ts=None):
     if len(dates) == 1:
         value = dates.pop()
         return value.strftime("%Y-%m-%d"), value.strftime("%y%m%d")
+    if release_ts:
+        try:
+            value = datetime.strptime(str(release_ts), "%Y-%m-%d")
+            return value.strftime("%Y-%m-%d"), value.strftime("%y%m%d")
+        except ValueError:
+            pass
     return None, None
 
 
@@ -478,15 +478,37 @@ def _source_year(parent_path=None, old_name=None):
     return None
 
 
+def _apply_month_shift(conn, date, name, dn_date):
+    """用户批准搬月后，写入实际发售日并切换 EGS 展示月份。"""
+    target_month = str(dn_date)[:7]
+    conflict = conn.execute(
+        "SELECT 1 FROM egs_games WHERE date=? AND name=? AND NOT (date=? AND name=?)",
+        (target_month, name, date, name),
+    ).fetchone()
+    if conflict:
+        return None, {"status": "conflict", "message": f"实际发售月已存在同名记录: {target_month}/{name}"}
+    conn.execute(
+        """
+        UPDATE egs_games
+           SET date=?, release_ts=?, actual_release_ts=?, updated_at=?
+         WHERE date=? AND name=?
+        """,
+        (target_month, dn_date, dn_date, int(time.time()), date, name),
+    )
+    conn.commit()
+    return target_month, None
+
+
 def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
-                    confirmed_cross_year=False):
-    """整理单个游戏: 存在性检查 → 规范命名([YYYYMMDD][公司]名) → 位置校验(/GAL/GAL-{dn年})
+                    confirmed_cross_year=False, confirmed_month_shift=False):
+    """整理单个游戏: 磁链dn日期规范命名([YYYYMMDD][公司]名) → 位置校验(/GAL/GAL-{dn年})
 
     status:
       already_ok              名称与位置均合规（含本轮已补 set_dl/reset_sub）
       renamed / moved / renamed_moved    实际执行的重命名/移动
       would_rename / would_move / would_rename_moved / would_set_downloaded  预览
       cross_year_confirm      来源目录年份与目标年份不同，需人工确认后才能移动
+      month_shift_confirm     磁链日期与EGS展示月份不同，需人工批准搬月
       found_set_downloaded    115存在但DB未标记 → 已补记 downloaded=1
       in_offline              磁链在115离线任务中（提交未完成，等待）
       missing_in_115          ⚠ 标记已下载/已提交但115找不到（execute时重置 submitted_115=0）
@@ -509,7 +531,8 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
 
     try:
         row = conn.execute(
-            "SELECT company, link, COALESCE(downloaded,0), COALESCE(submitted_115,0), release_ts"
+            "SELECT company, link, COALESCE(downloaded,0), COALESCE(submitted_115,0), release_ts,"
+            " egs_date, actual_release_ts"
             " FROM egs_games WHERE date=? AND name=?",
             (date, name),
         ).fetchone()
@@ -517,7 +540,10 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
             result["status"] = "error"
             result["message"] = "游戏记录不存在"
             return result
-        company, link, downloaded, submitted, release_ts = row
+        company, link, downloaded, submitted, release_ts, egs_date, actual_release_ts = row
+        result["egs_date"] = egs_date
+        result["release_ts"] = release_ts
+        result["actual_release_ts"] = actual_release_ts
 
         if not link or not str(link).startswith("magnet:?"):
             result["status"] = "no_link"
@@ -642,6 +668,20 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
         cur_parent_norm = (parent_path or "").rstrip("/")
         need_move = cur_parent_norm != year_dir_path
 
+        # 搬月护栏：磁链 dn 日期与 EGS 当前展示月份不同，必须人工批准后才改展示月份。
+        approved_month = str(actual_release_ts or release_ts or egs_date or "")[:7]
+        if str(dn_date)[:7] != approved_month and not confirmed_month_shift:
+            result["status"] = "month_shift_confirm"
+            result["confirmation_kind"] = "month_shift"
+            result["proposed_actual_release_ts"] = dn_date
+            result["proposed_actual_release_month"] = str(dn_date)[:7]
+            result["requires_confirmation"] = True
+            result["message"] = (
+                f"磁链日期 {dn_date} 与 EGS 展示月份 {approved_month} 不同，"
+                "需确认跳票/搬月后才可整理。"
+            )
+            return result
+
         # 跨年移动护栏：旧作/复刻目录可能因名称包含而误定位。
         # 这种移动影响老数据，必须人工确认后才能执行。
         source_year = _source_year(parent_path, old_name)
@@ -685,7 +725,15 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
                     result["status"] = "already_ok"
                     result["message"] = "文件夹名与位置均已符合规范"
             if not dry_run:
-                _save_if_changed(conn, date, name, cid=cid, pid=pid, folder_name=old_name,
+                record_date, shift_error = date, None
+                if confirmed_month_shift:
+                    record_date, shift_error = _apply_month_shift(conn, date, name, dn_date)
+                    if shift_error:
+                        result.update(shift_error)
+                        return result
+                    result["new_date"] = record_date
+                    result["actions"].append("month_shift")
+                _save_if_changed(conn, record_date, name, cid=cid, pid=pid, folder_name=old_name,
                                  folder_path=result["old_path"], target_name=target,
                                  date_code=date_code, company=company, status=result["status"])
             return result
@@ -774,18 +822,28 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
                             else "renamed" if need_rename else "moved")
         result["message"] = "已" + ("重命名" if need_rename else "") + ("并移动" if (need_rename and need_move) else "移动" if need_move else "")
         new_path = f"{year_dir_path}/{target}"
-        save_folder_record(conn, date, name, cid=cid, pid=pid, folder_name=target,
+
+        record_date, shift_error = date, None
+        if confirmed_month_shift:
+            record_date, shift_error = _apply_month_shift(conn, date, name, dn_date)
+            if shift_error:
+                result.update(shift_error)
+                return result
+            result["new_date"] = record_date
+            result["actions"].append("month_shift")
+
+        save_folder_record(conn, record_date, name, cid=cid, pid=pid, folder_name=target,
                            folder_path=new_path, target_name=target,
                            date_code=date_code, company=company, status=result["status"])
 
         # ⑦ 存在即补记流水线状态（downloaded=0 → 补记；曾被误重置 submitted → 恢复）
         if downloaded == 0:
-            set_downloaded(conn, date, name, cid)
+            set_downloaded(conn, record_date, name, cid)
             result["actions"].append("set_dl")
         elif submitted == 0:
             conn.execute(
                 "UPDATE egs_games SET submitted_115=1 WHERE date=? AND name=?",
-                (date, name),
+                (record_date, name),
             )
             conn.commit()
             result["actions"].append("restore_sub")

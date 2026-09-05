@@ -274,7 +274,7 @@ def execute_job(state, save, should_stop):
                 else:
                     result = organize_single(row['date'], name, dry_run=not state['execute'], conn=conn, year_dirs=year_dirs)
                     code = result.get('status')
-                    outcome = 'failed' if code in ('error', 'conflict', 'ambiguous', 'shared_cid', 'not_dir', 'no_dn_date', 'missing_in_115') else 'skipped' if code in ('no_link', 'not_downloaded', 'in_offline', 'cross_year_confirm') else 'success'
+                    outcome = 'failed' if code in ('error', 'conflict', 'ambiguous', 'shared_cid', 'not_dir', 'no_dn_date', 'missing_in_115') else 'skipped' if code in ('no_link', 'not_downloaded', 'in_offline', 'cross_year_confirm', 'month_shift_confirm') else 'success'
                     report(name, outcome, result.get('message') or code, detail=result)
             except Exception as exc:
                 report(name, 'failed', str(exc))

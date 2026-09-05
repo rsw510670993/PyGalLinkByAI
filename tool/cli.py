@@ -1067,7 +1067,7 @@ def cmd_egs_games(args):
         """
         rows = cur.execute(
             f"""
-            SELECT egs_id, date, name, company, release_ts, brand_kind,
+            SELECT egs_id, date, name, company, release_ts, egs_date, actual_release_ts, brand_kind,
                    link, nyaa_name, downloaded, submitted_115, submitted_pick_code
                   {review_select}
               FROM egs_games{where}
@@ -1131,7 +1131,7 @@ def cmd_egs_organize_confirm(args):
     try:
         result = organize_single(
             str(args.date), str(args.name), dry_run=False,
-            conn=conn, confirmed_cross_year=True,
+            conn=conn, confirmed_cross_year=True, confirmed_month_shift=True,
         )
         ok = result.get("status") in (
             "renamed", "moved", "renamed_moved", "already_ok",

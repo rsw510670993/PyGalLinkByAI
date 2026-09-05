@@ -153,6 +153,48 @@ class PipelineTests(unittest.TestCase):
         self.assertFalse(_names_match(dn, old))
         self.assertTrue(_names_match(dn, same))
 
+    def test_month_shift_prefers_magnet_dn_and_requires_confirmation(self):
+        conn=sqlite3.connect(self.db)
+        self.addCleanup(conn.close)
+        organize.ensure_folder_schema(conn)
+        conn.execute("""INSERT INTO egs_games(egs_id,model,egs_date,egs_name,egs_company,date,name,company,release_ts,link)
+                        VALUES (10,'PC','2025-12-26','Game10','Brand','2025-12','Game10','Brand','2025-12-26',?)""",
+                     ('magnet:?xt=urn:btih:' + 'b'*40 + '&dn=%5B260227%5D%20%5BBrand%5D%20Game10',))
+        conn.commit()
+        location=dict(cid='123',pid='5',name='[2026-02-27][Brand]Game10',
+                      parent_path='/GAL/GAL-2026',is_dir=True)
+        with patch.object(organize,'locate_by_search',return_value=location), \
+             patch.object(organize,'read_config',return_value={}):
+            result=organize.organize_single('2025-12','Game10',dry_run=True,conn=conn)
+        self.assertEqual(result['status'],'month_shift_confirm')
+        self.assertTrue(result['requires_confirmation'])
+        self.assertEqual(result['confirmation_kind'],'month_shift')
+        self.assertEqual(result['dn_date'],'2026-02-27')
+        self.assertEqual(result['target_name'],'[20260227][Brand]Game10')
+        self.assertEqual(result['proposed_actual_release_month'],'2026-02')
+        self.assertIsNone(conn.execute('SELECT actual_release_ts FROM egs_games WHERE egs_id=10').fetchone()[0])
+
+    def test_month_shift_confirmation_updates_display_and_actual(self):
+        conn=sqlite3.connect(self.db)
+        self.addCleanup(conn.close)
+        organize.ensure_folder_schema(conn)
+        target='[20260227][Brand]Game10'
+        conn.execute("""INSERT INTO egs_games(egs_id,model,egs_date,egs_name,egs_company,date,name,company,release_ts,link)
+                        VALUES (10,'PC','2025-12-26','Game10','Brand','2025-12','Game10','Brand','2025-12-26',?)""",
+                     ('magnet:?xt=urn:btih:' + 'b'*40 + '&dn=%5B260227%5D%20%5BBrand%5D%20Game10',))
+        conn.commit()
+        location=dict(cid='123',pid='5',name=target,
+                      parent_path='/GAL/GAL-2026',is_dir=True)
+        with patch.object(organize,'locate_by_search',return_value=location), \
+             patch.object(organize,'read_config',return_value={}):
+            result=organize.organize_single('2025-12','Game10',dry_run=False,conn=conn,
+                                            confirmed_month_shift=True)
+        self.assertEqual(result['status'],'found_set_downloaded')
+        self.assertIn('month_shift',result['actions'])
+        row=conn.execute('SELECT date,release_ts,actual_release_ts FROM egs_games WHERE egs_id=10').fetchone()
+        self.assertEqual(row,('2026-02','2026-02-27','2026-02-27'))
+        self.assertIsNotNone(conn.execute('SELECT 1 FROM egs_115_folders WHERE date=? AND name=?',('2026-02','Game10')).fetchone())
+
     def test_job_lock_and_stale_stop_isolation(self):
         root=Path(self.temp.name)
         task_paths=(root/'job.json',root/'job.lock',root/'job.stop')
@@ -188,8 +230,8 @@ class PipelineTests(unittest.TestCase):
             with self.assertRaises(ValueError):pipeline.validate(*args)
 
     def test_date_priority_and_invalid_date(self):
-        self.assertEqual(organize.resolve_dn_timestamp(MAGNET,'2026-02-03')[0],'2026-02-03')
-        self.assertEqual(organize.resolve_dn_timestamp(MAGNET,'2026-02-30')[0],'2026-01-01')
+        self.assertEqual(organize.resolve_dn_timestamp(MAGNET,'2026-02-03')[0],'2026-01-01')
+        self.assertEqual(organize.resolve_dn_timestamp('magnet:?xt=urn:btih:' + 'c'*40,'2026-02-03')[0],'2026-02-03')
 
 
 if __name__ == '__main__':

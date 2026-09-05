@@ -295,6 +295,10 @@
             tbody.innerHTML = data.data.map(row => {
                 const ym = row.date || (row.release_ts ? String(row.release_ts).slice(0, 7) : '');
                 const ymText = ym ? ym.replace('-', '/') : '';
+                const actualYm = row.actual_release_ts ? String(row.actual_release_ts).slice(0, 7) : '';
+                const egsYm = row.egs_date ? String(row.egs_date).slice(0, 7) : '';
+                const shiftBadge = actualYm && egsYm && actualYm !== egsYm
+                    ? `<span class="badge text-bg-info ms-1">实际</span>` : '';
                 const magnet = row.link || '';
                 const nyaaName = row.nyaa_name || '';
                 const downloaded = parseInt(row.downloaded || 0, 10) === 1;
@@ -321,6 +325,8 @@
                     <tr class="${rowClass}"
                         data-egs-id="${esc(row.egs_id)}"
                         data-date="${esc(ym)}"
+                        data-egs-date="${esc(row.egs_date || '')}"
+                        data-actual-release-ts="${esc(row.actual_release_ts || '')}"
                         data-name="${esc(row.name)}"
                         data-company="${esc(row.company || '')}"
                         data-nyaa-name="${esc(nyaaName)}"
@@ -333,7 +339,7 @@
                         <td class="check-col text-center">
                             <input type="checkbox" class="game-checkbox form-check-input">
                         </td>
-                        <td class="ym-col">${esc(ymText)}</td>
+                        <td class="ym-col">${esc(ymText)}${shiftBadge}</td>
                         <td class="game-name-cell editable-cell">${esc(row.name)}${reviewBadge}${nyaaName ? `<div class="text-muted small"${magnet ? ' style="display:none;"' : ''}>${esc(nyaaName)}</div>` : ''}</td>
                         <td class="company-col">${esc(row.company || '')}</td>
                         <td class="kind-col">${esc(brandKindText)}</td>

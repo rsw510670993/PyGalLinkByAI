@@ -29,15 +29,20 @@
         document.querySelectorAll('[data-action]').forEach(button => {button.disabled = !ready || launching || !!currentTask?.running;});
     }
     function renderCrossYearRows() {
-        $('cross-year-body').innerHTML = crossYearRows.map((row, idx) => `
+        $('cross-year-body').innerHTML = crossYearRows.map((row, idx) => {
+            const d = row.detail || {};
+            const kindText = d.confirmation_kind === 'month_shift'
+                ? `EGS ${escape((d.egs_date || d.release_ts || '').slice(0, 7) || '-')} → 实际 ${escape(d.proposed_actual_release_month || (d.dn_date || '').slice(0, 7) || '-')}`
+                : `${escape(d.source_year || '')} → ${escape(d.target_year || '')}`;
+            return `
             <tr data-cross-idx="${idx}">
-                <td class="small">${escape(row.detail.source_year || '')} · ${escape(row.detail.old_path || row.detail.old_name || '')}</td>
-                <td class="small">${escape(row.detail.target_year || '')} · ${escape(row.detail.target_path || row.detail.target_name || '')}</td>
+                <td class="small">${escape(kindText)}<div class="text-muted">${escape(d.old_path || d.old_name || '')}</div></td>
+                <td class="small">${escape(d.dn_date || '')}<div class="text-muted">${escape(d.target_path || d.target_name || '')}</div></td>
                 <td class="text-end">
-                    <button type="button" class="btn btn-outline-warning btn-sm confirm-cross-year-btn" data-hidden-date="${escape(row.detail.date || '')}" data-hidden-name="${escape(row.name || '')}">确认移动</button>
+                    <button type="button" class="btn btn-outline-warning btn-sm confirm-cross-year-btn" data-hidden-date="${escape(d.date || '')}" data-hidden-name="${escape(row.name || '')}">批准搬月</button>
                 </td>
-            </tr>
-        `).join('') || '<tr><td colspan="3" class="text-center text-muted py-3">暂无待确认项</td></tr>';
+            </tr>`;
+        }).join('') || '<tr><td colspan="3" class="text-center text-muted py-3">暂无待确认项</td></tr>';
     }
 
     function showTask(task) {
