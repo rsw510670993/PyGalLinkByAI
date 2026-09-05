@@ -119,11 +119,16 @@ if ($action === 'egs_games') {
     $year = as_int($_GET['year'] ?? null, null);
     $month = as_int($_GET['month'] ?? null, null);
     $q = isset($_GET['q']) ? trim((string)$_GET['q']) : '';
+    $brandKind = strtoupper(trim(strval($_GET['brand_kind'] ?? '')));
+    if (!in_array($brandKind, ['CIRCLE', 'CORPORATION'], true)) {
+        $brandKind = '';
+    }
 
     $args = ['egs', 'games', '--page', strval(max(1, $page)), '--per-page', strval(max(1, $perPage))];
     if ($year !== null) { $args[] = '--year'; $args[] = strval($year); }
     if ($month !== null) { $args[] = '--month'; $args[] = strval($month); }
     if ($q !== '') { $args[] = '--q'; $args[] = $q; }
+    if ($brandKind !== '') { $args[] = '--brand-kind'; $args[] = $brandKind; }
 
     [$code, $data] = run_cli($args);
     json_response($data);

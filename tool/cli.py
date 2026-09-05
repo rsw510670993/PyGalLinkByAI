@@ -1006,6 +1006,9 @@ def cmd_egs_games(args):
         if args.month is not None:
             conditions.append("substr(date,6,2) = ?")
             params.append(f"{int(args.month):02d}")
+        if args.brand_kind:
+            conditions.append("brand_kind = ?")
+            params.append(str(args.brand_kind).strip().upper())
         if args.q:
             q = str(args.q).strip()
             if q:
@@ -1284,6 +1287,7 @@ def build_parser():
     p_egs_games.add_argument("--year", type=int)
     p_egs_games.add_argument("--month", type=int)
     p_egs_games.add_argument("--q", type=str, default="")
+    p_egs_games.add_argument("--brand-kind", type=str, dest="brand_kind", default="")
     p_egs_games.add_argument("--db", type=str)
     p_egs_games.set_defaults(func=cmd_egs_games)
 

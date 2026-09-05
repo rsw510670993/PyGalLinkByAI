@@ -11,6 +11,7 @@
         .ym-col { width: 96px; max-width: 96px; white-space: nowrap; }
         .game-name-cell { width: 320px; min-width: 260px; max-width: 420px; white-space: normal; word-wrap: break-word; }
         .company-col { width: 180px; max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .kind-col { width: 110px; max-width: 110px; white-space: nowrap; }
         .actions-col { width: 300px; max-width: 300px; white-space: nowrap; }
         .review-candidate { border: 1px solid #dee2e6; border-radius: .375rem; padding: .5rem; }
         .review-candidate + .review-candidate { margin-top: .5rem; }
@@ -42,11 +43,19 @@
                         <?php endfor; ?>
                     </select>
                 </div>
-                <div class="col-12 col-md-6">
+                <div class="col-12 col-md-4">
                     <label class="form-label mb-1" for="q">搜索</label>
                     <input id="q" class="form-control" type="search" placeholder="游戏名 / 公司 / 假名">
                 </div>
-                <div class="col-12 col-md-2 d-grid">
+                <div class="col-6 col-md-2">
+                    <label class="form-label mb-1" for="brand-kind">公司/社团</label>
+                    <select id="brand-kind" class="form-select">
+                        <option value="">全部</option>
+                        <option value="CORPORATION">企业</option>
+                        <option value="CIRCLE">社团</option>
+                    </select>
+                </div>
+                <div class="col-6 col-md-2 d-grid">
                     <button class="btn btn-primary" type="submit">筛选</button>
                 </div>
             </form>
@@ -72,11 +81,12 @@
                         <th class="ym-col">年月</th>
                         <th class="game-name-cell">游戏名称</th>
                         <th class="company-col">公司</th>
+                        <th class="kind-col">公司/社团</th>
                         <th class="actions-col">操作</th>
                     </tr>
                 </thead>
                 <tbody id="games-body">
-                    <tr><td colspan="5" class="text-center text-muted py-4">加载中...</td></tr>
+                    <tr><td colspan="6" class="text-center text-muted py-4">加载中...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -253,6 +263,7 @@
         const year = document.getElementById('year').value;
         const month = document.getElementById('month').value;
         const q = document.getElementById('q').value.trim();
+        const brandKind = document.getElementById('brand-kind').value;
         const params = new URLSearchParams({
             action: 'egs_games',
             page: currentPage,
@@ -261,13 +272,14 @@
         if (year) params.set('year', year);
         if (month) params.set('month', month);
         if (q) params.set('q', q);
+        if (brandKind) params.set('brand_kind', brandKind);
         return params.toString();
     }
 
     function render(data) {
         const tbody = document.getElementById('games-body');
         if (!data.data || data.data.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">没有数据</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-4">没有数据</td></tr>';
         } else {
             tbody.innerHTML = data.data.map(row => {
                 const ym = row.date || (row.release_ts ? String(row.release_ts).slice(0, 7) : '');
@@ -291,6 +303,9 @@
                 const reviewBtn = showReview
                     ? '<button type="button" class="btn btn-outline-warning btn-sm review-btn">审核</button>'
                     : '';
+                const brandKindText = row.brand_kind === 'CIRCLE'
+                    ? '社团'
+                    : row.brand_kind === 'CORPORATION' ? '企业' : (row.brand_kind || '-');
                 return `
                     <tr class="${rowClass}"
                         data-egs-id="${esc(row.egs_id)}"
@@ -310,6 +325,7 @@
                         <td class="ym-col">${esc(ymText)}</td>
                         <td class="game-name-cell editable-cell">${esc(row.name)}${reviewBadge}${nyaaName ? `<div class="text-muted small"${magnet ? ' style="display:none;"' : ''}>${esc(nyaaName)}</div>` : ''}</td>
                         <td class="company-col">${esc(row.company || '')}</td>
+                        <td class="kind-col">${esc(brandKindText)}</td>
                         <td class="actions-col">
                             <button type="button" class="btn btn-success btn-sm btn-115-submit" ${canMagnet ? '' : 'disabled'}>115云下载</button>
                             <button type="button" class="btn btn-outline-secondary btn-sm magnet-check-btn" ${canMagnet ? '' : 'disabled'}>校验</button>
@@ -330,7 +346,7 @@
 
     async function load() {
         const tbody = document.getElementById('games-body');
-        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">加载中...</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-4">加载中...</td></tr>';
         try {
             const res = await fetch(`api.php?${buildQuery()}`, { cache: 'no-store' });
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -338,7 +354,7 @@
             if (data.status === 'error') throw new Error(data.message || '接口错误');
             render(data);
         } catch (err) {
-            tbody.innerHTML = `<tr><td colspan="5" class="text-center text-danger py-4">加载失败：${esc(err.message)}</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="6" class="text-center text-danger py-4">加载失败：${esc(err.message)}</td></tr>`;
         }
     }
 
@@ -883,6 +899,8 @@
         const month = Number(params.get('month'));
         document.getElementById('month').value = month >= 1 && month <= 12 ? String(month) : '';
         document.getElementById('q').value = params.get('q') || '';
+        const brandKind = params.get('brand_kind');
+        document.getElementById('brand-kind').value = brandKind === 'CIRCLE' || brandKind === 'CORPORATION' ? brandKind : '';
         load();
     }
     initFilters();
