@@ -169,7 +169,6 @@
                 <div class="d-flex gap-2 mt-3">
                     <button id="review-manual-approve-btn" class="btn btn-success btn-sm">通过手动磁链</button>
                     <button id="review-reject-btn" class="btn btn-outline-danger btn-sm">全部拒绝</button>
-                    <button id="review-reopen-btn" class="btn btn-outline-secondary btn-sm">重新待审</button>
                 </div>
                 <div id="review-result" class="small mt-2" style="white-space:pre-wrap;word-break:break-all;"></div>
             </div>
@@ -556,13 +555,6 @@
         decideReview({
             egs_id: parseInt(document.getElementById('review-modal-egs-id').value, 10),
             decision: 'reject'
-        });
-    });
-
-    document.getElementById('review-reopen-btn').addEventListener('click', () => {
-        decideReview({
-            egs_id: parseInt(document.getElementById('review-modal-egs-id').value, 10),
-            decision: 'reopen'
         });
     });
 
