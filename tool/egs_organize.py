@@ -1023,3 +1023,146 @@ def record_operation(conn, date, name, result):
     conn.execute("INSERT INTO egs_115_operations(date,name,payload,created_at) VALUES (?,?,?,?)",
                  (date, name, json.dumps(result, ensure_ascii=False), int(time.time())))
     conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# 整理待办记录：把每次整理的非成功结果持久化，供“整理待办”页面逐条确认/重试。
+# ---------------------------------------------------------------------------
+ISSUE_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS egs_organize_issues (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    egs_id INTEGER,
+    date TEXT NOT NULL,
+    name TEXT NOT NULL,
+    status TEXT,
+    outcome TEXT,
+    message TEXT,
+    detail TEXT,
+    job_id TEXT,
+    run_at TEXT,
+    resolved INTEGER NOT NULL DEFAULT 0,
+    resolved_at TEXT
+)
+"""
+
+# 执行模式下整理成功 → 自动关闭该游戏未解决的待办
+ORGANIZE_RESOLVED_STATUSES = {
+    'already_ok', 'renamed', 'moved', 'renamed_moved',
+    'found_set_downloaded', 'wrapped_file',
+}
+# 需要用户关注的跳过类状态（会记录为待办）
+ORGANIZE_ATTENTION_STATUSES = {'in_offline', 'cross_year_confirm', 'month_shift_confirm'}
+
+
+def organize_report_outcome(code):
+    """整理状态 → 流水线报告归类（failed/skipped/success），与页面统计口径一致。"""
+    if code in ('error', 'conflict', 'ambiguous', 'shared_cid', 'not_dir', 'no_dn_date', 'missing_in_115'):
+        return 'failed'
+    if code in ('no_link', 'not_downloaded', 'in_offline', 'cross_year_confirm', 'month_shift_confirm'):
+        return 'skipped'
+    return 'success'
+
+
+def ensure_issue_schema(conn):
+    conn.execute(ISSUE_SCHEMA_SQL)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_egs_organize_issues_open"
+        " ON egs_organize_issues(resolved, run_at)"
+    )
+    conn.commit()
+
+
+def record_organize_issue(conn, date, name, code, executed,
+                          detail=None, job_id=None, egs_id=None):
+    """整理单行后调用：执行成功则关闭既有待办，需关注的结果则新增/更新待办。
+
+    - 预览（executed=False）的成功不关闭待办（还没真正整理）
+    - 同一游戏只保留一条未解决待办，重复失败覆盖更新
+    - 已解决的保留为历史，再次失败会新开一条
+    - no_link / not_downloaded 属正常状态，不记录
+    """
+    ensure_issue_schema(conn)
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    if executed and code in ORGANIZE_RESOLVED_STATUSES:
+        conn.execute(
+            "UPDATE egs_organize_issues SET resolved=1, resolved_at=?"
+            " WHERE resolved=0 AND (egs_id=? OR (egs_id IS NULL AND date=? AND name=?))",
+            (now, egs_id, date, name),
+        )
+        conn.commit()
+        return None
+
+    outcome = organize_report_outcome(code)
+    if outcome != 'failed' and code not in ORGANIZE_ATTENTION_STATUSES:
+        return None
+
+    detail = detail or {}
+    detail_json = json.dumps(detail, ensure_ascii=False)
+    message = detail.get('message') or code
+    existing = conn.execute(
+        "SELECT id FROM egs_organize_issues"
+        " WHERE resolved=0 AND (egs_id=? OR (egs_id IS NULL AND date=? AND name=?))"
+        " LIMIT 1",
+        (egs_id, date, name),
+    ).fetchone()
+    if existing:
+        conn.execute(
+            "UPDATE egs_organize_issues"
+            " SET egs_id=COALESCE(egs_id,?), date=?, name=?, status=?, outcome=?,"
+            "     message=?, detail=?, job_id=?, run_at=?"
+            " WHERE id=?",
+            (egs_id, date, name, code, outcome, message,
+             detail_json, job_id, now, existing[0]),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO egs_organize_issues"
+            " (egs_id, date, name, status, outcome, message, detail, job_id, run_at, resolved)"
+            " VALUES (?,?,?,?,?,?,?,?,?,0)",
+            (egs_id, date, name, code, outcome, message,
+             detail_json, job_id, now),
+        )
+    conn.commit()
+    return True
+
+
+def resolve_organize_issue(conn, issue_id, note=None):
+    ensure_issue_schema(conn)
+    cur = conn.execute(
+        "UPDATE egs_organize_issues SET resolved=1, resolved_at=?"
+        " WHERE id=? AND resolved=0",
+        (time.strftime("%Y-%m-%d %H:%M:%S"), int(issue_id)),
+    )
+    conn.commit()
+    return {"success": cur.rowcount > 0, "id": int(issue_id)}
+
+
+def list_organize_issues(conn, include_resolved=True, resolved_limit=100):
+    """返回待处理与已解决（近 resolved_limit 条）待办，detail 反序列化为对象。"""
+    ensure_issue_schema(conn)
+
+    def _rows(where, params, limit=None):
+        sql = ("SELECT id, egs_id, date, name, status, outcome, message, detail,"
+               " job_id, run_at, resolved, resolved_at"
+               f" FROM egs_organize_issues WHERE {where} ORDER BY run_at DESC")
+        if limit:
+            sql += f" LIMIT {int(limit)}"
+        items = []
+        for row in conn.execute(sql, params):
+            item = dict(zip(
+                ("id", "egs_id", "date", "name", "status", "outcome", "message",
+                 "detail", "job_id", "run_at", "resolved", "resolved_at"), row,
+            ))
+            try:
+                item["detail"] = json.loads(item["detail"]) if item["detail"] else {}
+            except (TypeError, ValueError):
+                item["detail"] = {}
+            items.append(item)
+        return items
+
+    open_items = _rows("resolved=0", ())
+    counts = {"open": len(open_items), "resolved": conn.execute(
+        "SELECT COUNT(*) FROM egs_organize_issues WHERE resolved=1").fetchone()[0]}
+    resolved_items = _rows("resolved=1", (), resolved_limit) if include_resolved else []
+    return {"success": True, "counts": counts, "open": open_items, "resolved": resolved_items}

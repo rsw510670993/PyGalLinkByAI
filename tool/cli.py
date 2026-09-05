@@ -1126,9 +1126,13 @@ def cmd_egs_delete(args):
 def cmd_egs_organize_confirm(args):
     """人工确认后允许跨年移动/整理单个目录。"""
     from tool.egs_core import open_egs_db
-    from tool.egs_organize import organize_single
+    from tool.egs_organize import organize_single, record_organize_issue
     conn = open_egs_db(args.db)
     try:
+        row = conn.execute(
+            "SELECT egs_id FROM egs_games WHERE date=? AND name=?",
+            (str(args.date), str(args.name)),
+        ).fetchone()
         result = organize_single(
             str(args.date), str(args.name), dry_run=False,
             conn=conn, confirmed_cross_year=True, confirmed_month_shift=True,
@@ -1137,7 +1141,33 @@ def cmd_egs_organize_confirm(args):
             "renamed", "moved", "renamed_moved", "already_ok",
             "found_set_downloaded", "wrapped_file",
         )
+        # 整理待办联动：成功关闭对应待办，失败则刷新待办内容
+        record_organize_issue(
+            conn, date=str(args.date), name=str(args.name), code=result.get("status"),
+            executed=True, detail=result,
+            egs_id=row[0] if row else None,
+        )
         _print({"success": ok, **result})
+    finally:
+        conn.close()
+
+
+def cmd_egs_organize_issues(args):
+    from tool.egs_core import open_egs_db
+    from tool.egs_organize import list_organize_issues
+    conn = open_egs_db(args.db)
+    try:
+        _print(list_organize_issues(conn, include_resolved=bool(args.all)))
+    finally:
+        conn.close()
+
+
+def cmd_egs_organize_issue_resolve(args):
+    from tool.egs_core import open_egs_db
+    from tool.egs_organize import resolve_organize_issue
+    conn = open_egs_db(args.db)
+    try:
+        _print(resolve_organize_issue(conn, int(args.id)))
     finally:
         conn.close()
 
@@ -1366,6 +1396,16 @@ def build_parser():
     p_egs_organize_confirm.add_argument("--name", required=True)
     p_egs_organize_confirm.add_argument("--db", type=str)
     p_egs_organize_confirm.set_defaults(func=cmd_egs_organize_confirm)
+
+    p_egs_organize_issues = egs_sub.add_parser("organize_issues")
+    p_egs_organize_issues.add_argument("--all", action="store_true")
+    p_egs_organize_issues.add_argument("--db", type=str)
+    p_egs_organize_issues.set_defaults(func=cmd_egs_organize_issues)
+
+    p_egs_organize_issue_resolve = egs_sub.add_parser("organize_issue_resolve")
+    p_egs_organize_issue_resolve.add_argument("--id", type=int, required=True)
+    p_egs_organize_issue_resolve.add_argument("--db", type=str)
+    p_egs_organize_issue_resolve.set_defaults(func=cmd_egs_organize_issue_resolve)
 
     p_egs_review_detail = egs_sub.add_parser("review_detail")
     p_egs_review_detail.add_argument("--egs-id", type=int, required=True, dest="egs_id")

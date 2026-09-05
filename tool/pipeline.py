@@ -232,7 +232,7 @@ def execute_job(state, save, should_stop):
         year_dirs = {}
         submitted_tasks = {}  # info_hash -> {'egs_id','name','pick_code'}，本轮内同磁链只提交一次
         if action == 'organize':
-            from .egs_organize import ensure_folder_schema, organize_single
+            from .egs_organize import ensure_folder_schema, organize_single, organize_report_outcome, record_organize_issue
             ensure_folder_schema(conn)
         for row in rows:
             if should_stop():
@@ -288,7 +288,10 @@ def execute_job(state, save, should_stop):
                 else:
                     result = organize_single(row['date'], name, dry_run=not state['execute'], conn=conn, year_dirs=year_dirs)
                     code = result.get('status')
-                    outcome = 'failed' if code in ('error', 'conflict', 'ambiguous', 'shared_cid', 'not_dir', 'no_dn_date', 'missing_in_115') else 'skipped' if code in ('no_link', 'not_downloaded', 'in_offline', 'cross_year_confirm', 'month_shift_confirm') else 'success'
+                    outcome = organize_report_outcome(code)
+                    record_organize_issue(conn, date=row['date'], name=name, code=code,
+                                          executed=bool(state['execute']),
+                                          detail=result, job_id=state.get('job_id'), egs_id=row['egs_id'])
                     report(name, outcome, result.get('message') or code, detail=result)
             except Exception as exc:
                 report(name, 'failed', str(exc))

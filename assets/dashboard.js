@@ -56,7 +56,9 @@
         const percent = task.total ? Math.round(task.done / task.total * 100) : 0;
         $('task-progress').style.width = percent + '%';
         $('task-progress').setAttribute('aria-valuenow', percent);
-        $('task-counts').textContent = `已处理 ${task.done || 0}/${task.total || 0} · 成功 ${task.success || 0} · 待处理/失败 ${task.failed || 0} · 跳过 ${task.skipped || 0}`;
+        $('task-counts').innerHTML = `已处理 ${task.done || 0}/${task.total || 0} · 成功 ${task.success || 0} · 待处理/失败 ${task.failed || 0} · 跳过 ${task.skipped || 0}`
+            + (task.action === 'organize' && !task.running && (task.failed || 0) > 0
+                ? ` · <a href="${basePath}/tool/organize_review.php">打开整理待办 →</a>` : '');
         $('task-details').innerHTML = (task.results || []).map(row => {
             const detail = row.detail;
             const target = detail?.target_path ? `<div class="text-muted">${escape(detail.old_path || '待定位')} → ${escape(detail.target_path)}</div>` : '';

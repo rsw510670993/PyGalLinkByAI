@@ -8,6 +8,7 @@ if ($base === '.' || $base === '/') $base = '';
 $navItems = [
     ['index.php', '年历与控制'],
     ['tool/egs.php', 'EGS 数据'],
+    ['tool/organize_review.php', '整理待办'],
     ['tool/logs.php', '日志'],
 ];
 $escapeHeader = static fn($value) => htmlspecialchars($value, ENT_QUOTES, 'UTF-8');

@@ -424,4 +424,23 @@ if ($action === 'egs_organize_confirm') {
     json_response($data);
 }
 
+if ($action === 'organize_issues') {
+    $args = ['egs', 'organize_issues'];
+    if (($_GET['all'] ?? '') === '1') {
+        $args[] = '--all';
+    }
+    [$code, $data] = run_cli($args);
+    json_response($data);
+}
+
+if ($action === 'organize_issue_resolve') {
+    $body = read_json_body();
+    $id = intval($body['id'] ?? 0);
+    if (!$id) {
+        json_response(['success' => false, 'message' => '缺少必填字段 id']);
+    }
+    [$code, $data] = run_cli(['egs', 'organize_issue_resolve', '--id', strval($id)]);
+    json_response($data);
+}
+
 json_response(['status' => 'error', 'message' => 'unknown action']);
