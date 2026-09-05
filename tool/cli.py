@@ -1027,7 +1027,9 @@ def cmd_egs_games(args):
         if "egs_nyaa_candidates" in tables:
             review_select += """
             , (SELECT COUNT(*) FROM egs_nyaa_candidates c
-                WHERE c.egs_id = egs_games.egs_id) AS candidate_count
+                LEFT JOIN egs_nyaa_search_log l ON l.egs_id = c.egs_id
+                WHERE c.egs_id = egs_games.egs_id
+                  AND COALESCE(l.review_status, '') != 'rejected') AS candidate_count
             """
         if "egs_nyaa_search_log" in tables:
             log_cols = {r[1] for r in cur.execute("PRAGMA table_info(egs_nyaa_search_log)")}

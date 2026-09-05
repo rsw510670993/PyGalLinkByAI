@@ -292,14 +292,11 @@
                 const candidateCount = parseInt(row.candidate_count || 0, 10);
                 const reviewStatus = row.review_status || '';
                 const blacklisted = parseInt(row.review_blacklisted || 0, 10) === 1;
-                const showReview = candidateCount > 0 && !magnet && !blacklisted;
-                const pendingReview = showReview && (!reviewStatus || reviewStatus === 'pending');
+                const showReview = candidateCount > 0 && !magnet && !blacklisted && reviewStatus !== 'rejected';
                 const canMagnet = !!magnet;
                 const reviewBadge = pendingReview
                     ? '<span class="badge text-bg-warning ms-1">待审核</span>'
-                    : (!blacklisted && !magnet && reviewStatus === 'rejected')
-                        ? '<span class="badge text-bg-secondary ms-1">已拒绝</span>'
-                        : '';
+                    : '';
                 const reviewBtn = showReview
                     ? '<button type="button" class="btn btn-outline-warning btn-sm review-btn">审核</button>'
                     : '';

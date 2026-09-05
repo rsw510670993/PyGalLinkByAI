@@ -108,6 +108,16 @@ def ensure_egs_magnet_schema(conn: sqlite3.Connection) -> None:
          WHERE review_status IS NULL
         """
     )
+    # 拒绝即遗弃：清掉历史遗留的候选数据，避免继续作为审核对象展示。
+    conn.execute(
+        """
+        DELETE FROM egs_nyaa_candidates
+         WHERE egs_id IN (
+             SELECT egs_id FROM egs_nyaa_search_log
+              WHERE review_status = 'rejected'
+         )
+        """
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_egs_nyaa_candidates_egs_id ON egs_nyaa_candidates(egs_id)")
     conn.commit()
 
@@ -696,6 +706,7 @@ def decide_review(egs_id: int, decision: str, candidate_id: int | None = None,
             )
         elif decision == "reject":
             conn.execute("UPDATE egs_nyaa_candidates SET selected=0 WHERE egs_id=?", (egs_id,))
+            conn.execute("DELETE FROM egs_nyaa_candidates WHERE egs_id=?", (egs_id,))
             conn.execute(
                 """
                 UPDATE egs_nyaa_search_log
