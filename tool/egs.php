@@ -18,6 +18,9 @@
         .editable-cell { cursor: pointer; transition: background-color .15s; }
         .editable-cell:hover { background-color: rgba(13,110,253,.08); text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; }
         .editable-cell input { width: 100%; border: 1px solid #0d6efd; border-radius: 3px; padding: 2px 4px; font-size: inherit; font-family: inherit; }
+        .row-magnet { background-color: #e7f5ff !important; }
+        .row-downloaded { background-color: #e6f4ea !important; }
+        .row-review { background-color: #fff8e1 !important; }
     </style>
 </head>
 <body class="bg-light">
@@ -74,7 +77,7 @@
             <span id="page-info" class="text-muted small">加载中...</span>
         </div>
         <div class="table-responsive">
-            <table class="table table-striped table-hover align-middle mb-0" id="gamesTable">
+            <table class="table table-hover align-middle mb-0" id="gamesTable">
                 <thead class="table-dark">
                     <tr>
                         <th class="check-col text-center">选择</th>
@@ -288,7 +291,9 @@
                 const nyaaName = row.nyaa_name || '';
                 const downloaded = parseInt(row.downloaded || 0, 10) === 1;
                 const submitted = parseInt(row.submitted_115 || 0, 10) === 1;
-                const rowClass = downloaded ? 'table-success' : submitted ? 'table-info' : '';
+                const rowClass = pendingReview
+                    ? 'row-review'
+                    : (downloaded || submitted) ? 'row-downloaded' : magnet ? 'row-magnet' : '';
                 const candidateCount = parseInt(row.candidate_count || 0, 10);
                 const reviewStatus = row.review_status || '';
                 const blacklisted = parseInt(row.review_blacklisted || 0, 10) === 1;
