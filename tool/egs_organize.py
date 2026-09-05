@@ -487,13 +487,14 @@ def _apply_month_shift(conn, date, name, dn_date):
     ).fetchone()
     if conflict:
         return None, {"status": "conflict", "message": f"实际发售月已存在同名记录: {target_month}/{name}"}
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
     conn.execute(
         """
         UPDATE egs_games
            SET date=?, release_ts=?, actual_release_ts=?, updated_at=?
          WHERE date=? AND name=?
         """,
-        (target_month, dn_date, dn_date, int(time.time()), date, name),
+        (target_month, dn_date, dn_date, now, date, name),
     )
     conn.commit()
     return target_month, None
