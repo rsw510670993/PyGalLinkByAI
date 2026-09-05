@@ -12,6 +12,16 @@ MAGNET = 'magnet:?xt=urn:btih:' + 'a' * 40 + '&dn=[260101]Game'
 
 
 class PipelineTests(unittest.TestCase):
+    def test_compute_target_name_normalizes_legacy_iso_date_template(self):
+        self.assertEqual(
+            organize.compute_target_name(
+                '2026-05-29', 'Brand', 'Game',
+                {'organize_name_format': '[{dn_date}][{company}]{name}'},
+                date_code='260529',
+            ),
+            '[20260529][Brand]Game',
+        )
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
