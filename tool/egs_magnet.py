@@ -20,6 +20,7 @@ import re
 import sqlite3
 import sys
 import time
+from datetime import datetime, timedelta
 from urllib.parse import quote
 
 import requests
@@ -562,10 +563,49 @@ def review_detail(egs_id: int, db_path: str | None = None) -> dict:
             """,
             (int(egs_id),),
         ).fetchall()
+        cand_list = [dict(c) for c in candidates]
+        release_dt = None
+        if game["release_ts"]:
+            try:
+                release_dt = datetime.fromisoformat(str(game["release_ts"])[:10])
+            except ValueError:
+                release_dt = None
+        cand_dates = []
+        for c in cand_list:
+            try:
+                if c.get("nyaa_date"):
+                    cand_dates.append(datetime.fromisoformat(str(c["nyaa_date"])[:10]))
+            except ValueError:
+                pass
+        cross_year_suspect = bool(
+            cand_dates
+            and release_dt
+            and max(cand_dates) < release_dt - timedelta(days=365)
+        )
+        history = []
+        if cross_year_suspect:
+            try:
+                from tool.egs_core import fetch_egs_same_name_history
+                history = [
+                    {
+                        "egs_id": int(r.get("egs_id") or 0),
+                        "egs_date": r.get("egs_date") or "",
+                        "egs_name": r.get("egs_name") or "",
+                        "egs_company": r.get("egs_company") or "",
+                        "brand_kind": r.get("brand_kind") or "",
+                        "official_url": r.get("official_url") or "",
+                    }
+                    for r in fetch_egs_same_name_history(game["name"])
+                    if int(r.get("egs_id") or 0) != int(egs_id)
+                ]
+            except Exception:
+                history = []
         return {
             "success": True,
             "game": dict(game),
-            "candidates": [dict(c) for c in candidates],
+            "candidates": cand_list,
+            "cross_year_suspect": cross_year_suspect,
+            "history": history,
         }
     finally:
         conn.close()

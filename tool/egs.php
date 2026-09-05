@@ -130,6 +130,10 @@
                     <div id="review-game-meta" class="small text-muted"></div>
                 </div>
                 <div id="review-candidates"></div>
+                <div id="review-history" class="mt-3" hidden>
+                    <div class="small fw-semibold text-warning">疑似同名复刻 / 跨年重发</div>
+                    <div id="review-history-list" class="small"></div>
+                </div>
                 <hr>
                 <div class="mb-2">
                     <label class="form-label mb-0 small" for="review-manual-magnet">手动磁链（候选都不合适时使用）</label>
@@ -386,6 +390,7 @@
                 `${data.game.date || ''} · ${data.game.company || ''} · 最佳分 ${score === null || score === undefined ? '-' : score}` +
                 ` · 状态 ${data.game.review_status || '待审核'}`;
             renderReviewCandidates(data.candidates || []);
+            renderReviewHistory(data.cross_year_suspect, data.history || []);
             document.getElementById('review-manual-magnet').value = data.game.link || '';
             document.getElementById('review-manual-nyaa-name').value = data.game.nyaa_name || '';
             resultEl.textContent = '';
@@ -394,6 +399,23 @@
             resultEl.textContent = '加载失败：' + err.message;
             bootstrap.Modal.getOrCreateInstance(document.getElementById('reviewModal')).show();
         }
+    }
+
+    function renderReviewHistory(suspect, history) {
+        const wrap = document.getElementById('review-history');
+        const list = document.getElementById('review-history-list');
+        if (!suspect || !history.length) {
+            wrap.hidden = true;
+            list.innerHTML = '';
+            return;
+        }
+        list.innerHTML = history.map(h => `
+            <div class="border-bottom py-1">
+                <div>${esc(h.egs_date || '-')} · ${esc(h.egs_company || '-')}</div>
+                ${h.official_url ? `<a href="${esc(h.official_url)}" target="_blank">官方页面</a>` : ''}
+            </div>
+        `).join('');
+        wrap.hidden = false;
     }
 
     function renderReviewCandidates(candidates) {

@@ -201,6 +201,24 @@ def _normalize_row(raw: dict[str, str], fetched_at: str) -> dict:
     }
 
 
+def fetch_egs_same_name_history(name: str, timeout: int = 30) -> list[dict[str, str]]:
+    """查 EGS 全库同名 PC+18禁 记录，用于跨年同名/复刻审核。"""
+    safe_name = str(name).replace("'", "''")
+    sql = f"""
+SELECT
+{EGS_SELECT_COLUMNS}
+FROM gamelist g
+LEFT JOIN brandlist b ON g.brandname = b.id
+WHERE g.gamename = '{safe_name}'
+  AND g.model = 'PC'
+  AND g.erogame = true
+ORDER BY g.sellday, g.id
+"""
+    resp = requests.post(EGS_SQL_URL, data={"sql": sql}, headers=HEADERS, timeout=timeout)
+    resp.raise_for_status()
+    return _parse_result_table(resp.text)
+
+
 def _int_or_none(value):
     if value is None:
         return None
