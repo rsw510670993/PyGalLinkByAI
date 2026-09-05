@@ -291,14 +291,14 @@
                 const nyaaName = row.nyaa_name || '';
                 const downloaded = parseInt(row.downloaded || 0, 10) === 1;
                 const submitted = parseInt(row.submitted_115 || 0, 10) === 1;
-                const rowClass = pendingReview
-                    ? 'row-review'
-                    : (downloaded || submitted) ? 'row-downloaded' : magnet ? 'row-magnet' : '';
                 const candidateCount = parseInt(row.candidate_count || 0, 10);
                 const reviewStatus = row.review_status || '';
                 const blacklisted = parseInt(row.review_blacklisted || 0, 10) === 1;
                 const showReview = candidateCount > 0 && !magnet && !blacklisted && reviewStatus !== 'rejected';
                 const pendingReview = showReview && (!reviewStatus || reviewStatus === 'pending');
+                const rowClass = pendingReview
+                    ? 'row-review'
+                    : (downloaded || submitted) ? 'row-downloaded' : magnet ? 'row-magnet' : '';
                 const canMagnet = !!magnet;
                 const reviewBadge = pendingReview
                     ? '<span class="badge text-bg-warning ms-1">待审核</span>'
