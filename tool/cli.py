@@ -1123,6 +1123,25 @@ def cmd_egs_delete(args):
     _print(delete_egs_game_record(int(args.egs_id), db_path=args.db))
 
 
+def cmd_egs_organize_confirm(args):
+    """人工确认后允许跨年移动/整理单个目录。"""
+    from tool.egs_core import open_egs_db
+    from tool.egs_organize import organize_single
+    conn = open_egs_db(args.db)
+    try:
+        result = organize_single(
+            str(args.date), str(args.name), dry_run=False,
+            conn=conn, confirmed_cross_year=True,
+        )
+        ok = result.get("status") in (
+            "renamed", "moved", "renamed_moved", "already_ok",
+            "found_set_downloaded", "wrapped_file",
+        )
+        _print({"success": ok, **result})
+    finally:
+        conn.close()
+
+
 def cmd_egs_review_detail(args):
     from tool.egs_magnet import review_detail
     _print(review_detail(int(args.egs_id), db_path=args.db))
@@ -1341,6 +1360,12 @@ def build_parser():
     p_egs_delete.add_argument("--egs-id", type=int, required=True, dest="egs_id")
     p_egs_delete.add_argument("--db", type=str)
     p_egs_delete.set_defaults(func=cmd_egs_delete)
+
+    p_egs_organize_confirm = egs_sub.add_parser("organize_confirm")
+    p_egs_organize_confirm.add_argument("--date", required=True)
+    p_egs_organize_confirm.add_argument("--name", required=True)
+    p_egs_organize_confirm.add_argument("--db", type=str)
+    p_egs_organize_confirm.set_defaults(func=cmd_egs_organize_confirm)
 
     p_egs_review_detail = egs_sub.add_parser("review_detail")
     p_egs_review_detail.add_argument("--egs-id", type=int, required=True, dest="egs_id")

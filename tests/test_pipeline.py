@@ -131,6 +131,28 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(conn.execute('SELECT downloaded,submitted_115 FROM egs_games WHERE egs_id=1').fetchone(),(1,1))
         self.assertIn('/Old/OldName',conn.execute('SELECT payload FROM egs_115_operations').fetchone()[0])
 
+    def test_organizer_cross_year_move_requires_confirmation(self):
+        conn=sqlite3.connect(self.db)
+        self.addCleanup(conn.close)
+        organize.ensure_folder_schema(conn)
+        location=dict(cid='123',pid='5',name='[20240101][Brand]Game1',
+                      parent_path='/GAL/GAL-2024',is_dir=True)
+        with patch.object(organize,'locate_by_search',return_value=location), \
+             patch.object(organize,'read_config',return_value={}):
+            result=organize.organize_single('2026-01','Game1',dry_run=True,conn=conn)
+        self.assertEqual(result['status'],'cross_year_confirm')
+        self.assertTrue(result['requires_confirmation'])
+        self.assertEqual(result['source_year'],2024)
+        self.assertEqual(result['target_year'],2026)
+
+    def test_names_match_rejects_unbounded_predecessor(self):
+        from tool.p115_client import _names_match, _normalize_for_comparison
+        dn=_normalize_for_comparison('[260227][Cuteuphoria] ドラコンカフェ2')
+        old=_normalize_for_comparison('[241129][Cuteuphoria] ドラコンカフェ')
+        same=_normalize_for_comparison('[260227][Cuteuphoria] ドラコンカフェ2')
+        self.assertFalse(_names_match(dn, old))
+        self.assertTrue(_names_match(dn, same))
+
     def test_job_lock_and_stale_stop_isolation(self):
         root=Path(self.temp.name)
         task_paths=(root/'job.json',root/'job.lock',root/'job.stop')

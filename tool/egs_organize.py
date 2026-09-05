@@ -463,13 +463,30 @@ def _wrap_file_torrent(conn, loc, dn, target, year_dir_path, dry_run, year_dirs,
     return result
 
 
-def organize_single(date, name, dry_run=True, conn=None, year_dirs=None):
-    """整理单个游戏: 存在性检查 → 规范命名([YYYY-MM-DD][公司]名) → 位置校验(/GAL/GAL-{dn年})
+def _source_year(parent_path=None, old_name=None):
+    """从旧目录路径/名称中提取来源年份，用于跨年移动保护。"""
+    text = f"{parent_path or ''}/{old_name or ''}"
+    m = re.search(r'/GAL-(\d{4})(?:/|$)', f"{parent_path or ''}/")
+    if m:
+        return int(m.group(1))
+    m = re.search(r'\[(\d{4})-\d{1,2}-\d{1,2}\]', old_name or '')
+    if m:
+        return int(m.group(1))
+    m = re.search(r'\[(\d{2})(\d{2})\d{2}\]', old_name or '')
+    if m:
+        return 2000 + int(m.group(1))
+    return None
+
+
+def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
+                    confirmed_cross_year=False):
+    """整理单个游戏: 存在性检查 → 规范命名([YYYYMMDD][公司]名) → 位置校验(/GAL/GAL-{dn年})
 
     status:
       already_ok              名称与位置均合规（含本轮已补 set_dl/reset_sub）
       renamed / moved / renamed_moved    实际执行的重命名/移动
       would_rename / would_move / would_rename_moved / would_set_downloaded  预览
+      cross_year_confirm      来源目录年份与目标年份不同，需人工确认后才能移动
       found_set_downloaded    115存在但DB未标记 → 已补记 downloaded=1
       in_offline              磁链在115离线任务中（提交未完成，等待）
       missing_in_115          ⚠ 标记已下载/已提交但115找不到（execute时重置 submitted_115=0）
@@ -624,6 +641,21 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None):
         need_rename = old_name != target
         cur_parent_norm = (parent_path or "").rstrip("/")
         need_move = cur_parent_norm != year_dir_path
+
+        # 跨年移动护栏：旧作/复刻目录可能因名称包含而误定位。
+        # 这种移动影响老数据，必须人工确认后才能执行。
+        source_year = _source_year(parent_path, old_name)
+        target_year = int(dn_date[:4])
+        if need_move and source_year and source_year != target_year and not confirmed_cross_year:
+            result["status"] = "cross_year_confirm"
+            result["source_year"] = source_year
+            result["target_year"] = target_year
+            result["requires_confirmation"] = True
+            result["message"] = (
+                f"跨年移动需人工确认：{source_year} → {target_year}。"
+                "请确认这不是把前作/旧数据误判成当前作品。"
+            )
+            return result
 
         if not need_rename and not need_move:
             # 已合规 —— 仅需补记流水线状态

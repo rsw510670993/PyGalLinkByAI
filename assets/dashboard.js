@@ -8,6 +8,8 @@
     let ready = false;
     let calendarRequest = 0;
     let lastRefresh = 0;
+    let crossYearRows = [];
+    let crossYearShownJob = '';
     const params = new URLSearchParams(location.search);
     const year = Number(params.get('year')) || new Date().getFullYear();
     $('start-year').value = $('end-year').value = $('calendar-year').value = year;
@@ -26,6 +28,18 @@
     function buttons() {
         document.querySelectorAll('[data-action]').forEach(button => {button.disabled = !ready || launching || !!currentTask?.running;});
     }
+    function renderCrossYearRows() {
+        $('cross-year-body').innerHTML = crossYearRows.map((row, idx) => `
+            <tr data-cross-idx="${idx}">
+                <td class="small">${escape(row.detail.source_year || '')} · ${escape(row.detail.old_path || row.detail.old_name || '')}</td>
+                <td class="small">${escape(row.detail.target_year || '')} · ${escape(row.detail.target_path || row.detail.target_name || '')}</td>
+                <td class="text-end">
+                    <button type="button" class="btn btn-outline-warning btn-sm confirm-cross-year-btn" data-hidden-date="${escape(row.detail.date || '')}" data-hidden-name="${escape(row.name || '')}">确认移动</button>
+                </td>
+            </tr>
+        `).join('') || '<tr><td colspan="3" class="text-center text-muted py-3">暂无待确认项</td></tr>';
+    }
+
     function showTask(task) {
         currentTask = task;
         buttons();
@@ -43,6 +57,16 @@
             const target = detail?.target_path ? `<div class="text-muted">${escape(detail.old_path || '待定位')} → ${escape(detail.target_path)}</div>` : '';
             return `<div class="border-bottom py-2"><strong>${escape(row.name)}</strong>：${escape(row.message)}${target}</div>`;
         }).join('') || '<span class="text-muted">暂无处理结果</span>';
+
+        if (task.action === 'organize' && !task.running) {
+            const rows = (task.results || []).filter(row => row.detail?.requires_confirmation);
+            if (rows.length && crossYearShownJob !== task.job_id) {
+                crossYearRows = rows;
+                crossYearShownJob = task.job_id;
+                renderCrossYearRows();
+                bootstrap.Modal.getOrCreateInstance($('crossYearModal')).show();
+            }
+        }
     }
     async function poll() {
         if (loading) return;
@@ -121,6 +145,30 @@
     });
     $('calendar-year').addEventListener('change', loadCalendar);
     $('refresh-calendar').addEventListener('click', loadCalendar);
+
+    $('cross-year-body').addEventListener('click', async event => {
+        const button = event.target.closest('.confirm-cross-year-btn');
+        if (!button) return;
+        const date = button.dataset.hiddenDate;
+        const name = button.dataset.hiddenName;
+        if (!date || !name) return;
+        button.disabled = true;
+        button.textContent = '确认中...';
+        try {
+            const result = await api('egs_organize_confirm', {date, name});
+            if (result.success === false || result.status === 'error') throw new Error(result.message || '确认失败');
+            const idx = crossYearRows.findIndex(row => row.detail?.date === date && row.name === name);
+            if (idx >= 0) crossYearRows.splice(idx, 1);
+            renderCrossYearRows();
+            button.textContent = '已确认';
+            await loadCalendar();
+        } catch (error) {
+            button.disabled = false;
+            button.textContent = '确认移动';
+            alert(error.message);
+        }
+    });
+
     buttons();
     loadCalendar();
     poll();

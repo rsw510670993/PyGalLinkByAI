@@ -88,6 +88,30 @@
             </div>
         </div>
     </div>
+    <div class="modal fade" id="crossYearModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">跨年移动待人工确认</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="alert alert-warning py-2 small">
+                        以下定位到的目录来自不同年份。请确认它确实是当前作品，而不是前作、复刻或旧数据。
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle">
+                            <thead><tr><th style="min-width:280px">当前目录</th><th style="min-width:280px">目标</th><th class="text-end">操作</th></tr></thead>
+                            <tbody id="cross-year-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">暂不处理</button>
+                </div>
+            </div>
+        </div>
+    </div>
     <section class="card" aria-label="EGS 年历">
         <div class="card-header d-flex flex-wrap gap-2 align-items-center justify-content-between">
             <label for="calendar-year" class="fw-semibold">年历（所选年及前两年）</label>

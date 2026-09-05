@@ -413,4 +413,15 @@ if ($action === 'delete_game') {
     json_response($data);
 }
 
+if ($action === 'egs_organize_confirm') {
+    $body = read_json_body();
+    $date = trim(strval($body['date'] ?? ''));
+    $name = trim(strval($body['name'] ?? ''));
+    if (!$date || !$name) {
+        json_response(['success' => false, 'message' => '缺少必填字段 date/name']);
+    }
+    [$code, $data] = run_cli(['egs', 'organize_confirm', '--date', $date, '--name', $name]);
+    json_response($data);
+}
+
 json_response(['status' => 'error', 'message' => 'unknown action']);

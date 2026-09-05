@@ -449,14 +449,34 @@ def _strip_leading_dates_and_tags(s):
     return s.strip()
 
 
+def _is_safe_substring(needle, haystack):
+    """判断 needle 是否是 haystack 的边界完整子串。
+
+    不做无边界包含，避免《Game》被误判成《Game2》《GameX》等前作/异作。
+    """
+    if not needle or not haystack or len(needle) > len(haystack):
+        return False
+    start = 0
+    while True:
+        pos = haystack.find(needle, start)
+        if pos < 0:
+            return False
+        before_ok = pos == 0 or not haystack[pos - 1].isalnum()
+        after_pos = pos + len(needle)
+        after_ok = after_pos == len(haystack) or not haystack[after_pos].isalnum()
+        if before_ok and after_ok:
+            return True
+        start = pos + 1
+
+
 def _names_match(norm_dn, norm_fname):
     if not norm_dn or not norm_fname:
         return False
-    if norm_dn in norm_fname or norm_fname in norm_dn:
+    if _is_safe_substring(norm_dn, norm_fname) or _is_safe_substring(norm_fname, norm_dn):
         return True
     dn_compact = norm_dn.replace(" ", "")
     fn_compact = norm_fname.replace(" ", "")
-    if dn_compact and fn_compact and (dn_compact in fn_compact or fn_compact in dn_compact):
+    if _is_safe_substring(dn_compact, fn_compact) or _is_safe_substring(fn_compact, dn_compact):
         return True
     dn_codes = _leading_date_codes(norm_dn)
     fn_codes = _leading_date_codes(norm_fname)
@@ -469,11 +489,11 @@ def _names_match(norm_dn, norm_fname):
         dn_tail = _strip_leading_dates_and_tags(norm_dn)
         fn_tail = _strip_leading_dates_and_tags(norm_fname)
         if dn_tail and fn_tail and (len(dn_tail) >= 8 or len(fn_tail) >= 8):
-            if dn_tail in fn_tail or fn_tail in dn_tail:
+            if _is_safe_substring(dn_tail, fn_tail) or _is_safe_substring(fn_tail, dn_tail):
                 return True
             dn2 = dn_tail.replace(" ", "")
             fn2 = fn_tail.replace(" ", "")
-            if dn2 and fn2 and (dn2 in fn2 or fn2 in dn2):
+            if _is_safe_substring(dn2, fn2) or _is_safe_substring(fn2, dn2):
                 return True
         return False
 
@@ -482,11 +502,11 @@ def _names_match(norm_dn, norm_fname):
     dn_no_date = re.sub(r'^(?:\[[^\]]+\]\s*)+', '', dn_no_date).strip()
     fn_no_date = re.sub(r'^(?:\[[^\]]+\]\s*)+', '', fn_no_date).strip()
     if dn_no_date and fn_no_date:
-        if dn_no_date in fn_no_date or fn_no_date in dn_no_date:
+        if _is_safe_substring(dn_no_date, fn_no_date) or _is_safe_substring(fn_no_date, dn_no_date):
             return True
         dn2 = dn_no_date.replace(" ", "")
         fn2 = fn_no_date.replace(" ", "")
-        return dn2 in fn2 or fn2 in dn2
+        return _is_safe_substring(dn2, fn2) or _is_safe_substring(fn2, dn2)
     return False
 
 
