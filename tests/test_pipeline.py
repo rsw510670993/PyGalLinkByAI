@@ -225,6 +225,47 @@ class PipelineTests(unittest.TestCase):
             with pipeline.locked():
                 pass
 
+    def test_pending_offline_task_is_not_organized(self):
+        conn=sqlite3.connect(self.db)
+        self.addCleanup(conn.close)
+        organize.ensure_folder_schema(conn)
+        magnet='magnet:?xt=urn:btih:' + 'd'*40 + '&dn=%5B260210%5D%20%5BBrand%5D%20Game20'
+        conn.execute("""INSERT INTO egs_games(egs_id,model,egs_date,egs_name,egs_company,date,name,company,release_ts,link)
+                        VALUES (20,'PC','2026-02-10','Game20','Brand','2026-02','Game20','Brand','2026-02-10',?)""",(magnet,))
+        conn.commit()
+        task={'info_hash':'d'*40,'url':magnet,'percentDone':50,'display_status':'downloading'}
+        with patch.object(organize,'locate_by_search',return_value=None), \
+             patch.object(organize,'locate_in_year_dir',return_value=None), \
+             patch.object(organize,'resolve_cid',return_value=0), \
+             patch.object(organize,'read_config',return_value={}), \
+             patch('tool.p115_client.offline_list',return_value={'success':True,'tasks':[task]}):
+            result=organize.organize_single('2026-02','Game20',dry_run=True,conn=conn)
+        self.assertEqual(result['status'],'in_offline')
+
+    def test_completed_offline_single_file_is_wrapped(self):
+        conn=sqlite3.connect(self.db)
+        self.addCleanup(conn.close)
+        organize.ensure_folder_schema(conn)
+        magnet='magnet:?xt=urn:btih:' + 'd'*40 + '&dn=%5B260210%5D%20%5BBrand%5D%20Game20'
+        conn.execute("""INSERT INTO egs_games(egs_id,model,egs_date,egs_name,egs_company,date,name,company,release_ts,link)
+                        VALUES (20,'PC','2026-02-10','Game20','Brand','2026-02','Game20','Brand','2026-02-10',?)""",(magnet,))
+        conn.commit()
+        task={'info_hash':'d'*40,'url':magnet,'percentDone':100,'display_status':'finished',
+              'file_id':'999','name':'RJ01557970.zip','wp_path_id':'5'}
+        info={'cid':'999','pid':'5','n':'RJ01557970.zip','fc':0,'pc':'pick'}
+        with patch.object(organize,'locate_by_search',return_value=None), \
+             patch.object(organize,'locate_in_year_dir',return_value=None), \
+             patch.object(organize,'resolve_cid',return_value=0), \
+             patch.object(organize,'read_config',return_value={}), \
+             patch.object(organize,'get_item_info',return_value=info), \
+             patch.object(organize,'parent_crumbs_path',return_value='/GAL/GAL-2026'), \
+             patch.object(organize,'list_dir_children',return_value=[{'cid':'999','fc':1,'n':'RJ01557970.zip'}]), \
+             patch('tool.p115_client.offline_list',return_value={'success':True,'tasks':[task]}):
+            result=organize.organize_single('2026-02','Game20',dry_run=True,conn=conn)
+        self.assertEqual(result['status'],'would_wrap_file')
+        self.assertEqual(result['old_name'],'RJ01557970.zip')
+        self.assertEqual(result['target_path'],'/GAL/GAL-2026/[20260210][Brand]Game20')
+
     def test_scope_validation(self):
         for args in [('other',2026,2026,0),('crawl',2026,2025,0),('check',2026,2026,13)]:
             with self.assertRaises(ValueError):pipeline.validate(*args)

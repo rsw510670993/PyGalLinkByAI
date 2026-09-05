@@ -158,7 +158,7 @@ def mkdir_year_dir(year):
         return None
     try:
         _, check_response = _import_p115client()
-        resp = check_response(client.fs_mkdir({"name": f"GAL-{year}", "pid": root_cid}))
+        resp = check_response(client.fs_mkdir({"cname": f"GAL-{year}", "pid": root_cid}))
         data = resp.get("data") if isinstance(resp, dict) else {}
         file_id = (data or {}).get("file_id") or (data or {}).get("cid")
         if file_id:
@@ -240,27 +240,115 @@ def locate_in_year_dir(year_dir_cid, dn, name):
             "is_dir": str(it.get("fc", "")) == "0", "pick_code": it.get("pc")}
 
 
-def magnet_in_offline_tasks(magnet, infohash_hex=None):
-    """磁链是否在115离线下载任务中（已提交未完成/排队）"""
+def _find_offline_task(magnet, infohash_hex=None):
+    """按 infohash 查找 115 离线任务；找不到返回 None。"""
     from .p115_client import offline_list, parse_magnet_simple
 
     if not infohash_hex:
         try:
-            infohash_hex = parse_magnet_simple(magnet).get("infohash_hex")
+            infohash_hex = parse_magnet_simple(magnet or "").get("infohash_hex")
         except Exception:
             infohash_hex = None
+    infohash_hex = str(infohash_hex or "").lower()
     if not infohash_hex:
-        return False
+        return None
     ol = offline_list()
     if not ol.get("success"):
+        return None
+    for task in (ol.get("tasks") or []):
+        if not isinstance(task, dict):
+            continue
+        task_hash = str(task.get("info_hash") or task.get("infohash") or "").lower()
+        task_url = str(task.get("url") or "").lower()
+        if infohash_hex and (infohash_hex == task_hash or infohash_hex in task_url):
+            return task
+    return None
+
+
+def _offline_task_finished(task):
+    """115任务 status=2/finished/percent=100 视为下载完成。"""
+    if not isinstance(task, dict):
         return False
-    tasks = ol.get("tasks") or []
-    for task in tasks:
-        if isinstance(task, dict):
-            url = (task.get("url") or "").lower()
-            if infohash_hex and infohash_hex.lower() in url:
-                return True
+    if str(task.get("display_status") or "").strip().lower() == "finished":
+        return True
+    try:
+        if float(task.get("percentDone") or task.get("percent_done") or 0) >= 100:
+            return True
+    except (TypeError, ValueError):
+        pass
+    try:
+        text = str(task.get("display_percent") or "").replace("%", "").strip()
+        if text and float(text) >= 100:
+            return True
+    except (TypeError, ValueError):
+        pass
+    try:
+        if int(task.get("status")) == 2:
+            return True
+    except (TypeError, ValueError):
+        pass
     return False
+
+
+def magnet_in_offline_tasks(magnet, infohash_hex=None):
+    """磁链是否仍在115离线下载任务中；已完成任务不算。"""
+    task = _find_offline_task(magnet, infohash_hex)
+    return bool(task and not _offline_task_finished(task))
+
+
+def _item_is_single_file(cid, name, fc=None):
+    """判断115条目是否是文件。
+
+    115的 fc 在目录/文件上都可能为0，不能单独依赖；这里用扩展名 + 目录列表校验。
+    """
+    name = name or ""
+    ext = os.path.splitext(name)[1].lower()
+    if ext in {".zip", ".rar", ".7z", ".001", ".iso", ".exe", ".mp4", ".mkv"}:
+        children = list_dir_children(cid)
+        if children:
+            # 文件会把自己作为一个子项返回；目录则返回真实内容。
+            return len(children) == 1 and str(children[0].get("cid")) == str(cid)
+        return True
+    children = list_dir_children(cid)
+    if children:
+        return (len(children) == 1 and str(children[0].get("cid")) == str(cid)
+                and str(children[0].get("fc")) == "1")
+    return str(fc or "") not in ("0",)
+
+
+def locate_offline_task_product(magnet, infohash_hex=None):
+    """定位已完成的115离线任务产物。
+
+    返回：
+      None                         没有任务
+      {"offline_pending": True}    任务未完成
+      {"missing_product": True}    任务完成但产物不可访问
+      标准 locate 产物             任务完成且可定位
+    """
+    task = _find_offline_task(magnet, infohash_hex)
+    if not task:
+        return None
+    if not _offline_task_finished(task):
+        return {"offline_pending": True, "offline_task": task}
+    file_id = str(task.get("file_id") or task.get("delete_file_id") or "")
+    if not file_id:
+        return {"missing_product": True, "offline_task": task}
+    info = get_item_info(file_id)
+    if not info:
+        return {"missing_product": True, "offline_task": task}
+    cid = str(info.get("cid") or file_id)
+    name = info.get("n") or task.get("name") or ""
+    pid = info.get("pid") or task.get("wp_path_id")
+    return {
+        "cid": cid,
+        "pid": pid,
+        "name": name,
+        "parent_path": parent_crumbs_path(pid) if pid else None,
+        "is_dir": not _item_is_single_file(cid, name, info.get("fc")),
+        "pick_code": info.get("pc") or task.get("pick_code"),
+        "located_by": "offline_task",
+        "offline_task": task,
+    }
 
 
 def extract_dn_info(link):
@@ -407,7 +495,7 @@ def _wrap_file_torrent(conn, loc, dn, target, year_dir_path, dry_run, year_dirs,
     client = _load_client()
     try:
         _, check_response = _import_p115client()
-        resp = check_response(client.fs_mkdir({"name": target, "pid": year_cid}))
+        resp = check_response(client.fs_mkdir({"cname": target, "pid": year_cid}))
         data = resp.get("data") if isinstance(resp, dict) else {}
         new_cid = (data or {}).get("file_id") or (data or {}).get("cid")
         if not new_cid:
@@ -596,26 +684,50 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
                 if loc is not None and loc.get("ambiguous"):
                     loc = None
             if loc is None:
-                # ③ 存在性检查：离线任务 → 缺失 → 未下载
-                if magnet_in_offline_tasks(link):
+                # ③ 存在性检查：离线任务（已完成产物可继续整理）→ 缺失 → 未下载
+                off = locate_offline_task_product(link)
+                if off and off.get("offline_pending"):
                     result["status"] = "in_offline"
                     result["message"] = "磁链在115离线任务中，等待下载完成"
                     return result
-                if downloaded or submitted:
-                    result["status"] = "missing_in_115"
-                    result["message"] = "⚠ 标记已下载/已提交，但115中未找到文件夹"
-                    if not dry_run and submitted:
-                        conn.execute(
-                            "UPDATE egs_games SET submitted_115=0 WHERE date=? AND name=?",
-                            (date, name),
-                        )
-                        conn.commit()
-                        result["actions"].append("reset_sub")
-                        result["message"] += "；已重置 submitted_115=0 供重提"
+                if off and off.get("missing_product"):
+                    if downloaded or submitted:
+                        result["status"] = "missing_in_115"
+                        result["message"] = "⚠ 标记已下载/已提交，但115中未找到文件夹"
+                        if not dry_run and submitted:
+                            conn.execute(
+                                "UPDATE egs_games SET submitted_115=0 WHERE date=? AND name=?",
+                                (date, name),
+                            )
+                            conn.commit()
+                            result["actions"].append("reset_sub")
+                            result["message"] += "；已重置 submitted_115=0 供重提"
+                        return result
+                    result["status"] = "not_downloaded"
+                    result["message"] = "115中未找到（尚未下载）"
                     return result
-                result["status"] = "not_downloaded"
-                result["message"] = "115中未找到（尚未下载）"
-                return result
+                if off and off.get("cid") and off.get("name"):
+                    loc = off
+                elif magnet_in_offline_tasks(link):
+                    result["status"] = "in_offline"
+                    result["message"] = "磁链在115离线任务中，等待下载完成"
+                    return result
+                if loc is None:
+                    if downloaded or submitted:
+                        result["status"] = "missing_in_115"
+                        result["message"] = "⚠ 标记已下载/已提交，但115中未找到文件夹"
+                        if not dry_run and submitted:
+                            conn.execute(
+                                "UPDATE egs_games SET submitted_115=0 WHERE date=? AND name=?",
+                                (date, name),
+                            )
+                            conn.commit()
+                            result["actions"].append("reset_sub")
+                            result["message"] += "；已重置 submitted_115=0 供重提"
+                        return result
+                    result["status"] = "not_downloaded"
+                    result["message"] = "115中未找到（尚未下载）"
+                    return result
             if loc.get("ambiguous"):
                 result["status"] = "ambiguous"
                 result["message"] = "命中多个候选目录，为安全起见跳过"
@@ -623,7 +735,9 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
             if not loc.get("is_dir"):
                 # 命中的是文件：先取真实父目录信息（搜索结果无pid，用fs_file查）
                 info = get_item_info(loc["cid"]) or {}
-                if str(info.get("fc", "1")) == "0":
+                if info and not _item_is_single_file(str(info.get("cid") or loc["cid"]),
+                                                     info.get("n") or loc.get("name"),
+                                                     info.get("fc")):
                     # 实际是目录（搜索索引把目录内文件当命中）→ 按目录处理
                     loc = {"cid": info["cid"], "pid": info.get("pid"), "name": info.get("n"),
                            "parent_path": parent_crumbs_path(info.get("pid")) if info.get("pid") else None,
