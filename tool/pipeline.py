@@ -47,8 +47,49 @@ def validate(action, start_year, end_year, month):
         raise ValueError('年份范围须为 1980–3000，结束年不能小于起始年，月份须为 0–12')
 
 
+def pending_review_count(start_year: int, end_year: int, month: int = 0) -> int:
+    """统计指定年月范围内仍需人工审核的记录数。"""
+    from .egs_core import open_egs_db, ensure_egs_schema, ensure_review_blacklist_schema
+    from .egs_magnet import ensure_egs_magnet_schema
+
+    conn = open_egs_db()
+    try:
+        ensure_egs_schema(conn)
+        ensure_egs_magnet_schema(conn)
+        ensure_review_blacklist_schema(conn)
+        row = conn.execute(
+            """
+            SELECT COUNT(*)
+              FROM egs_games g
+              JOIN egs_nyaa_search_log l ON l.egs_id = g.egs_id
+             WHERE CAST(substr(g.date,1,4) AS INTEGER) BETWEEN ? AND ?
+               AND (? = 0 OR CAST(substr(g.date,6,2) AS INTEGER) = ?)
+               AND (g.link IS NULL OR g.link = '')
+               AND COALESCE(l.result_count, 0) > 0
+               AND l.selected_infohash IS NULL
+               AND COALESCE(l.review_status, 'pending') = 'pending'
+               AND NOT EXISTS (
+                   SELECT 1 FROM egs_review_company_blacklist b
+                    WHERE b.company IN (g.company, g.egs_company)
+               )
+            """,
+            (int(start_year), int(end_year), int(month), int(month)),
+        ).fetchone()
+        return int(row[0] if row else 0)
+    finally:
+        conn.close()
+
+
 def start(action, start_year, end_year, month=0, execute=False):
     validate(action, start_year, end_year, month)
+    if action == 'check':
+        pending = pending_review_count(start_year, end_year, month)
+        if pending:
+            return {
+                'status': 'error',
+                'message': f'当前范围还有 {pending} 条待审核记录，请先完成审核再批量校对115',
+                'pending_review_count': pending,
+            }
     try:
         with locked():
             if status().get('running'):
@@ -272,7 +313,7 @@ def worker(job_id):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('command', choices=('start', 'status', 'stop', 'worker'))
+    parser.add_argument('command', choices=('start', 'status', 'stop', 'worker', 'preflight'))
     parser.add_argument('--action', choices=ACTIONS)
     parser.add_argument('--start-year', type=int)
     parser.add_argument('--end-year', type=int)
@@ -283,6 +324,12 @@ def main():
     try:
         if args.command == 'worker':
             worker(args.job_id)
+            return
+        if args.command == 'preflight':
+            action = args.action or 'check'
+            validate(action, args.start_year or 1980, args.end_year or 3000, args.month or 0)
+            count = pending_review_count(args.start_year, args.end_year, args.month) if action == 'check' else 0
+            print(json.dumps({'status': 'success', 'action': action, 'count': count}, ensure_ascii=False))
             return
         if args.command == 'start':
             result = start(args.action, args.start_year, args.end_year, args.month, args.execute)

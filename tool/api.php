@@ -68,6 +68,16 @@ function run_cli($args, $entry = 'cli.py') {
 
 $action = isset($_GET['action']) ? $_GET['action'] : '';
 
+if ($action === 'pipeline_preflight') {
+    $actionName = strval($_GET['pipeline_action'] ?? 'check');
+    $args = ['preflight', '--action', $actionName,
+             '--start-year', strval(as_int($_GET['start_year'] ?? null, 0)),
+             '--end-year', strval(as_int($_GET['end_year'] ?? null, 0)),
+             '--month', strval(as_int($_GET['month'] ?? null, 0))];
+    [$code, $data] = run_cli($args, 'pipeline_entry.py');
+    json_response($data);
+}
+
 if (in_array($action, ['pipeline_start', 'pipeline_status', 'pipeline_stop'], true)) {
     if ($action !== 'pipeline_status' && ($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
         json_response(['status' => 'error', 'message' => '请使用 POST 请求']);

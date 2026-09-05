@@ -70,6 +70,24 @@
             <details class="mt-2"><summary>查看处理结果</summary><div id="task-details" class="small mt-2"></div></details>
         </div>
     </section>
+    <div class="modal fade" id="pendingReviewModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">存在待审核记录</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    当前范围内还有 <span id="pending-review-count" class="fw-semibold">0</span> 条待审核记录。<br>
+                    请先完成审核，再批量校对115。
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">知道了</button>
+                    <a id="pending-review-link" class="btn btn-primary btn-sm" href="#">去审核</a>
+                </div>
+            </div>
+        </div>
+    </div>
     <section class="card" aria-label="EGS 年历">
         <div class="card-header d-flex flex-wrap gap-2 align-items-center justify-content-between">
             <label for="calendar-year" class="fw-semibold">年历（所选年及前两年）</label>

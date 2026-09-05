@@ -63,12 +63,22 @@
         const form = $('scope-form');
         if (!form.reportValidity()) return;
         const startYear = Number($('start-year').value), endYear = Number($('end-year').value);
+        const month = Number($('task-month').value);
         if (endYear < startYear) { $('control-message').textContent = '结束年份不能小于起始年份'; return; }
         launching = true;
         buttons();
         try {
+            if (action === 'check') {
+                const preflight = await api(`pipeline_preflight&pipeline_action=check&start_year=${startYear}&end_year=${endYear}&month=${month}`);
+                if (Number(preflight.count || 0) > 0) {
+                    $('pending-review-count').textContent = preflight.count;
+                    $('pending-review-link').href = `${basePath}/tool/egs.php?year=${startYear}${month >= 1 && month <= 12 ? `&month=${month}` : ''}`;
+                    bootstrap.Modal.getOrCreateInstance($('pendingReviewModal')).show();
+                    return;
+                }
+            }
             const response = await api('pipeline_start', {action, start_year:startYear, end_year:endYear,
-                month:Number($('task-month').value), execute:action === 'organize' && !$('organize-preview').checked});
+                month:month, execute:action === 'organize' && !$('organize-preview').checked});
             $('control-message').textContent = response.message;
             $('stop-task').disabled = false;
             await poll();
