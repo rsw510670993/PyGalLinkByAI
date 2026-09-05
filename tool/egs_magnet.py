@@ -82,8 +82,29 @@ def ensure_egs_magnet_schema(conn: sqlite3.Connection) -> None:
             result_count INTEGER,
             best_score REAL,
             selected_infohash TEXT,
-            tried_at TEXT
+            tried_at TEXT,
+            review_status TEXT,
+            reviewed_at TEXT,
+            review_note TEXT
         )
+        """
+    )
+    for column, decl in (
+        ("review_status", "TEXT"),
+        ("reviewed_at", "TEXT"),
+        ("review_note", "TEXT"),
+    ):
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(egs_nyaa_search_log)")}
+        if column not in cols:
+            conn.execute(f"ALTER TABLE egs_nyaa_search_log ADD COLUMN {column} {decl}")
+    conn.execute(
+        """
+        UPDATE egs_nyaa_search_log
+           SET review_status = CASE
+               WHEN COALESCE(result_count, 0) > 0 AND selected_infohash IS NULL THEN 'pending'
+               ELSE 'none'
+           END
+         WHERE review_status IS NULL
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_egs_nyaa_candidates_egs_id ON egs_nyaa_candidates(egs_id)")
@@ -348,12 +369,14 @@ def process_game(conn: sqlite3.Connection, session: requests.Session, row,
         conn.execute(
             """
             INSERT INTO egs_nyaa_search_log
-                (egs_id, date, name, result_count, best_score, selected_infohash, tried_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (egs_id, date, name, result_count, best_score, selected_infohash, tried_at,
+                 review_status, reviewed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'none', ?)
             ON CONFLICT(egs_id) DO UPDATE SET
                 date=excluded.date, name=excluded.name,
                 result_count=excluded.result_count, best_score=excluded.best_score,
-                selected_infohash=excluded.selected_infohash, tried_at=excluded.tried_at
+                selected_infohash=excluded.selected_infohash, tried_at=excluded.tried_at,
+                review_status='none', reviewed_at=excluded.reviewed_at, review_note=NULL
             """,
             (egs_id, date, name, len(cands), best_score, best_key, tried_at),
         )
@@ -367,14 +390,18 @@ def process_game(conn: sqlite3.Connection, session: requests.Session, row,
     conn.execute(
         """
         INSERT INTO egs_nyaa_search_log
-            (egs_id, date, name, result_count, best_score, selected_infohash, tried_at)
-        VALUES (?, ?, ?, ?, ?, NULL, ?)
+            (egs_id, date, name, result_count, best_score, selected_infohash, tried_at,
+             review_status, reviewed_at)
+        VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)
         ON CONFLICT(egs_id) DO UPDATE SET
             date=excluded.date, name=excluded.name,
             result_count=excluded.result_count, best_score=excluded.best_score,
-            selected_infohash=NULL, tried_at=excluded.tried_at
+            selected_infohash=NULL, tried_at=excluded.tried_at,
+            review_status=excluded.review_status, reviewed_at=excluded.reviewed_at,
+            review_note=NULL
         """,
-        (egs_id, date, name, len(cands), best_score if cands else None, tried_at),
+        (egs_id, date, name, len(cands), best_score if cands else None, tried_at,
+         'pending' if cands else 'none', tried_at),
     )
     conn.commit()
     status = "no_result" if not cands else "low_score"
@@ -502,4 +529,152 @@ def run_magnet(year: int, month: int | None = None, force: bool = False,
     finally:
         if session is not None:
             session.close()
+        conn.close()
+
+
+def review_detail(egs_id: int, db_path: str | None = None) -> dict:
+    """取单条 EGS 记录的待审核候选。"""
+    from tool.egs_core import open_egs_db
+
+    conn = open_egs_db(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_egs_magnet_schema(conn)
+        game = conn.execute(
+            """
+            SELECT g.egs_id, g.date, g.name, g.company, g.release_ts,
+                   g.link, g.nyaa_name, l.review_status, l.best_score
+              FROM egs_games g
+              LEFT JOIN egs_nyaa_search_log l ON l.egs_id = g.egs_id
+             WHERE g.egs_id=?
+            """,
+            (int(egs_id),),
+        ).fetchone()
+        if not game:
+            return {"success": False, "message": "EGS记录不存在"}
+        candidates = conn.execute(
+            """
+            SELECT id, nyaa_title, nyaa_date, size, magnet, infohash_hex,
+                   view_url, publisher, score, score_detail, selected
+              FROM egs_nyaa_candidates
+             WHERE egs_id=?
+             ORDER BY score DESC, fetched_at DESC, id DESC
+            """,
+            (int(egs_id),),
+        ).fetchall()
+        return {
+            "success": True,
+            "game": dict(game),
+            "candidates": [dict(c) for c in candidates],
+        }
+    finally:
+        conn.close()
+
+
+def decide_review(egs_id: int, decision: str, candidate_id: int | None = None,
+                  manual_magnet: str | None = None, manual_nyaa_name: str | None = None,
+                  note: str | None = None, db_path: str | None = None) -> dict:
+    """审核低分候选：通过后回填磁链，拒绝后标记不可下载。"""
+    from tool.egs_core import open_egs_db
+
+    egs_id = int(egs_id)
+    decision = str(decision).lower()
+    if decision not in ("approve", "reject", "reopen"):
+        return {"success": False, "message": "decision 须为 approve/reject/reopen"}
+
+    conn = open_egs_db(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_egs_magnet_schema(conn)
+        game = conn.execute("SELECT egs_id, name FROM egs_games WHERE egs_id=?", (egs_id,)).fetchone()
+        if not game:
+            return {"success": False, "message": "EGS记录不存在"}
+        now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        if decision == "approve":
+            magnet = ""
+            nyaa_name = ""
+            size = None
+            infohash = None
+            if candidate_id:
+                cand = conn.execute(
+                    """
+                    SELECT nyaa_title, nyaa_date, size, magnet, infohash_hex
+                      FROM egs_nyaa_candidates
+                     WHERE id=? AND egs_id=?
+                    """,
+                    (int(candidate_id), egs_id),
+                ).fetchone()
+                if not cand:
+                    return {"success": False, "message": "候选磁链不存在"}
+                magnet = cand["magnet"] or ""
+                nyaa_name = cand["nyaa_title"] or ""
+                size = cand["size"]
+                infohash = cand["infohash_hex"] or extract_infohash(magnet)
+            else:
+                magnet = str(manual_magnet or "").strip()
+                nyaa_name = str(manual_nyaa_name or "").strip()
+                infohash = extract_infohash(magnet)
+            if not magnet or "magnet:?xt=urn:btih:" not in magnet:
+                return {"success": False, "message": "磁链格式无效"}
+            if not infohash:
+                return {"success": False, "message": "磁链缺少 infohash"}
+
+            conn.execute("UPDATE egs_nyaa_candidates SET selected=0 WHERE egs_id=?", (egs_id,))
+            if candidate_id:
+                conn.execute(
+                    "UPDATE egs_nyaa_candidates SET selected=1 WHERE id=? AND egs_id=?",
+                    (int(candidate_id), egs_id),
+                )
+            conn.execute(
+                """
+                UPDATE egs_games
+                   SET link=?, nyaa_name=?, size=?, infohash_hex=?, updated_at=?
+                 WHERE egs_id=?
+                """,
+                (magnet, nyaa_name or None, size, infohash, now_str, egs_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO egs_nyaa_search_log
+                    (egs_id, date, name, result_count, best_score, selected_infohash, tried_at,
+                     review_status, reviewed_at, review_note)
+                SELECT g.egs_id, g.date, g.name,
+                       COALESCE(l.result_count, (SELECT COUNT(*) FROM egs_nyaa_candidates c WHERE c.egs_id=g.egs_id), 0),
+                       COALESCE(l.best_score, (SELECT MAX(score) FROM egs_nyaa_candidates c WHERE c.egs_id=g.egs_id), 0),
+                       ?, ?,
+                       'approved', ?, ?
+                  FROM egs_games g LEFT JOIN egs_nyaa_search_log l ON l.egs_id=g.egs_id
+                 WHERE g.egs_id=?
+                ON CONFLICT(egs_id) DO UPDATE SET
+                    selected_infohash=excluded.selected_infohash,
+                    tried_at=excluded.tried_at,
+                    review_status='approved', reviewed_at=excluded.reviewed_at,
+                    review_note=excluded.review_note
+                """,
+                (infohash, now_str, now_str, note, egs_id),
+            )
+        elif decision == "reject":
+            conn.execute("UPDATE egs_nyaa_candidates SET selected=0 WHERE egs_id=?", (egs_id,))
+            conn.execute(
+                """
+                UPDATE egs_nyaa_search_log
+                   SET review_status='rejected', reviewed_at=?, review_note=?,
+                       selected_infohash=NULL
+                 WHERE egs_id=?
+                """,
+                (now_str, note, egs_id),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE egs_nyaa_search_log
+                   SET review_status='pending', reviewed_at=NULL, review_note=NULL
+                 WHERE egs_id=?
+                """,
+                (egs_id,),
+            )
+        conn.commit()
+        return {"success": True, "message": "审核已更新", "egs_id": egs_id, "decision": decision}
+    finally:
         conn.close()

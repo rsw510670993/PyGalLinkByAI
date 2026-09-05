@@ -154,10 +154,23 @@ def execute_job(state, save, should_stop):
             return
 
         from .p115_client import get_login_status
+        from .egs_magnet import ensure_egs_magnet_schema
         login = get_login_status()
         if not login.get('logged_in'):
             raise RuntimeError('115 未登录，请到 EGS 数据页登录后重试')
-        sql = "SELECT * FROM egs_games WHERE CAST(substr(date,1,4) AS INTEGER) BETWEEN ? AND ? AND link IS NOT NULL AND link != ''"
+        ensure_egs_magnet_schema(conn)
+        sql = """
+            SELECT * FROM egs_games
+             WHERE CAST(substr(date,1,4) AS INTEGER) BETWEEN ? AND ?
+               AND link IS NOT NULL AND link != ''
+               AND NOT EXISTS (
+                   SELECT 1 FROM egs_nyaa_search_log l
+                    WHERE l.egs_id = egs_games.egs_id
+                      AND COALESCE(l.result_count, 0) > 0
+                      AND l.selected_infohash IS NULL
+                      AND COALESCE(l.review_status, 'pending') = 'pending'
+               )
+        """
         params = [state['start_year'], state['end_year']]
         if state['month']:
             sql += ' AND CAST(substr(date,6,2) AS INTEGER) = ?'

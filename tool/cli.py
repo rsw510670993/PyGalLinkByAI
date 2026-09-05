@@ -1016,10 +1016,32 @@ def cmd_egs_games(args):
         page = max(1, int(args.page))
         per_page = max(1, int(args.per_page))
         start = (page - 1) * per_page
+        tables = {r[0] for r in cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        review_select = ""
+        if "egs_nyaa_candidates" in tables:
+            review_select += """
+            , (SELECT COUNT(*) FROM egs_nyaa_candidates c
+                WHERE c.egs_id = egs_games.egs_id) AS candidate_count
+            """
+        if "egs_nyaa_search_log" in tables:
+            log_cols = {r[1] for r in cur.execute("PRAGMA table_info(egs_nyaa_search_log)")}
+            if "best_score" in log_cols:
+                review_select += """
+            , (SELECT l.best_score FROM egs_nyaa_search_log l
+                WHERE l.egs_id = egs_games.egs_id) AS best_score
+            """
+            if "review_status" in log_cols:
+                review_select += """
+            , (SELECT l.review_status FROM egs_nyaa_search_log l
+                WHERE l.egs_id = egs_games.egs_id) AS review_status
+            """
         rows = cur.execute(
             f"""
             SELECT egs_id, date, name, company, release_ts, brand_kind,
                    link, nyaa_name, downloaded, submitted_115, submitted_pick_code
+                  {review_select}
               FROM egs_games{where}
              ORDER BY date, release_ts, egs_id
              LIMIT ? OFFSET ?
@@ -1070,6 +1092,24 @@ def cmd_egs_update(args):
 def cmd_egs_delete(args):
     from tool.egs_core import delete_egs_game_record
     _print(delete_egs_game_record(int(args.egs_id), db_path=args.db))
+
+
+def cmd_egs_review_detail(args):
+    from tool.egs_magnet import review_detail
+    _print(review_detail(int(args.egs_id), db_path=args.db))
+
+
+def cmd_egs_review_decide(args):
+    from tool.egs_magnet import decide_review
+    _print(decide_review(
+        egs_id=int(args.egs_id),
+        decision=args.decision,
+        candidate_id=args.candidate_id,
+        manual_magnet=args.manual_magnet,
+        manual_nyaa_name=args.manual_nyaa_name,
+        note=args.note,
+        db_path=args.db,
+    ))
 
 
 def build_parser():
@@ -1248,6 +1288,22 @@ def build_parser():
     p_egs_delete.add_argument("--egs-id", type=int, required=True, dest="egs_id")
     p_egs_delete.add_argument("--db", type=str)
     p_egs_delete.set_defaults(func=cmd_egs_delete)
+
+    p_egs_review_detail = egs_sub.add_parser("review_detail")
+    p_egs_review_detail.add_argument("--egs-id", type=int, required=True, dest="egs_id")
+    p_egs_review_detail.add_argument("--db", type=str)
+    p_egs_review_detail.set_defaults(func=cmd_egs_review_detail)
+
+    p_egs_review_decide = egs_sub.add_parser("review_decide")
+    p_egs_review_decide.add_argument("--egs-id", type=int, required=True, dest="egs_id")
+    p_egs_review_decide.add_argument("--decision", type=str, required=True,
+                                     choices=["approve", "reject", "reopen"])
+    p_egs_review_decide.add_argument("--candidate-id", type=int, dest="candidate_id")
+    p_egs_review_decide.add_argument("--manual-magnet", type=str, dest="manual_magnet")
+    p_egs_review_decide.add_argument("--manual-nyaa-name", type=str, dest="manual_nyaa_name")
+    p_egs_review_decide.add_argument("--note", type=str)
+    p_egs_review_decide.add_argument("--db", type=str)
+    p_egs_review_decide.set_defaults(func=cmd_egs_review_decide)
 
     p_auto = sub.add_parser("auto")
     auto_sub = p_auto.add_subparsers(dest="action", required=True)

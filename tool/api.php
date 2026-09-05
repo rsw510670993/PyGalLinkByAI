@@ -169,6 +169,43 @@ if ($action === 'egs_delete') {
     json_response($data);
 }
 
+if ($action === 'egs_review_detail') {
+    $egsId = as_int($_GET['egs_id'] ?? null, null);
+    if (!$egsId) {
+        json_response(['success' => false, 'message' => '缺少 egs_id']);
+    }
+    [$code, $data] = run_cli(['egs', 'review_detail', '--egs-id', strval($egsId)]);
+    json_response($data);
+}
+
+if ($action === 'egs_review_decide') {
+    $body = read_json_body();
+    $egsId = as_int($body['egs_id'] ?? null, null);
+    $decision = strval($body['decision'] ?? '');
+    if (!$egsId || !in_array($decision, ['approve', 'reject', 'reopen'], true)) {
+        json_response(['success' => false, 'message' => '参数错误']);
+    }
+    $args = ['egs', 'review_decide', '--egs-id', strval($egsId), '--decision', $decision];
+    if (!empty($body['candidate_id'])) {
+        $args[] = '--candidate-id';
+        $args[] = strval(intval($body['candidate_id']));
+    }
+    if (array_key_exists('manual_magnet', $body) && $body['manual_magnet'] !== null && $body['manual_magnet'] !== '') {
+        $args[] = '--manual-magnet';
+        $args[] = strval($body['manual_magnet']);
+    }
+    if (array_key_exists('manual_nyaa_name', $body) && $body['manual_nyaa_name'] !== null && $body['manual_nyaa_name'] !== '') {
+        $args[] = '--manual-nyaa-name';
+        $args[] = strval($body['manual_nyaa_name']);
+    }
+    if (array_key_exists('note', $body) && $body['note'] !== null && $body['note'] !== '') {
+        $args[] = '--note';
+        $args[] = strval($body['note']);
+    }
+    [$code, $data] = run_cli($args);
+    json_response($data);
+}
+
 if ($action === 'calendar') {
     $year = as_int($_GET['year'] ?? null, null);
     $args = ['calendar'];

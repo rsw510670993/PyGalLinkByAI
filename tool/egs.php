@@ -11,7 +11,9 @@
         .ym-col { width: 96px; max-width: 96px; white-space: nowrap; }
         .game-name-cell { width: 320px; min-width: 260px; max-width: 420px; white-space: normal; word-wrap: break-word; }
         .company-col { width: 180px; max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .actions-col { width: 220px; max-width: 220px; white-space: nowrap; }
+        .actions-col { width: 300px; max-width: 300px; white-space: nowrap; }
+        .review-candidate { border: 1px solid #dee2e6; border-radius: .375rem; padding: .5rem; }
+        .review-candidate + .review-candidate { margin-top: .5rem; }
         .editable-cell { cursor: pointer; transition: background-color .15s; }
         .editable-cell:hover { background-color: rgba(13,110,253,.08); text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; }
         .editable-cell input { width: 100%; border: 1px solid #0d6efd; border-radius: 3px; padding: 2px 4px; font-size: inherit; font-family: inherit; }
@@ -113,6 +115,42 @@
     </div>
 </div>
 
+<div class="modal fade" id="reviewModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">低分候选审核</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="review-modal-egs-id">
+                <div class="mb-2">
+                    <label class="form-label mb-0 small">游戏</label>
+                    <div id="review-game-name" class="fw-semibold"></div>
+                    <div id="review-game-meta" class="small text-muted"></div>
+                </div>
+                <div id="review-candidates"></div>
+                <hr>
+                <div class="mb-2">
+                    <label class="form-label mb-0 small" for="review-manual-magnet">手动磁链（候选都不合适时使用）</label>
+                    <textarea id="review-manual-magnet" class="form-control" rows="2" placeholder="magnet:?xt=urn:btih:..."></textarea>
+                </div>
+                <div class="mb-2">
+                    <label class="form-label mb-0 small" for="review-manual-nyaa-name">手动磁链显示名（可选）</label>
+                    <input id="review-manual-nyaa-name" class="form-control">
+                </div>
+                <div class="d-flex gap-2 mt-3">
+                    <button id="review-manual-approve-btn" class="btn btn-success btn-sm">通过手动磁链</button>
+                    <button id="review-reject-btn" class="btn btn-outline-danger btn-sm">全部拒绝</button>
+                    <button id="review-reopen-btn" class="btn btn-outline-secondary btn-sm">重新待审</button>
+                </div>
+                <div id="review-result" class="small mt-2" style="white-space:pre-wrap;word-break:break-all;"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="editModal" tabindex="-1" aria-hidden="true">
 <div class="modal fade" id="editModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content">
@@ -200,7 +238,17 @@
                 const downloaded = parseInt(row.downloaded || 0, 10) === 1;
                 const submitted = parseInt(row.submitted_115 || 0, 10) === 1;
                 const rowClass = downloaded ? 'table-success' : submitted ? 'table-info' : '';
-                const canMagnet = !!magnet;
+                const candidateCount = parseInt(row.candidate_count || 0, 10);
+                const reviewStatus = row.review_status || '';
+                const statusPending = !reviewStatus || reviewStatus === 'pending';
+                const pendingReview = candidateCount > 0 && statusPending && (!magnet || !!reviewStatus);
+                const canMagnet = !!magnet && !pendingReview;
+                const reviewBadge = pendingReview
+                    ? '<span class="badge text-bg-warning ms-1">待审核</span>'
+                    : reviewStatus === 'rejected' ? '<span class="badge text-bg-secondary ms-1">已拒绝</span>' : '';
+                const reviewBtn = candidateCount > 0
+                    ? '<button type="button" class="btn btn-outline-warning btn-sm review-btn">审核</button>'
+                    : '';
                 return `
                     <tr class="${rowClass}"
                         data-egs-id="${esc(row.egs_id)}"
@@ -211,16 +259,19 @@
                         data-magnet="${esc(magnet)}"
                         data-downloaded="${esc(row.downloaded || 0)}"
                         data-submitted-115="${esc(row.submitted_115 || 0)}"
-                        data-submitted-pick-code="${esc(row.submitted_pick_code || '')}">
+                        data-submitted-pick-code="${esc(row.submitted_pick_code || '')}"
+                        data-review-status="${esc(reviewStatus)}"
+                        data-candidate-count="${esc(candidateCount)}">
                         <td class="check-col text-center">
                             <input type="checkbox" class="game-checkbox form-check-input">
                         </td>
                         <td class="ym-col">${esc(ymText)}</td>
-                        <td class="game-name-cell editable-cell">${esc(row.name)}${nyaaName ? `<div class="text-muted small"${magnet ? ' style="display:none;"' : ''}>${esc(nyaaName)}</div>` : ''}</td>
+                        <td class="game-name-cell editable-cell">${esc(row.name)}${reviewBadge}${nyaaName ? `<div class="text-muted small"${magnet ? ' style="display:none;"' : ''}>${esc(nyaaName)}</div>` : ''}</td>
                         <td class="company-col">${esc(row.company || '')}</td>
                         <td class="actions-col">
                             <button type="button" class="btn btn-success btn-sm btn-115-submit" ${canMagnet ? '' : 'disabled'}>115云下载</button>
                             <button type="button" class="btn btn-outline-secondary btn-sm magnet-check-btn" ${canMagnet ? '' : 'disabled'}>校验</button>
+                            ${reviewBtn}
                         </td>
                     </tr>
                 `;
@@ -284,7 +335,7 @@
     async function submit115(tr, btn) {
         const magnet = tr.dataset.magnet || '';
         const year = yearFromRow(tr);
-        if (!magnet || !year) return;
+        if (!magnet || !year || tr.dataset.reviewStatus === 'pending') return;
 
         const origText = btn.textContent;
         btn.disabled = true;
@@ -322,14 +373,126 @@
         }
     }
 
+    async function openReviewModal(egsId, fallbackName = '-') {
+        const resultEl = document.getElementById('review-result');
+        resultEl.textContent = '加载候选中...';
+        try {
+            const res = await fetch(`api.php?action=egs_review_detail&egs_id=${encodeURIComponent(egsId)}`, { cache: 'no-store' });
+            const data = await res.json();
+            if (!data.success) throw new Error(data.message || '读取失败');
+            document.getElementById('review-modal-egs-id').value = egsId;
+            document.getElementById('review-game-name').textContent = data.game.name || fallbackName;
+            const score = data.game.best_score;
+            document.getElementById('review-game-meta').textContent =
+                `${data.game.date || ''} · ${data.game.company || ''} · 最佳分 ${score === null || score === undefined ? '-' : score}` +
+                ` · 状态 ${data.game.review_status || '待审核'}`;
+            renderReviewCandidates(data.candidates || []);
+            document.getElementById('review-manual-magnet').value = data.game.link || '';
+            document.getElementById('review-manual-nyaa-name').value = data.game.nyaa_name || '';
+            resultEl.textContent = '';
+            bootstrap.Modal.getOrCreateInstance(document.getElementById('reviewModal')).show();
+        } catch (err) {
+            resultEl.textContent = '加载失败：' + err.message;
+            bootstrap.Modal.getOrCreateInstance(document.getElementById('reviewModal')).show();
+        }
+    }
+
+    function renderReviewCandidates(candidates) {
+        const box = document.getElementById('review-candidates');
+        if (!candidates.length) {
+            box.innerHTML = '<div class="text-muted small">没有已保存的候选磁链</div>';
+            return;
+        }
+        box.innerHTML = candidates.map(c => {
+            const selected = parseInt(c.selected || 0, 10) === 1;
+            return `
+                <div class="review-candidate">
+                    <div class="d-flex justify-content-between align-items-start gap-2">
+                        <div class="small">
+                            <div class="fw-semibold">${esc(c.nyaa_title || '-')}</div>
+                            <div class="text-muted">分数 ${esc(c.score ?? '-')} · ${esc(c.nyaa_date || '-')}${c.size ? ' · ' + esc(c.size) : ''}</div>
+                            <div class="text-break text-muted small">${esc(c.magnet || '')}</div>
+                        </div>
+                        <div class="d-flex flex-column gap-1 flex-shrink-0">
+                            ${c.view_url ? `<a class="btn btn-outline-secondary btn-sm" href="${esc(c.view_url)}" target="_blank">查看</a>` : ''}
+                            <button type="button" class="btn btn-success btn-sm review-approve-btn" data-candidate-id="${esc(c.id)}">采用</button>
+                            ${selected ? '<span class="badge text-bg-success">已选</span>' : ''}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    async function decideReview(body) {
+        const resultEl = document.getElementById('review-result');
+        resultEl.textContent = '保存审核结果中...';
+        try {
+            const res = await fetch('api.php?action=egs_review_decide', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            const data = await res.json();
+            if (!data.success) throw new Error(data.message || '保存失败');
+            resultEl.textContent = '已保存';
+            setTimeout(() => {
+                bootstrap.Modal.getOrCreateInstance(document.getElementById('reviewModal')).hide();
+                load();
+            }, 250);
+        } catch (err) {
+            resultEl.textContent = '保存失败：' + err.message;
+        }
+    }
+
+    document.getElementById('review-candidates').addEventListener('click', e => {
+        const btn = e.target.closest('.review-approve-btn');
+        if (!btn) return;
+        decideReview({
+            egs_id: parseInt(document.getElementById('review-modal-egs-id').value, 10),
+            decision: 'approve',
+            candidate_id: parseInt(btn.dataset.candidateId, 10)
+        });
+    });
+
+    document.getElementById('review-manual-approve-btn').addEventListener('click', () => {
+        decideReview({
+            egs_id: parseInt(document.getElementById('review-modal-egs-id').value, 10),
+            decision: 'approve',
+            manual_magnet: document.getElementById('review-manual-magnet').value.trim(),
+            manual_nyaa_name: document.getElementById('review-manual-nyaa-name').value.trim()
+        });
+    });
+
+    document.getElementById('review-reject-btn').addEventListener('click', () => {
+        decideReview({
+            egs_id: parseInt(document.getElementById('review-modal-egs-id').value, 10),
+            decision: 'reject'
+        });
+    });
+
+    document.getElementById('review-reopen-btn').addEventListener('click', () => {
+        decideReview({
+            egs_id: parseInt(document.getElementById('review-modal-egs-id').value, 10),
+            decision: 'reopen'
+        });
+    });
+
     document.getElementById('games-body').addEventListener('click', e => {
         const submitBtn = e.target.closest('.btn-115-submit');
         const checkBtn = e.target.closest('.magnet-check-btn');
+        const reviewBtn = e.target.closest('.review-btn');
         const nameCell = e.target.closest('.editable-cell');
 
         if (submitBtn) {
             const tr = submitBtn.closest('tr');
             submit115(tr, submitBtn);
+            return;
+        }
+
+        if (reviewBtn) {
+            const tr = reviewBtn.closest('tr');
+            openReviewModal(parseInt(tr.dataset.egsId, 10), tr.dataset.name || '-');
             return;
         }
 
@@ -453,7 +616,7 @@
 
         for (const tr of rows) {
             const submitBtn = tr.querySelector('.btn-115-submit');
-            if (!tr.dataset.magnet || !yearFromRow(tr)) { fail++; continue; }
+            if (!tr.dataset.magnet || !yearFromRow(tr) || tr.dataset.reviewStatus === 'pending') { fail++; continue; }
             try {
                 const res = await fetch('api.php?action=115_submit', {
                     method: 'POST',
