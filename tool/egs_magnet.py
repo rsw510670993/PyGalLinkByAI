@@ -409,6 +409,17 @@ def process_game(conn: sqlite3.Connection, session: requests.Session, row,
         conn.commit()
         result["selected_title"] = best.get("nyaa_title")
         result["selected_infohash"] = best_key
+        # 同磁链预警：本篇/补丁等重复条目选到同一种子时记录下来（下载/提交层可据此去重）
+        dup_owner = None
+        if best_key:
+            dup_owner = conn.execute(
+                "SELECT name FROM egs_games WHERE infohash_hex=? AND egs_id!=? LIMIT 1",
+                (best_key, egs_id),
+            ).fetchone()
+        if dup_owner is not None:
+            result["duplicate_of"] = dup_owner["name"]
+            logger.info("DUPLICATE_TORRENT %s | 与《%s》选中同一磁链 %s",
+                        name[:40], (dup_owner["name"] or "")[:40], best_key)
         logger.info("SELECTED %s | %s | score=%s detail=%s", name[:40],
                     (best.get("nyaa_title") or "")[:60], best_score, best_detail)
         return "selected", result

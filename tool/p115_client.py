@@ -258,6 +258,55 @@ def qr_login_step3(uid, app="alipaymini"):
         return {"success": False, "message": str(e)}
 
 
+def _magnet_info_hash(magnet):
+    """从磁链中提取 info_hash（小写 hex），失败返回空串。"""
+    parsed = parse_magnet_simple(magnet or "")
+    return parsed.get("infohash_hex") or ""
+
+
+def _error_response(exc):
+    """尽量从 p115client 异常中取出原始 115 响应 dict，取不到返回 None。"""
+    resp = getattr(exc, "message", None)
+    return resp if isinstance(resp, dict) else None
+
+
+def _is_duplicate_task_error(exc):
+    """115 对重复离线任务的拒绝：lixianssp errcode=10008 / web errno=919。"""
+    resp = _error_response(exc)
+    if resp is not None:
+        inner = resp.get("data") if isinstance(resp.get("data"), dict) else resp
+        if isinstance(inner, dict):
+            if str(inner.get("errcode") or "") == "10008" or str(inner.get("errno") or "") == "919":
+                return True
+    return "任务已存在" in str(exc)
+
+
+def _duplicate_task_info(exc, magnet):
+    """重复提交时回收已有任务信息：优先取 115 返回的 info_hash/pick_code，
+    否则按 info_hash 查离线任务列表补齐 pick_code。"""
+    info_hash = ""
+    pick_code = None
+    resp = _error_response(exc)
+    if resp is not None:
+        inner = resp.get("data") if isinstance(resp.get("data"), dict) else resp
+        if isinstance(inner, dict):
+            info_hash = str(inner.get("info_hash") or "").lower()
+            pick_code = inner.get("pick_code") or inner.get("pickcode") or inner.get("pc") or None
+    if not info_hash:
+        info_hash = _magnet_info_hash(magnet)
+    if not pick_code and info_hash:
+        ol = offline_list()
+        for task in ol.get("tasks", []) if ol.get("success") else []:
+            if not isinstance(task, dict):
+                continue
+            task_hash = str(task.get("info_hash") or "").lower()
+            task_url = str(task.get("url") or "").lower()
+            if info_hash in (task_hash, task_url):
+                pick_code = task.get("pick_code") or None
+                break
+    return {"info_hash": info_hash, "pick_code": pick_code}
+
+
 def offline_submit(magnet, save_path):
     client = load_client()
     if client is None:
@@ -279,6 +328,18 @@ def offline_submit(magnet, save_path):
             pick_code = data.get("pick_code") or data.get("pickcode") or data.get("pc")
         return {"success": True, "pick_code": pick_code, "response": resp}
     except Exception as e:
+        if _is_duplicate_task_error(e):
+            # 任务已存在 = 该磁链已在 115 离线列表中，语义上等同于提交成功，
+            # 回收已有任务的 info_hash/pick_code 供上层落库，避免每次重跑都报错。
+            info = _duplicate_task_info(e, magnet)
+            return {
+                "success": True,
+                "duplicate": True,
+                "info_hash": info["info_hash"],
+                "pick_code": info["pick_code"],
+                "message": "任务已存在，视为提交成功",
+                "response": _error_response(e),
+            }
         return {"success": False, "message": str(e)}
 
 

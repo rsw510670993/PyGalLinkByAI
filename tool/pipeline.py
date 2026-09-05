@@ -230,6 +230,7 @@ def execute_job(state, save, should_stop):
         state['total'] = len(rows)
         save()
         year_dirs = {}
+        submitted_tasks = {}  # info_hash -> {'egs_id','name','pick_code'}，本轮内同磁链只提交一次
         if action == 'organize':
             from .egs_organize import ensure_folder_schema, organize_single
             ensure_folder_schema(conn)
@@ -253,24 +254,37 @@ def execute_job(state, save, should_stop):
                     else:
                         report(name, 'skipped', result.get('message') or '尚未找到已下载内容')
                 elif action == 'submit':
-                    from .p115_client import offline_submit
+                    from .p115_client import offline_submit, _magnet_info_hash
                     from .egs_organize import resolve_cid, mkdir_year_dir
-                    year = int(row['date'][:4])
-                    directory = f'/GAL/GAL-{year}'
-                    if directory not in year_dirs:
-                        cid = resolve_cid(directory)
-                        if not cid:
-                            cid = mkdir_year_dir(year)
-                        if not cid:
-                            raise RuntimeError('无法确定提交目录')
-                        year_dirs[directory] = cid
-                    result = offline_submit(row['link'], directory)
-                    if not result.get('success'):
-                        raise RuntimeError(result.get('message') or '提交失败')
+                    info_hash = _magnet_info_hash(row['link'])
+                    prior = submitted_tasks.get(info_hash) if info_hash else None
+                    if prior is None:
+                        year = int(row['date'][:4])
+                        directory = f'/GAL/GAL-{year}'
+                        if directory not in year_dirs:
+                            cid = resolve_cid(directory)
+                            if not cid:
+                                cid = mkdir_year_dir(year)
+                            if not cid:
+                                raise RuntimeError('无法确定提交目录')
+                            year_dirs[directory] = cid
+                        result = offline_submit(row['link'], directory)
+                        if not result.get('success'):
+                            raise RuntimeError(result.get('message') or '提交失败')
+                        if info_hash:
+                            submitted_tasks[info_hash] = {'egs_id': row['egs_id'], 'name': name, 'pick_code': result.get('pick_code') or ''}
+                    else:
+                        # 同一条磁链本轮已提交过（本篇/补丁等重复条目），直接落库不再请求 115。
+                        result = {'pick_code': prior['pick_code'], 'duplicate': True}
                     conn.execute('UPDATE egs_games SET submitted_115=1, submitted_pick_code=?, updated_at=? WHERE egs_id=? AND link=?',
                                  (result.get('pick_code'), now_ts(), row['egs_id'], row['link']))
                     conn.commit()
-                    report(name, 'success', '已提交115')
+                    if prior is not None:
+                        report(name, 'success', f"磁链与《{prior['name']}》重复，沿用已提交任务")
+                    elif result.get('duplicate'):
+                        report(name, 'success', result.get('message') or '115 已存在相同任务，视为提交成功')
+                    else:
+                        report(name, 'success', '已提交115')
                 else:
                     result = organize_single(row['date'], name, dry_run=not state['execute'], conn=conn, year_dirs=year_dirs)
                     code = result.get('status')
