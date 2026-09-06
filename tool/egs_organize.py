@@ -18,6 +18,8 @@ from .p115_client import (
     parent_crumbs_path,
     _normalize_for_comparison,
     _names_match,
+    _is_safe_substring,
+    _strip_leading_dates_and_tags,
     _search_keyword_from_dn,
     _extra_keywords_from_dn,
     _leading_date_codes,
@@ -216,16 +218,61 @@ def list_dir_children(cid, max_pages=30):
         return None
 
 
-def locate_in_year_dir(year_dir_cid, dn, name):
+def _torrent_core_title(name):
+    """取种子名/目录名的核心标题：去掉 [标签]、日期、+特典后缀，仅留作品主体。"""
+    s = _normalize_for_comparison(name or "")
+    s = re.sub(r'\[[^\]]*\]', ' ', s)          # 去掉 [日期]/[公司]/[版本] 等方括号段
+    s = re.sub(r'\s*[+＋].*$', '', s)              # 去掉 + Voice Drama / + Soundtrack 等追加段
+    return re.sub(r'\s+', ' ', s).strip()
+
+
+def _torrent_name_matches(torrent_name, folder_name):
+    """torrent info.name 与 115 目录名是否指向同一作品。
+
+    必须基于核心标题比对，不能直接对整个归一化字符串做安全子串——
+    否则会因同公司（如 [あざらしそふと]）而把不同游戏误判成同一个。
+    兼容 ISO 旧日期、+Voice Drama 追加、空格/全半角差异。
+    """
+    a = _torrent_core_title(torrent_name)
+    b = _torrent_core_title(folder_name)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    # 标题主体足够长时才允许互相包含（本篇 vs 包含补丁的合集标题等）
+    if len(a) >= 6 and len(b) >= 6 and (_is_safe_substring(a, b) or _is_safe_substring(b, a)):
+        return True
+    ca, cb = a.replace(" ", ""), b.replace(" ", "")
+    if len(ca) >= 6 and len(cb) >= 6 and (ca == cb or _is_safe_substring(ca, cb) or _is_safe_substring(cb, ca)):
+        return True
+    return False
+
+
+
+def locate_in_year_dir(year_dir_cid, dn, name, torrent_name=None):
     """在指定年份目录内直读定位（绕过115搜索索引滞后/搜索限流）。
 
     返回 {"cid","pid","name","parent_path","is_dir","pick_code"} 或 None。
+    torrent_name 为 .torrent 的 info.name —— 115 的目录名与之完全一致，
+    因此传入时优先做精确/安全包含匹配，避免 dn 展示名差异导致的误判。
     """
     if not year_dir_cid:
         return None
     items = list_dir_children(year_dir_cid)
     if not items:
         return None
+
+    # ① info.name 精确定位（首选）
+    norm_tn = _normalize_for_comparison(torrent_name) if torrent_name else ""
+    if norm_tn:
+        for it in items:
+            fname = it.get("n") or ""
+            if _torrent_name_matches(torrent_name, fname):
+                return {"cid": str(it.get("cid")), "pid": it.get("pid"), "name": it.get("n"),
+                        "parent_path": parent_crumbs_path(it.get("pid")),
+                        "is_dir": str(it.get("fc", "")) == "0", "pick_code": it.get("pc")}
+
+    # ② 退回 dn / EGS 名匹配
     norm_dn = _normalize_for_comparison(dn)
     norm = _normalize_for_comparison(name)
     best = None
@@ -373,13 +420,21 @@ def extract_dn_info(link):
     return dn, (codes[0] if codes else None)
 
 
-def locate_by_search(dn, name):
+def locate_by_search(dn, name, torrent_name=None):
     """按dn多级搜索定位文件夹（复用check_magnet_exists同款关键词策略）。
 
+    传入 torrent_name（.torrent info.name）时优先作为查询并精确匹配，
+    因为 115 目录名 = info.name，可避免 dn 展示名不一致导致的误判/多候选。
     返回 {"cid","pid","name","parent_path","is_dir","candidates"} 或 None。
     多个目录候选得分相同且都是目录时返回ambiguous=True。
     """
     client_queries = []
+    norm_tn = _normalize_for_comparison(torrent_name) if torrent_name else ""
+    if torrent_name:
+        q = torrent_name.strip()
+        if len(q) > 60:
+            q = q[:60]
+        client_queries.append(q)
     kw = _search_keyword_from_dn(dn)
     if kw:
         client_queries.append(kw)
@@ -396,6 +451,9 @@ def locate_by_search(dn, name):
     if norm and len(norm) >= 3:
         client_queries.append(name[:20])
 
+    def tn_match(fname):
+        return bool(torrent_name) and _torrent_name_matches(torrent_name, fname)
+
     norm_dn = _normalize_for_comparison(dn)
     best = None  # (score, item)
     dir_hits = 0
@@ -410,11 +468,11 @@ def locate_by_search(dn, name):
             if not fname or it.get("cid") in seen_ids:
                 continue
             norm_fname = _normalize_for_comparison(fname)
-            if not (_names_match(norm_dn, norm_fname) or (norm and norm in norm_fname)):
+            if not (_names_match(norm_dn, norm_fname) or (norm and norm in norm_fname) or tn_match(fname)):
                 continue
             seen_ids.add(it.get("cid"))
             is_dir = str(it.get("fc", "")) == "0"
-            score = (2 if is_dir else 0) + (1 if norm and norm in norm_fname else 0)
+            score = (2 if is_dir else 0) + (1 if norm and norm in norm_fname else 0) + (2 if tn_match(fname) else 0)
             if best is None or score > best[0]:
                 best = (score, it)
                 dir_hits = 1 if is_dir else 0
@@ -425,7 +483,7 @@ def locate_by_search(dn, name):
                 dir_hits += 1
 
         if best is not None and best[0] >= 3:
-            break  # 目录+包含游戏名，足够可信
+            break  # 目录+包含游戏名/种子名，足够可信
 
     if best is None:
         return None
@@ -627,7 +685,7 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
     try:
         row = conn.execute(
             "SELECT company, link, COALESCE(downloaded,0), COALESCE(submitted_115,0), release_ts,"
-            " egs_date, actual_release_ts"
+            " egs_date, actual_release_ts, torrent_name"
             " FROM egs_games WHERE date=? AND name=?",
             (date, name),
         ).fetchone()
@@ -635,7 +693,9 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
             result["status"] = "error"
             result["message"] = "游戏记录不存在"
             return result
-        company, link, downloaded, submitted, release_ts, egs_date, actual_release_ts = row
+        company, link, downloaded, submitted, release_ts, egs_date, actual_release_ts, torrent_name = row
+        if torrent_name:
+            result["torrent_name"] = torrent_name
         result["egs_date"] = egs_date
         result["release_ts"] = release_ts
         result["actual_release_ts"] = actual_release_ts
@@ -680,13 +740,20 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
             else:
                 rec = None  # cid失效（目录被删等），回退搜索
 
-        # ② dn搜索（全局搜索 + 年份目录直读兜底，防115搜索索引滞后）
+        # ② 定位：先按 .torrent info.name 直读年份目录（info.name == 115 目录名，
+        #    可绕过 dn 展示名不一致导致的误判）；再退回 dn 全局搜索 + dn 直读兜底
         if old_name is None:
-            loc = locate_by_search(dn_of(link), name)
+            ydir = resolve_cid(year_dir_path)
+            loc = None
+            if torrent_name and ydir:
+                loc = locate_in_year_dir(ydir, dn_of(link), name, torrent_name=torrent_name)
+                if loc is not None:
+                    loc["located_by"] = "torrent_name"
             if loc is None:
+                loc = locate_by_search(dn_of(link), name, torrent_name=torrent_name)
+            if loc is None and ydir:
                 # 兜底: 直读 dn 年份目录（搜索索引未收录新目录时仍可定位）
-                ydir = resolve_cid(year_dir_path)
-                loc = locate_in_year_dir(ydir, dn_of(link), name) if ydir else None
+                loc = locate_in_year_dir(ydir, dn_of(link), name)
                 if loc is not None and loc.get("ambiguous"):
                     loc = None
             if loc is None:
@@ -761,7 +828,7 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
             pid = loc.get("pid")
             old_name = loc.get("name")
             parent_path = loc.get("parent_path")
-            located_by = "search"
+            located_by = loc.get("located_by") or "search"
 
         result["cid"] = cid
         result["old_name"] = old_name

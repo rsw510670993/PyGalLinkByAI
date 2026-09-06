@@ -98,6 +98,19 @@ def ensure_egs_magnet_schema(conn: sqlite3.Connection) -> None:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(egs_nyaa_search_log)")}
         if column not in cols:
             conn.execute(f"ALTER TABLE egs_nyaa_search_log ADD COLUMN {column} {decl}")
+    # egs_games 的种子 info 信息列（与 115 产物目录精确对应）
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(egs_games)")}
+        for column, decl in (
+            ("torrent_name", "TEXT"),
+            ("torrent_files", "TEXT"),
+            ("torrent_size", "INTEGER"),
+        ):
+            if column not in cols:
+                conn.execute(f"ALTER TABLE egs_games ADD COLUMN {column} {decl}")
+    except sqlite3.OperationalError:
+        # egs_games 尚未建立（如仅跑磁链模块的独立库）时跳过，由 ensure_egs_schema 负责
+        pass
     conn.execute(
         """
         UPDATE egs_nyaa_search_log
@@ -382,15 +395,36 @@ def process_game(conn: sqlite3.Connection, session: requests.Session, row,
     }
     tried_at = time.strftime("%Y-%m-%d %H:%M:%S")
     if best:
+        # 下载 .torrent 并解析 info.name/文件清单，作为后续整理的精确定位依据。
+        # 失败仅降级（torrent_name 等留空），不阻断磁链选中。
+        meta = None
+        try:
+            from .torrent_meta import fetch_torrent_meta, meta_to_json
+
+            pacer = getattr(session, "_egs_pacer", None)
+            meta = fetch_torrent_meta(session, best.get("view_url"),
+                                      expected_infohash=best_key, pacer=pacer)
+        except SearchStopped:
+            raise
+        except Exception:
+            logger.debug("torrent meta fetch failed: %s", name, exc_info=True)
+        meta_name = meta.get("name") if meta else None
+        meta_files = meta_to_json(meta) if meta else None
+        meta_size = meta.get("total_size") if meta else None
+        if meta_name:
+            result["torrent_name"] = meta_name
+
         conn.execute(
             """
             UPDATE egs_games
                SET link=?, nyaa_name=?, size=?, infohash_hex=?,
+                   torrent_name=?, torrent_files=?, torrent_size=?,
                    updated_at=?
              WHERE egs_id=?
             """,
             (best.get("magnet"), best.get("nyaa_title"), best.get("size"),
-             extract_infohash(best.get("magnet")), tried_at, egs_id),
+             extract_infohash(best.get("magnet")), meta_name, meta_files,
+             meta_size, tried_at, egs_id),
         )
         conn.execute(
             """

@@ -1172,6 +1172,65 @@ def cmd_egs_organize_issue_resolve(args):
         conn.close()
 
 
+def cmd_egs_torrent_meta_backfill(args):
+    """存量回填：为已有磁链的行下载 .torrent 解析 info.name，供整理精确定位。"""
+    import sqlite3
+
+    import requests
+    from tool.egs_core import ensure_egs_schema, open_egs_db
+    from tool.egs_magnet import HEADERS, RequestPacer
+    from tool.torrent_meta import fetch_torrent_meta, meta_to_json
+
+    conn = open_egs_db(args.db)
+    ensure_egs_schema(conn)
+    conn.row_factory = sqlite3.Row
+    try:
+        sql = """
+            SELECT g.egs_id, g.date, g.name, g.link, g.infohash_hex
+              FROM egs_games g
+             WHERE COALESCE(g.link,'') != '' AND g.infohash_hex IS NOT NULL
+               AND (? OR COALESCE(g.torrent_name,'') = '')
+               AND (? OR g.date LIKE ?)
+             ORDER BY g.egs_id
+        """
+        rows = conn.execute(sql, (bool(args.force), bool(args.year), f"{args.year}-%" if args.year else None)).fetchall()
+        if args.limit:
+            rows = rows[:args.limit]
+        stats = {"total": len(rows), "ok": 0, "skip_no_view": 0, "fail": 0, "updated": []}
+        if not rows:
+            _print(stats)
+            return
+        session = requests.Session()
+        session.headers.update(HEADERS)
+        pacer = RequestPacer()
+        for row in rows:
+            cand = conn.execute(
+                """SELECT view_url FROM egs_nyaa_candidates
+                    WHERE egs_id=? AND infohash_hex=?
+                    ORDER BY selected DESC, id DESC LIMIT 1""",
+                (row['egs_id'], row['infohash_hex']),
+            ).fetchone()
+            if not cand or not cand['view_url']:
+                stats['skip_no_view'] += 1
+                continue
+            meta = fetch_torrent_meta(session, cand['view_url'], expected_infohash=row['infohash_hex'], pacer=pacer)
+            if not meta:
+                stats['fail'] += 1
+                continue
+            conn.execute(
+                """UPDATE egs_games SET torrent_name=?, torrent_files=?, torrent_size=?
+                    WHERE egs_id=?""",
+                (meta['name'], meta_to_json(meta), meta.get('total_size'), row['egs_id']),
+            )
+            conn.commit()
+            stats['ok'] += 1
+            stats['updated'].append({"egs_id": row['egs_id'], "name": row['name'],
+                                     "torrent_name": meta['name']})
+        _print(stats)
+    finally:
+        conn.close()
+
+
 def cmd_egs_review_detail(args):
     from tool.egs_magnet import review_detail
     _print(review_detail(int(args.egs_id), db_path=args.db))
@@ -1406,6 +1465,14 @@ def build_parser():
     p_egs_organize_issue_resolve.add_argument("--id", type=int, required=True)
     p_egs_organize_issue_resolve.add_argument("--db", type=str)
     p_egs_organize_issue_resolve.set_defaults(func=cmd_egs_organize_issue_resolve)
+
+    p_egs_torrent_meta_backfill = egs_sub.add_parser("torrent_meta_backfill")
+    p_egs_torrent_meta_backfill.add_argument("--year", type=int, default=0)
+    p_egs_torrent_meta_backfill.add_argument("--limit", type=int, default=0)
+    p_egs_torrent_meta_backfill.add_argument("--force", action="store_true",
+                                             help="已回填的行也重新下载覆盖")
+    p_egs_torrent_meta_backfill.add_argument("--db", type=str)
+    p_egs_torrent_meta_backfill.set_defaults(func=cmd_egs_torrent_meta_backfill)
 
     p_egs_review_detail = egs_sub.add_parser("review_detail")
     p_egs_review_detail.add_argument("--egs-id", type=int, required=True, dest="egs_id")

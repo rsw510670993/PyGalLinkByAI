@@ -96,6 +96,10 @@ def ensure_egs_schema(conn: sqlite3.Connection) -> None:
             infohash_hex    TEXT,
             submitted_115   INTEGER NOT NULL DEFAULT 0,
             submitted_pick_code TEXT,
+            -- 种子真实 info 信息（来自 .torrent，与 115 产物目录精确对应）
+            torrent_name    TEXT,
+            torrent_files   TEXT,
+            torrent_size    INTEGER,
             fetched_at      TEXT,
             updated_at      TEXT
         )
@@ -111,6 +115,13 @@ def ensure_egs_schema(conn: sqlite3.Connection) -> None:
     cols = {r[1] for r in conn.execute("PRAGMA table_info(egs_games)")}
     if "actual_release_ts" not in cols:
         conn.execute("ALTER TABLE egs_games ADD COLUMN actual_release_ts TEXT")
+    for column, decl in (
+        ("torrent_name", "TEXT"),
+        ("torrent_files", "TEXT"),
+        ("torrent_size", "INTEGER"),
+    ):
+        if column not in cols:
+            conn.execute(f"ALTER TABLE egs_games ADD COLUMN {column} {decl}")
     conn.commit()
 
 
