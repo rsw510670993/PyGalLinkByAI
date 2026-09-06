@@ -16,6 +16,8 @@ from difflib import SequenceMatcher
 
 THRESHOLD = 40.0
 MAX_SCORE = 65.0
+# 全名极短（如 HOME/LUNA）时，仅凭名字子串极易误配到其他作品，必须同时出现公司名
+SHORT_NAME_MAX = 4
 
 
 def _norm(s):
@@ -74,6 +76,19 @@ def _parse_dt(s):
     return None
 
 
+def _company_in_title(company, nt):
+    """公司名命中标题：支持多语种公司名（如 WorkNite Games/沃兔奈遊戲）任一段命中。"""
+    comp = _norm(company or "")
+    if len(comp) >= 3 and comp in nt:
+        return True
+    if "/" in (company or ""):
+        for part in str(company).split("/"):
+            p = _norm(part)
+            if len(p) >= 3 and p in nt:
+                return True
+    return False
+
+
 def score_candidate(game, cand):
     """game: {name, company, date, release_date}; cand: {nyaa_title, nyaa_date, ...}
 
@@ -108,8 +123,7 @@ def score_candidate(game, cand):
                     total += 12
                     detail["name_partial"] = round(frac, 2)
 
-    comp = _norm(game.get("company") or "")
-    if len(comp) >= 3 and comp in nt:
+    if _company_in_title(game.get("company"), nt):
         total += 10
         detail["company"] = 10
 
@@ -143,6 +157,11 @@ def score_candidate(game, cand):
     elif "2d.g.f." in tl or "2dgf" in nt:
         total += 8
         detail["publisher"] = "2D.G.F."
+
+    # 极短名称强制公司名一致：无公司佐证的候选不允许自动达到阈值
+    if 0 < len(gnorm) <= SHORT_NAME_MAX and "company" not in detail:
+        total = min(total, THRESHOLD - 1)
+        detail["short_name_requires_company"] = True
 
     return round(total, 1), detail
 
