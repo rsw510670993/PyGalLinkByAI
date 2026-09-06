@@ -449,7 +449,8 @@ def _normalize_for_comparison(name):
     first_bracket = name.find('[')
     if first_bracket > 0:
         name = name[first_bracket:]
-    name = re.split(r'\s*\+\s*', name)[0]
+    # 仅去掉“ + 追加内容/特典”后缀；不能用无空格的 + 切分（会误截公司名如 [Brand+1]）
+    name = re.split(r'\s+\+\s+', name)[0]
     name = re.sub(r'\]\s+\[', '][', name)
     name = name.lower()
     name = name.translate(str.maketrans('０１２３４５６７８９', '0123456789'))
@@ -596,7 +597,8 @@ def _search_keyword_from_dn(dn):
         return f"[{date_bracket}]"
     if rest:
         return f"[{rest[0]}]"
-    name = re.split(r'\s*\+\s*', name)[0]
+    # 仅去掉“ + 追加内容/特典”后缀；不能用无空格的 + 切分（会误截公司名如 [Brand+1]）
+    name = re.split(r'\s+\+\s+', name)[0]
     return name.strip()[:30]
 
 

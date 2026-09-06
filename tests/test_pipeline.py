@@ -287,3 +287,12 @@ class PipelineTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class NormalizeRegressionTests(unittest.TestCase):
+    def test_normalize_keeps_ascii_plus_inside_company_bracket(self):
+        from tool.p115_client import _normalize_for_comparison
+        # 公司名里的 +1 不能被当作追加段截断（曾把 [あざらしそふと+1] 截成 [あざらしそふと）
+        s = _normalize_for_comparison('[20260327][あざらしそふと+1]あまねぇ -幼馴染お姉ちゃん')
+        self.assertIn('あまねぇ', s)
+        self.assertIn('+1', s)
