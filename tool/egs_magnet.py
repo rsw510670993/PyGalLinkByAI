@@ -105,6 +105,8 @@ def ensure_egs_magnet_schema(conn: sqlite3.Connection) -> None:
             ("torrent_name", "TEXT"),
             ("torrent_files", "TEXT"),
             ("torrent_size", "INTEGER"),
+            ("download_failed", "INTEGER NOT NULL DEFAULT 0"),
+            ("download_failed_at", "TEXT"),
         ):
             if column not in cols:
                 conn.execute(f"ALTER TABLE egs_games ADD COLUMN {column} {decl}")
@@ -371,7 +373,13 @@ def process_game(conn: sqlite3.Connection, session: requests.Session, row,
     egs_id, date, name, company, release_ts = (
         row["egs_id"], row["date"], row["name"], row["company"], row["release_ts"]
     )
-    if not force:
+    old = conn.execute(
+        "SELECT COALESCE(download_failed,0) AS download_failed, link, infohash_hex"
+        " FROM egs_games WHERE egs_id=?", (egs_id,),
+    ).fetchone()
+    old_failed = bool(old and old["download_failed"])
+    old_infohash = str(old["infohash_hex"] or "").lower() if old else ""
+    if not force and not old_failed:
         logged = conn.execute(
             "SELECT selected_infohash FROM egs_nyaa_search_log WHERE egs_id=?",
             (egs_id,),
@@ -414,17 +422,27 @@ def process_game(conn: sqlite3.Connection, session: requests.Session, row,
         if meta_name:
             result["torrent_name"] = meta_name
 
+        # 失败重查：仍是最优/同一磁链 → 保持 download_failed；换到新 infohash → 清除失败
+        new_magnet = bool(old_infohash and best_key and best_key.lower() != old_infohash)
+        keep_failed = old_failed and not new_magnet
+        download_failed_value = 1 if keep_failed else 0
+        download_failed_at_value = tried_at if keep_failed else None
+        if new_magnet:
+            result["new_magnet"] = True
+        result["download_failed"] = download_failed_value
         conn.execute(
             """
             UPDATE egs_games
                SET link=?, nyaa_name=?, size=?, infohash_hex=?,
                    torrent_name=?, torrent_files=?, torrent_size=?,
+                   download_failed=?, download_failed_at=?,
                    updated_at=?
              WHERE egs_id=?
             """,
             (best.get("magnet"), best.get("nyaa_title"), best.get("size"),
              extract_infohash(best.get("magnet")), meta_name, meta_files,
-             meta_size, tried_at, egs_id),
+             meta_size, download_failed_value, download_failed_at_value,
+             tried_at, egs_id),
         )
         conn.execute(
             """
@@ -475,6 +493,14 @@ def process_game(conn: sqlite3.Connection, session: requests.Session, row,
          'pending' if cands else 'none', tried_at),
     )
     conn.commit()
+    if old_failed:
+        # 仍无更优磁链：保持失败标记，供年度磁链任务下轮继续查询
+        conn.execute(
+            "UPDATE egs_games SET download_failed=1, download_failed_at=?"
+            " WHERE egs_id=?", (tried_at, egs_id),
+        )
+        conn.commit()
+    result["download_failed"] = 1 if old_failed else 0
     status = "no_result" if not cands else "low_score"
     logger.info("%s %s | candidates=%s max_score=%s", status.upper(), name[:40],
                 len(cands), best_score)
@@ -485,10 +511,11 @@ def pending_rows(conn: sqlite3.Connection, year: int, month: int | None = None,
                  force: bool = False, limit: int = 0) -> list[sqlite3.Row]:
     """取待搜索的 EGS 行，默认跳过搜索历史。"""
     sql = """
-        SELECT egs_id, date, name, company, release_ts
+        SELECT egs_id, date, name, company, release_ts, link, infohash_hex,
+               COALESCE(download_failed,0) AS download_failed
           FROM egs_games
          WHERE substr(date,1,4)=?
-           AND (link IS NULL OR link='')
+           AND ((link IS NULL OR link='') OR COALESCE(download_failed,0)=1)
            AND (release_ts IS NULL OR release_ts <= date('now','localtime'))
     """
     params: list = [str(year)]
@@ -496,11 +523,12 @@ def pending_rows(conn: sqlite3.Connection, year: int, month: int | None = None,
         sql += " AND CAST(substr(date,6) AS INTEGER)=?"
         params.append(int(month))
     if not force:
+        # 普通无磁链行仍跳过已有搜索历史的；下载失败行每次都重新查询，直到换到新磁链
         sql += """
-           AND NOT EXISTS (
+           AND (COALESCE(download_failed,0)=1 OR NOT EXISTS (
                SELECT 1 FROM egs_nyaa_search_log l
                 WHERE l.egs_id = egs_games.egs_id
-           )
+           ))
         """
     sql += " ORDER BY date, release_ts, egs_id"
     if limit:

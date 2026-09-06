@@ -676,6 +676,7 @@ def check_magnet_exists(magnet, save_path, debug=False):
 
     matched_files = []
     in_offline = False
+    download_failed = False
     confidence = "none"
 
     dbg = None
@@ -694,13 +695,20 @@ def check_magnet_exists(magnet, save_path, debug=False):
         if isinstance(tasks, dict):
             tasks = tasks.get("data", []) if isinstance(tasks, dict) else []
         for task in tasks:
-            if isinstance(task, dict):
-                task_url = (task.get("url") or "").lower()
-                if magnet.lower() in task_url or (infohash_hex and infohash_hex in task_url):
-                    in_offline = True
-                    break
+            if not isinstance(task, dict):
+                continue
+            task_url = (task.get("url") or "").lower()
+            if not (magnet.lower() in task_url or (infohash_hex and infohash_hex in task_url)):
+                continue
+            # 失败任务不算“离线等待/已下载”，单独标记
+            display = str(task.get("display_status") or "").strip().lower()
+            if display in ("failed", "error"):
+                download_failed = True
+                continue
+            in_offline = True
+            break
         if dbg is not None:
-            dbg["steps"].append({"stage": "offline_list", "success": True, "tasks_len": len(tasks), "in_offline": in_offline})
+            dbg["steps"].append({"stage": "offline_list", "success": True, "tasks_len": len(tasks), "in_offline": in_offline, "download_failed": download_failed})
     else:
         if dbg is not None:
             dbg["steps"].append({"stage": "offline_list", "success": False, "message": ol.get("message")})
@@ -861,6 +869,7 @@ def check_magnet_exists(magnet, save_path, debug=False):
         "infohash_hex": infohash_hex,
         "matched_files": matched_files,
         "in_offline_tasks": in_offline,
+        "download_failed": download_failed,
         "dn": dn,
     }
     if dbg is not None:
@@ -933,6 +942,19 @@ def rename_item(file_id, new_name):
     try:
         _, check_response = _import_p115client()
         resp = check_response(client.fs_rename({f"files_new_name[{file_id}]": new_name}))
+        return {"success": True, "response": resp}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+def delete_item(file_id):
+    """删除115文件/目录（进入回收站）。file_id 为 cid/fid 均可。"""
+    client = load_client()
+    if client is None:
+        return {"success": False, "message": "未登录"}
+    try:
+        _, check_response = _import_p115client()
+        resp = check_response(client.fs_delete(str(file_id)))
         return {"success": True, "response": resp}
     except Exception as e:
         return {"success": False, "message": str(e)}

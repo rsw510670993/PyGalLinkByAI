@@ -246,8 +246,18 @@ def execute_job(state, save, should_stop):
                     result, error = _check_magnet_exists_with_timeout(row['link'], 60)
                     if error:
                         raise RuntimeError(error)
-                    if result.get('exists'):
-                        conn.execute('UPDATE egs_games SET downloaded=1, infohash_hex=?, updated_at=? WHERE egs_id=? AND link=?',
+                    if result.get('download_failed'):
+                        # 115 离线任务明确失败：标记该磁链下载失败并重置状态，供手动重爬其他磁链
+                        conn.execute(
+                            "UPDATE egs_games SET download_failed=1, download_failed_at=?,"
+                            " downloaded=0, submitted_115=0, submitted_pick_code=NULL, updated_at=?"
+                            " WHERE egs_id=? AND link=?",
+                            (time.strftime('%Y-%m-%d %H:%M:%S'), now_ts(), row['egs_id'], row['link']),
+                        )
+                        conn.commit()
+                        report(name, 'failed', '115下载任务失败，已标记；请手动重爬其他磁链')
+                    elif result.get('exists'):
+                        conn.execute('UPDATE egs_games SET downloaded=1, download_failed=0, infohash_hex=?, updated_at=? WHERE egs_id=? AND link=?',
                                      (result.get('infohash_hex'), now_ts(), row['egs_id'], row['link']))
                         conn.commit()
                         report(name, 'success', '校对确认已下载')

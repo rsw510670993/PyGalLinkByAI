@@ -1068,7 +1068,8 @@ def cmd_egs_games(args):
         rows = cur.execute(
             f"""
             SELECT egs_id, date, name, company, release_ts, egs_date, actual_release_ts, brand_kind,
-                   link, nyaa_name, downloaded, submitted_115, submitted_pick_code
+                   link, nyaa_name, downloaded, submitted_115, submitted_pick_code,
+                   download_failed, download_failed_at
                   {review_select}
               FROM egs_games{where}
              ORDER BY date, release_ts, egs_id
@@ -1227,6 +1228,33 @@ def cmd_egs_torrent_meta_backfill(args):
             stats['updated'].append({"egs_id": row['egs_id'], "name": row['name'],
                                      "torrent_name": meta['name']})
         _print(stats)
+    finally:
+        conn.close()
+
+
+def cmd_egs_retry_magnet(args):
+    """手动重爬：强制重新搜索候选；无更优磁链时保留 download_failed 标记。"""
+    import logging
+
+    import requests
+    from tool.egs_core import ensure_egs_schema, open_egs_db
+    from tool.egs_magnet import HEADERS, process_game
+
+    conn = open_egs_db(args.db)
+    ensure_egs_schema(conn)
+    try:
+        row = conn.execute(
+            "SELECT egs_id, date, name, company, release_ts FROM egs_games WHERE egs_id=?",
+            (int(args.egs_id),),
+        ).fetchone()
+        if not row:
+            _print({"success": False, "message": "记录不存在"})
+            return
+        session = requests.Session()
+        session.headers.update(HEADERS)
+        logger = logging.getLogger("egs_magnet")
+        status, result = process_game(conn, session, row, logger, force=True)
+        _print({"success": status in ("selected",), "status": status, **result})
     finally:
         conn.close()
 
@@ -1473,6 +1501,11 @@ def build_parser():
                                              help="已回填的行也重新下载覆盖")
     p_egs_torrent_meta_backfill.add_argument("--db", type=str)
     p_egs_torrent_meta_backfill.set_defaults(func=cmd_egs_torrent_meta_backfill)
+
+    p_egs_retry_magnet = egs_sub.add_parser("retry_magnet")
+    p_egs_retry_magnet.add_argument("--egs-id", type=int, required=True, dest="egs_id")
+    p_egs_retry_magnet.add_argument("--db", type=str)
+    p_egs_retry_magnet.set_defaults(func=cmd_egs_retry_magnet)
 
     p_egs_review_detail = egs_sub.add_parser("review_detail")
     p_egs_review_detail.add_argument("--egs-id", type=int, required=True, dest="egs_id")

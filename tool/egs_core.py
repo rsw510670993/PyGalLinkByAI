@@ -100,6 +100,9 @@ def ensure_egs_schema(conn: sqlite3.Connection) -> None:
             torrent_name    TEXT,
             torrent_files   TEXT,
             torrent_size    INTEGER,
+            -- 115 下载失败标记：校对时识别失败任务，供手动重爬其他磁链
+            download_failed INTEGER NOT NULL DEFAULT 0,
+            download_failed_at TEXT,
             fetched_at      TEXT,
             updated_at      TEXT
         )
@@ -119,6 +122,8 @@ def ensure_egs_schema(conn: sqlite3.Connection) -> None:
         ("torrent_name", "TEXT"),
         ("torrent_files", "TEXT"),
         ("torrent_size", "INTEGER"),
+        ("download_failed", "INTEGER NOT NULL DEFAULT 0"),
+        ("download_failed_at", "TEXT"),
     ):
         if column not in cols:
             conn.execute(f"ALTER TABLE egs_games ADD COLUMN {column} {decl}")
@@ -435,6 +440,10 @@ def update_egs_game_record(egs_id: int, new_date: str | None = None,
         updates["nyaa_name"] = str(new_nyaa_name).strip()
     if new_downloaded is not None:
         updates["downloaded"] = 1 if int(new_downloaded) else 0
+        if int(new_downloaded):
+            # 确认已下载后清除之前的下载失败标记
+            updates["download_failed"] = 0
+            updates["download_failed_at"] = None
     if new_submitted_115 is not None:
         updates["submitted_115"] = 1 if int(new_submitted_115) else 0
     if new_submitted_pick_code is not None:

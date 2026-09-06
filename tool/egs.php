@@ -302,6 +302,7 @@
                 const nyaaName = row.nyaa_name || '';
                 const downloaded = parseInt(row.downloaded || 0, 10) === 1;
                 const submitted = parseInt(row.submitted_115 || 0, 10) === 1;
+                const downloadFailed = parseInt(row.download_failed || 0, 10) === 1;
                 const candidateCount = parseInt(row.candidate_count || 0, 10);
                 const reviewStatus = row.review_status || '';
                 const blacklisted = parseInt(row.review_blacklisted || 0, 10) === 1;
@@ -339,12 +340,13 @@
                             <input type="checkbox" class="game-checkbox form-check-input">
                         </td>
                         <td class="ym-col">${esc(ymText)}${shiftBadge}</td>
-                        <td class="game-name-cell editable-cell">${esc(row.name)}${reviewBadge}${nyaaName ? `<div class="text-muted small"${magnet ? ' style="display:none;"' : ''}>${esc(nyaaName)}</div>` : ''}</td>
+                        <td class="game-name-cell editable-cell">${esc(row.name)}${reviewBadge}${downloadFailed ? '<span class="badge text-bg-danger ms-1">下载失败</span>' : ''}${nyaaName ? `<div class="text-muted small"${magnet ? ' style="display:none;"' : ''}>${esc(nyaaName)}</div>` : ''}</td>
                         <td class="company-col">${esc(row.company || '')}</td>
                         <td class="kind-col">${esc(brandKindText)}</td>
                         <td class="actions-col">
                             <button type="button" class="btn btn-success btn-sm btn-115-submit" ${canMagnet ? '' : 'disabled'}>115云下载</button>
                             <button type="button" class="btn btn-outline-secondary btn-sm magnet-check-btn" ${canMagnet ? '' : 'disabled'}>校验</button>
+                            ${downloadFailed ? '<button type="button" class="btn btn-outline-danger btn-sm magnet-retry-btn" title="清除失败磁链并重新爬取候选">重爬磁链</button>' : ''}
                             ${reviewBtn}
                         </td>
                     </tr>
@@ -644,11 +646,35 @@
         const submitBtn = e.target.closest('.btn-115-submit');
         const checkBtn = e.target.closest('.magnet-check-btn');
         const reviewBtn = e.target.closest('.review-btn');
+        const retryBtn = e.target.closest('.magnet-retry-btn');
         const nameCell = e.target.closest('.editable-cell');
 
         if (submitBtn) {
             const tr = submitBtn.closest('tr');
             submit115(tr, submitBtn);
+            return;
+        }
+
+        if (retryBtn) {
+            const tr = retryBtn.closest('tr');
+            retryBtn.disabled = true;
+            retryBtn.textContent = '重爬中...';
+            (async () => {
+                try {
+                    const res = await fetch('api.php?action=egs_retry_magnet', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ egs_id: parseInt(tr.dataset.egsId, 10) })
+                    });
+                    const data = await res.json();
+                    if (data.success === false) throw new Error(data.message || '重爬失败');
+                    await load();
+                } catch (err) {
+                    alert('重爬失败：' + err.message);
+                    retryBtn.disabled = false;
+                    retryBtn.textContent = '重爬磁链';
+                }
+            })();
             return;
         }
 

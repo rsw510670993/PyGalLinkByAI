@@ -343,6 +343,21 @@ def _offline_task_finished(task):
     return False
 
 
+def _offline_task_failed(task):
+    """115 任务明确失败（display_status=failed/error，status=-1）时返回 True。"""
+    if not isinstance(task, dict):
+        return False
+    display = str(task.get("display_status") or "").strip().lower()
+    if display in ("failed", "error"):
+        return True
+    try:
+        if int(task.get("status")) in (-1,) and not display:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
 def magnet_in_offline_tasks(magnet, infohash_hex=None):
     """磁链是否仍在115离线下载任务中；已完成任务不算。"""
     task = _find_offline_task(magnet, infohash_hex)
@@ -382,6 +397,8 @@ def locate_offline_task_product(magnet, infohash_hex=None):
     if not task:
         return None
     if not _offline_task_finished(task):
+        if _offline_task_failed(task):
+            return {"offline_failed": True, "offline_task": task}
         return {"offline_pending": True, "offline_task": task}
     file_id = str(task.get("file_id") or task.get("delete_file_id") or "")
     if not file_id:
@@ -759,6 +776,32 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
             if loc is None:
                 # ③ 存在性检查：离线任务（已完成产物可继续整理）→ 缺失 → 未下载
                 off = locate_offline_task_product(link)
+                if off and off.get("offline_failed"):
+                    # 115 任务已失败且不会自动完成：重置下载/提交状态，供重新提交
+                    if downloaded or submitted:
+                        result["status"] = "missing_in_115"
+                        result["message"] = "⚠ 115离线任务失败，未生成下载产物"
+                        if not dry_run:
+                            resets = []
+                            if submitted:
+                                resets.append("submitted_115=0")
+                            if downloaded:
+                                resets.append("downloaded=0")
+                            if resets:
+                                conn.execute(
+                                    f"UPDATE egs_games SET {', '.join(resets)} WHERE date=? AND name=?",
+                                    (date, name),
+                                )
+                                conn.commit()
+                                if "submitted_115=0" in resets:
+                                    result["actions"].append("reset_sub")
+                                if "downloaded=0" in resets:
+                                    result["actions"].append("reset_dl")
+                                result["message"] += "；已重置 downloaded/submitted 供重提"
+                        return result
+                    result["status"] = "not_downloaded"
+                    result["message"] = "115离线任务失败（尚未下载）"
+                    return result
                 if off and off.get("offline_pending"):
                     result["status"] = "in_offline"
                     result["message"] = "磁链在115离线任务中，等待下载完成"

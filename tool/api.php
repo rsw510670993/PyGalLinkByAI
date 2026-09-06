@@ -424,6 +424,16 @@ if ($action === 'egs_organize_confirm') {
     json_response($data);
 }
 
+if ($action === 'egs_retry_magnet') {
+    $body = read_json_body();
+    $egsId = as_int($body['egs_id'] ?? null, null);
+    if (!$egsId) {
+        json_response(['success' => false, 'message' => '缺少 egs_id']);
+    }
+    [$code, $data] = run_cli(['egs', 'retry_magnet', '--egs-id', strval($egsId)]);
+    json_response($data);
+}
+
 if ($action === 'organize_issues') {
     $args = ['egs', 'organize_issues'];
     if (($_GET['all'] ?? '') === '1') {
