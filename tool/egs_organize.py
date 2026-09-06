@@ -1194,6 +1194,21 @@ def record_organize_issue(conn, date, name, code, executed,
     ensure_issue_schema(conn)
     now = time.strftime("%Y-%m-%d %H:%M:%S")
 
+    # 已确认下载失败（download_failed=1）的行由磁链重爬流程处理，不再进入人工整理待办
+    failed = conn.execute(
+        "SELECT 1 FROM egs_games WHERE COALESCE(download_failed,0)=1"
+        " AND (egs_id=? OR (egs_id IS NULL AND date=? AND name=?)) LIMIT 1",
+        (egs_id, date, name),
+    ).fetchone()
+    if failed:
+        conn.execute(
+            "UPDATE egs_organize_issues SET resolved=1, resolved_at=?"
+            " WHERE resolved=0 AND (egs_id=? OR (egs_id IS NULL AND date=? AND name=?))",
+            (now, egs_id, date, name),
+        )
+        conn.commit()
+        return None
+
     if executed and code in ORGANIZE_RESOLVED_STATUSES:
         conn.execute(
             "UPDATE egs_organize_issues SET resolved=1, resolved_at=?"
