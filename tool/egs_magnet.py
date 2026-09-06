@@ -430,20 +430,34 @@ def process_game(conn: sqlite3.Connection, session: requests.Session, row,
         if new_magnet:
             result["new_magnet"] = True
         result["download_failed"] = download_failed_value
-        conn.execute(
-            """
-            UPDATE egs_games
-               SET link=?, nyaa_name=?, size=?, infohash_hex=?,
-                   torrent_name=?, torrent_files=?, torrent_size=?,
-                   download_failed=?, download_failed_at=?,
-                   updated_at=?
-             WHERE egs_id=?
-            """,
-            (best.get("magnet"), best.get("nyaa_title"), best.get("size"),
-             extract_infohash(best.get("magnet")), meta_name, meta_files,
-             meta_size, download_failed_value, download_failed_at_value,
-             tried_at, egs_id),
-        )
+        if keep_failed:
+            # 仍无更优磁链：回滚到无磁链状态，避免继续持有已知会失败的磁链
+            conn.execute(
+                """
+                UPDATE egs_games
+                   SET link=NULL, nyaa_name=NULL, infohash_hex=NULL,
+                       torrent_name=NULL, torrent_files=NULL, torrent_size=NULL,
+                       download_failed=1, download_failed_at=?,
+                       updated_at=?
+                 WHERE egs_id=?
+                """,
+                (tried_at, tried_at, egs_id),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE egs_games
+                   SET link=?, nyaa_name=?, size=?, infohash_hex=?,
+                       torrent_name=?, torrent_files=?, torrent_size=?,
+                       download_failed=?, download_failed_at=?,
+                       updated_at=?
+                 WHERE egs_id=?
+                """,
+                (best.get("magnet"), best.get("nyaa_title"), best.get("size"),
+                 extract_infohash(best.get("magnet")), meta_name, meta_files,
+                 meta_size, download_failed_value, download_failed_at_value,
+                 tried_at, egs_id),
+            )
         conn.execute(
             """
             INSERT INTO egs_nyaa_search_log
@@ -494,10 +508,14 @@ def process_game(conn: sqlite3.Connection, session: requests.Session, row,
     )
     conn.commit()
     if old_failed:
-        # 仍无更优磁链：保持失败标记，供年度磁链任务下轮继续查询
+        # 仍无更优磁链：回滚到无磁链状态并保持失败标记，供下轮继续查询
         conn.execute(
-            "UPDATE egs_games SET download_failed=1, download_failed_at=?"
-            " WHERE egs_id=?", (tried_at, egs_id),
+            """UPDATE egs_games
+                   SET link=NULL, nyaa_name=NULL, infohash_hex=NULL,
+                       torrent_name=NULL, torrent_files=NULL, torrent_size=NULL,
+                       download_failed=1, download_failed_at=?
+                 WHERE egs_id=?""",
+            (tried_at, egs_id),
         )
         conn.commit()
     result["download_failed"] = 1 if old_failed else 0

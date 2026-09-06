@@ -258,15 +258,19 @@ def execute_job(state, save, should_stop):
                     if error:
                         raise RuntimeError(error)
                     if result.get('download_failed'):
-                        # 115 离线任务明确失败：标记该磁链下载失败并重置状态，供手动重爬其他磁链
+                        # 115 离线任务明确失败：回滚到无磁链状态，供后续重新爬取其他磁链
                         conn.execute(
-                            "UPDATE egs_games SET download_failed=1, download_failed_at=?,"
-                            " downloaded=0, submitted_115=0, submitted_pick_code=NULL, updated_at=?"
-                            " WHERE egs_id=? AND link=?",
+                            """UPDATE egs_games
+                                   SET download_failed=1, download_failed_at=?,
+                                       downloaded=0, submitted_115=0, submitted_pick_code=NULL,
+                                       link=NULL, nyaa_name=NULL, infohash_hex=NULL,
+                                       torrent_name=NULL, torrent_files=NULL, torrent_size=NULL,
+                                       updated_at=?
+                                 WHERE egs_id=? AND link=?""",
                             (time.strftime('%Y-%m-%d %H:%M:%S'), now_ts(), row['egs_id'], row['link']),
                         )
                         conn.commit()
-                        report(name, 'failed', '115下载任务失败，已标记；请手动重爬其他磁链')
+                        report(name, 'failed', '115下载任务失败，已回滚为无磁链；可重新爬取其他磁链')
                     elif result.get('exists'):
                         conn.execute('UPDATE egs_games SET downloaded=1, download_failed=0, infohash_hex=?, updated_at=? WHERE egs_id=? AND link=?',
                                      (result.get('infohash_hex'), now_ts(), row['egs_id'], row['link']))
