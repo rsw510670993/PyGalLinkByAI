@@ -107,7 +107,18 @@ def start(action, start_year, end_year, month=0, execute=False):
                          success=0, failed=0, skipped=0, current='', results=[], message='准备中', outcome='running')
             log = daily_log_path('pipeline')
             Path(log).parent.mkdir(parents=True, exist_ok=True)
-            with open(log, 'ab', buffering=0) as output:
+            # 网页端(www-data)与命令行(coding)可能交替启动任务；
+            # 日志若被另一用户创建且未开放写权限，则删除重建并统一 chmod 666。
+            try:
+                output = open(log, 'ab', buffering=0)
+            except PermissionError:
+                os.remove(log)
+                output = open(log, 'ab', buffering=0)
+            try:
+                os.chmod(log, 0o666)
+            except OSError:
+                pass
+            with output:
                 worker = subprocess.Popen([sys.executable, '-m', 'tool.pipeline', 'worker', '--job-id', job_id],
                                           cwd=repo_root(), stdout=output, stderr=output, start_new_session=True)
             state['pid'] = worker.pid
