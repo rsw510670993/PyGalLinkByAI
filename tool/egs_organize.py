@@ -1306,6 +1306,13 @@ def record_organize_issue(conn, date, name, code, executed,
 
     outcome = organize_report_outcome(code)
     if outcome != 'failed' and code not in ORGANIZE_ATTENTION_STATUSES:
+        # 旧错误已不再复现（如短标题 ambiguous 现已判为 not_downloaded），自动关闭待办。
+        conn.execute(
+            "UPDATE egs_organize_issues SET resolved=1,resolved_at=?"
+            " WHERE resolved=0 AND (egs_id=? OR (egs_id IS NULL AND date=? AND name=?))",
+            (now, egs_id, date, name),
+        )
+        conn.commit()
         return None
 
     detail = detail or {}

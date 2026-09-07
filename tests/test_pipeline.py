@@ -176,6 +176,24 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(second['status'],'cross_year_rejected')
         self.assertEqual(organize.organize_report_outcome(second['status']),'skipped')
 
+    def test_normal_result_closes_stale_ambiguous_issue(self):
+        conn = sqlite3.connect(self.db)
+        self.addCleanup(conn.close)
+        organize.ensure_issue_schema(conn)
+        conn.execute(
+            """INSERT INTO egs_organize_issues
+               (egs_id,date,name,status,outcome,message,detail,run_at,resolved)
+               VALUES (1,'2026-01','Game1','ambiguous','failed','old','{}','2026-01-01',0)"""
+        )
+        conn.commit()
+        organize.record_organize_issue(
+            conn, '2026-01', 'Game1', 'not_downloaded', executed=False,
+            detail={'status': 'not_downloaded'}, egs_id=1,
+        )
+        self.assertEqual(
+            conn.execute('SELECT resolved FROM egs_organize_issues').fetchone()[0], 1
+        )
+
     def test_torrent_info_name_blocks_short_title_fallback(self):
         wrong = [
             {'cid': '1', 'pid': '10', 'fc': 0, 'n': '[241229][LunaSystem] 七ヶ音学園旅行部'},
