@@ -28,7 +28,7 @@ from bs4 import BeautifulSoup
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-from tool.egs_core import open_egs_db
+from tool.egs_core import open_egs_db, refresh_magnet_duplicates
 from tool.egs_match import MAX_SCORE, THRESHOLD, extract_infohash, select_best
 
 SUKEBEI_URL = "https://sukebei.nyaa.si/"
@@ -107,9 +107,12 @@ def ensure_egs_magnet_schema(conn: sqlite3.Connection) -> None:
             ("torrent_size", "INTEGER"),
             ("download_failed", "INTEGER NOT NULL DEFAULT 0"),
             ("download_failed_at", "TEXT"),
+            ("magnet_duplicate", "INTEGER NOT NULL DEFAULT 0"),
+            ("duplicate_of_egs_id", "INTEGER"),
         ):
             if column not in cols:
                 conn.execute(f"ALTER TABLE egs_games ADD COLUMN {column} {decl}")
+        refresh_magnet_duplicates(conn)
     except sqlite3.OperationalError:
         # egs_games 尚未建立（如仅跑磁链模块的独立库）时跳过，由 ensure_egs_schema 负责
         pass
@@ -374,12 +377,14 @@ def process_game(conn: sqlite3.Connection, session: requests.Session, row,
         row["egs_id"], row["date"], row["name"], row["company"], row["release_ts"]
     )
     old = conn.execute(
-        "SELECT COALESCE(download_failed,0) AS download_failed, link, infohash_hex"
+        "SELECT COALESCE(download_failed,0) AS download_failed, link, infohash_hex,"
+        " COALESCE(magnet_duplicate,0) AS magnet_duplicate"
         " FROM egs_games WHERE egs_id=?", (egs_id,),
     ).fetchone()
     old_failed = bool(old and old["download_failed"])
+    old_duplicate = bool(old and old["magnet_duplicate"])
     old_infohash = str(old["infohash_hex"] or "").lower() if old else ""
-    if not force and not old_failed:
+    if not force and not old_failed and not old_duplicate:
         logged = conn.execute(
             "SELECT selected_infohash FROM egs_nyaa_search_log WHERE egs_id=?",
             (egs_id,),
@@ -458,6 +463,15 @@ def process_game(conn: sqlite3.Connection, session: requests.Session, row,
                  meta_size, download_failed_value, download_failed_at_value,
                  tried_at, egs_id),
             )
+        if old_duplicate and new_magnet:
+            # 共链项找到不同种子后恢复为独立记录，不能继承原种子的 115 状态。
+            conn.execute(
+                """UPDATE egs_games
+                      SET downloaded=0,submitted_115=0,submitted_pick_code=NULL
+                    WHERE egs_id=?""",
+                (egs_id,),
+            )
+        refresh_magnet_duplicates(conn, (old_infohash, best_key))
         conn.execute(
             """
             INSERT INTO egs_nyaa_search_log
@@ -475,13 +489,13 @@ def process_game(conn: sqlite3.Connection, session: requests.Session, row,
         conn.commit()
         result["selected_title"] = best.get("nyaa_title")
         result["selected_infohash"] = best_key
-        # 同磁链预警：本篇/补丁等重复条目选到同一种子时记录下来（下载/提交层可据此去重）
-        dup_owner = None
-        if best_key:
-            dup_owner = conn.execute(
-                "SELECT name FROM egs_games WHERE infohash_hex=? AND egs_id!=? LIMIT 1",
-                (best_key, egs_id),
-            ).fetchone()
+        # 重建后的持久状态决定谁是共链主记录，不能依赖处理顺序。
+        dup_owner = conn.execute(
+            """SELECT owner.name FROM egs_games game
+                 JOIN egs_games owner ON owner.egs_id=game.duplicate_of_egs_id
+                WHERE game.egs_id=? AND COALESCE(game.magnet_duplicate,0)=1""",
+            (egs_id,),
+        ).fetchone()
         if dup_owner is not None:
             result["duplicate_of"] = dup_owner["name"]
             logger.info("DUPLICATE_TORRENT %s | 与《%s》选中同一磁链 %s",
@@ -533,7 +547,8 @@ def pending_rows(conn: sqlite3.Connection, year: int, month: int | None = None,
                COALESCE(download_failed,0) AS download_failed
           FROM egs_games
          WHERE substr(date,1,4)=?
-           AND ((link IS NULL OR link='') OR COALESCE(download_failed,0)=1)
+           AND ((link IS NULL OR link='') OR COALESCE(download_failed,0)=1
+                OR COALESCE(magnet_duplicate,0)=1)
            AND (release_ts IS NULL OR release_ts <= date('now','localtime'))
     """
     params: list = [str(year)]
@@ -541,9 +556,9 @@ def pending_rows(conn: sqlite3.Connection, year: int, month: int | None = None,
         sql += " AND CAST(substr(date,6) AS INTEGER)=?"
         params.append(int(month))
     if not force:
-        # 普通无磁链行仍跳过已有搜索历史的；下载失败行每次都重新查询，直到换到新磁链
+        # 下载失败与共链项每次都重查；共链项只有找到不同 infohash 才退出队列。
         sql += """
-           AND (COALESCE(download_failed,0)=1 OR NOT EXISTS (
+           AND (COALESCE(download_failed,0)=1 OR COALESCE(magnet_duplicate,0)=1 OR NOT EXISTS (
                SELECT 1 FROM egs_nyaa_search_log l
                 WHERE l.egs_id = egs_games.egs_id
            ))
@@ -742,7 +757,10 @@ def decide_review(egs_id: int, decision: str, candidate_id: int | None = None,
     conn.row_factory = sqlite3.Row
     try:
         ensure_egs_magnet_schema(conn)
-        game = conn.execute("SELECT egs_id, name FROM egs_games WHERE egs_id=?", (egs_id,)).fetchone()
+        game = conn.execute(
+            "SELECT egs_id,name,infohash_hex,COALESCE(magnet_duplicate,0) AS magnet_duplicate "
+            "FROM egs_games WHERE egs_id=?", (egs_id,)
+        ).fetchone()
         if not game:
             return {"success": False, "message": "EGS记录不存在"}
         now_str = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -798,6 +816,12 @@ def decide_review(egs_id: int, decision: str, candidate_id: int | None = None,
                 """,
                 (magnet, nyaa_name or None, size, infohash, now_str, egs_id),
             )
+            if game["magnet_duplicate"] and str(game["infohash_hex"] or "").lower() != infohash.lower():
+                conn.execute(
+                    "UPDATE egs_games SET downloaded=0,submitted_115=0,submitted_pick_code=NULL WHERE egs_id=?",
+                    (egs_id,),
+                )
+            refresh_magnet_duplicates(conn, (game["infohash_hex"], infohash))
             conn.execute(
                 """
                 INSERT INTO egs_nyaa_search_log

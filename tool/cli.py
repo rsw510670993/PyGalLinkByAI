@@ -1069,7 +1069,10 @@ def cmd_egs_games(args):
             f"""
             SELECT egs_id, date, name, company, release_ts, egs_date, actual_release_ts, brand_kind,
                    link, nyaa_name, downloaded, submitted_115, submitted_pick_code,
-                   download_failed, download_failed_at
+                   download_failed, download_failed_at,
+                   COALESCE(magnet_duplicate,0) AS magnet_duplicate, duplicate_of_egs_id,
+                   (SELECT owner.name FROM egs_games owner
+                     WHERE owner.egs_id=egs_games.duplicate_of_egs_id) AS duplicate_of_name
                   {review_select}
               FROM egs_games{where}
              ORDER BY date, release_ts, egs_id

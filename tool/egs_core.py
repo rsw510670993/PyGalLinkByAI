@@ -103,6 +103,9 @@ def ensure_egs_schema(conn: sqlite3.Connection) -> None:
             -- 115 下载失败标记：校对时识别失败任务，供手动重爬其他磁链
             download_failed INTEGER NOT NULL DEFAULT 0,
             download_failed_at TEXT,
+            -- 多条游戏共用同一 infohash 时，仅最短标题作为主记录
+            magnet_duplicate INTEGER NOT NULL DEFAULT 0,
+            duplicate_of_egs_id INTEGER,
             fetched_at      TEXT,
             updated_at      TEXT
         )
@@ -124,10 +127,52 @@ def ensure_egs_schema(conn: sqlite3.Connection) -> None:
         ("torrent_size", "INTEGER"),
         ("download_failed", "INTEGER NOT NULL DEFAULT 0"),
         ("download_failed_at", "TEXT"),
+        ("magnet_duplicate", "INTEGER NOT NULL DEFAULT 0"),
+        ("duplicate_of_egs_id", "INTEGER"),
     ):
         if column not in cols:
             conn.execute(f"ALTER TABLE egs_games ADD COLUMN {column} {decl}")
+    refresh_magnet_duplicates(conn)
     conn.commit()
+
+
+def refresh_magnet_duplicates(conn: sqlite3.Connection, infohashes=None) -> None:
+    """按 infohash 重建共链关系；每组最短标题（同长时 egs_id 最小）为主记录。"""
+    hashes = {
+        str(value or "").strip().lower()
+        for value in (infohashes or []) if str(value or "").strip()
+    }
+    if hashes:
+        marks = ",".join("?" for _ in hashes)
+        values = tuple(sorted(hashes))
+        rows = conn.execute(
+            f"SELECT egs_id,name,lower(trim(infohash_hex)) AS hash FROM egs_games "
+            f"WHERE lower(trim(COALESCE(infohash_hex,''))) IN ({marks})", values
+        ).fetchall()
+        conn.execute(
+            f"UPDATE egs_games SET magnet_duplicate=0,duplicate_of_egs_id=NULL "
+            f"WHERE lower(trim(COALESCE(infohash_hex,''))) IN ({marks})", values
+        )
+    else:
+        rows = conn.execute(
+            "SELECT egs_id,name,lower(trim(infohash_hex)) AS hash FROM egs_games "
+            "WHERE trim(COALESCE(infohash_hex,'')) != ''"
+        ).fetchall()
+        conn.execute("UPDATE egs_games SET magnet_duplicate=0,duplicate_of_egs_id=NULL")
+    groups = {}
+    for row in rows:
+        groups.setdefault(row["hash"], []).append(row)
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        owner = min(
+            members,
+            key=lambda row: (len((row["name"] or "").strip()), int(row["egs_id"])),
+        )
+        conn.executemany(
+            "UPDATE egs_games SET magnet_duplicate=1,duplicate_of_egs_id=? WHERE egs_id=?",
+            ((int(owner["egs_id"]), int(row["egs_id"])) for row in members if row["egs_id"] != owner["egs_id"]),
+        )
 
 
 def ensure_review_blacklist_schema(conn: sqlite3.Connection) -> None:
@@ -436,6 +481,8 @@ def update_egs_game_record(egs_id: int, new_date: str | None = None,
             updates["company"] = new_company
     if new_link is not None:
         updates["link"] = str(new_link).strip()
+        from tool.egs_match import extract_infohash
+        updates["infohash_hex"] = extract_infohash(updates["link"])
     if new_nyaa_name is not None:
         updates["nyaa_name"] = str(new_nyaa_name).strip()
     if new_downloaded is not None:
@@ -454,8 +501,9 @@ def update_egs_game_record(egs_id: int, new_date: str | None = None,
 
     conn = open_egs_db(db_path)
     try:
+        ensure_egs_schema(conn)
         row = conn.execute(
-            "SELECT date, name FROM egs_games WHERE egs_id = ?", (egs_id,)
+            "SELECT date,name,infohash_hex FROM egs_games WHERE egs_id = ?", (egs_id,)
         ).fetchone()
         if row is None:
             return {"success": False, "message": "未找到记录"}
@@ -475,6 +523,8 @@ def update_egs_game_record(egs_id: int, new_date: str | None = None,
         sets = ", ".join(f"{c} = ?" for c in cols)
         values = [updates[c] for c in cols] + [egs_id]
         conn.execute(f"UPDATE egs_games SET {sets} WHERE egs_id = ?", values)
+        if "name" in updates or "infohash_hex" in updates:
+            refresh_magnet_duplicates(conn, (row["infohash_hex"], updates.get("infohash_hex")))
         conn.commit()
         return {"success": True, "message": "更新成功", "egs_id": egs_id}
     finally:

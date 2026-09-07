@@ -124,4 +124,57 @@ class MagnetSpeedTests(unittest.TestCase):
             self.assertEqual(result['metrics']['requests'],0)
 
 
+    def test_shared_magnet_keeps_shortest_name_and_recovers_on_new_hash(self):
+        other_hash = 'b' * 40
+        other_link = 'magnet:?xt=urn:btih:' + other_hash
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = egs_core.open_egs_db(str(Path(tmp) / 'egs.db'))
+            try:
+                egs_core.ensure_egs_schema(conn)
+                magnet.ensure_egs_magnet_schema(conn)
+                for ident, name in ((1, 'A Much Longer Game'), (2, 'Short'), (3, 'Medium Game')):
+                    conn.execute(
+                        """INSERT INTO egs_games
+                           (egs_id,model,egs_date,egs_name,egs_company,date,name,company,
+                            release_ts,link,infohash_hex,downloaded,submitted_115)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (ident, 'PC', '2026-01-01', name, 'Studio', '2026-01', name,
+                         'Studio', '2026-01-01', LINK, HASH, 1, 1),
+                    )
+                egs_core.refresh_magnet_duplicates(conn)
+                conn.commit()
+
+                states = {
+                    row['egs_id']: (row['magnet_duplicate'], row['duplicate_of_egs_id'])
+                    for row in conn.execute(
+                        'SELECT egs_id,magnet_duplicate,duplicate_of_egs_id FROM egs_games'
+                    )
+                }
+                self.assertEqual(states, {1: (1, 2), 2: (0, None), 3: (1, 2)})
+                self.assertEqual([row['egs_id'] for row in magnet.pending_rows(conn, 2026, 1)], [1, 3])
+
+                row = conn.execute('SELECT * FROM egs_games WHERE egs_id=1').fetchone()
+                candidate = dict(
+                    nyaa_title='[Studio] A Much Longer Game', nyaa_date='2026-01-01 00:00',
+                    size='1 GiB', magnet=other_link, infohash_hex=other_hash, view_url=None,
+                )
+                with patch.object(magnet, 'search_candidates', return_value=[candidate]), \
+                     patch.object(magnet, 'select_best', return_value=(candidate, 99, {})), \
+                     patch('tool.torrent_meta.fetch_torrent_meta', return_value=None):
+                    status, result = magnet.process_game(conn, requests.Session(), row, LOG)
+
+                self.assertEqual(status, 'selected')
+                self.assertTrue(result['new_magnet'])
+                recovered = conn.execute(
+                    'SELECT infohash_hex,magnet_duplicate,duplicate_of_egs_id,downloaded,submitted_115 '
+                    'FROM egs_games WHERE egs_id=1'
+                ).fetchone()
+                self.assertEqual(tuple(recovered), (other_hash, 0, None, 0, 0))
+                remaining = conn.execute(
+                    'SELECT magnet_duplicate,duplicate_of_egs_id FROM egs_games WHERE egs_id=3'
+                ).fetchone()
+                self.assertEqual(tuple(remaining), (1, 2))
+            finally:
+                conn.close()
+
 if __name__ == '__main__':unittest.main()

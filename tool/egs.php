@@ -29,6 +29,12 @@
             --bs-table-bg-state: #fff8df;
             background-color: #fff8df;
         }
+        #gamesTable tbody tr.row-duplicate > * {
+            --bs-table-bg: #eceff1;
+            --bs-table-bg-state: #eceff1;
+            background-color: #eceff1;
+            color: #6c757d;
+        }
         #gamesTable.table-hover tbody tr.row-downloaded:hover > * {
             --bs-table-bg-state: #dff2e5;
             background-color: #dff2e5;
@@ -36,6 +42,10 @@
         #gamesTable.table-hover tbody tr.row-magnet:hover > * {
             --bs-table-bg-state: #fff1c2;
             background-color: #fff1c2;
+        }
+        #gamesTable.table-hover tbody tr.row-duplicate:hover > * {
+            --bs-table-bg-state: #e2e5e8;
+            background-color: #e2e5e8;
         }
     </style>
 </head>
@@ -320,15 +330,19 @@
                 const downloaded = parseInt(row.downloaded || 0, 10) === 1;
                 const submitted = parseInt(row.submitted_115 || 0, 10) === 1;
                 const downloadFailed = parseInt(row.download_failed || 0, 10) === 1;
+                const duplicate = parseInt(row.magnet_duplicate || 0, 10) === 1;
+                const duplicateOf = row.duplicate_of_name || '';
                 const candidateCount = parseInt(row.candidate_count || 0, 10);
                 const reviewStatus = row.review_status || '';
                 const blacklisted = parseInt(row.review_blacklisted || 0, 10) === 1;
                 const showReview = candidateCount > 0 && !magnet && !blacklisted && reviewStatus !== 'rejected';
                 const pendingReview = showReview && (!reviewStatus || reviewStatus === 'pending');
-                const rowClass = !magnet || downloadFailed
-                    ? ''
-                    : downloaded ? 'row-downloaded' : 'row-magnet';
-                const canMagnet = !!magnet;
+                const rowClass = duplicate ? 'row-duplicate'
+                    : (!magnet || downloadFailed ? '' : downloaded ? 'row-downloaded' : 'row-magnet');
+                const canMagnet = !!magnet && !duplicate;
+                const duplicateBadge = duplicate
+                    ? `<span class="badge text-bg-secondary ms-1" title="继续参与搜链，找到不同磁链后自动恢复">重复磁链${duplicateOf ? `：${esc(duplicateOf)}` : ''}</span>`
+                    : '';
                 const reviewBadge = pendingReview
                     ? '<span class="badge text-bg-warning ms-1">待审核</span>'
                     : '';
@@ -352,12 +366,13 @@
                         data-submitted-115="${esc(row.submitted_115 || 0)}"
                         data-submitted-pick-code="${esc(row.submitted_pick_code || '')}"
                         data-review-status="${esc(reviewStatus)}"
+                        data-magnet-duplicate="${duplicate ? '1' : '0'}"
                         data-candidate-count="${esc(candidateCount)}">
                         <td class="check-col text-center">
-                            <input type="checkbox" class="game-checkbox form-check-input">
+                            <input type="checkbox" class="game-checkbox form-check-input" ${duplicate ? 'disabled title="重复磁链不参与下载"' : ''}>
                         </td>
                         <td class="ym-col">${esc(ymText)}${shiftBadge}</td>
-                        <td class="game-name-cell editable-cell">${esc(row.name)}${reviewBadge}${downloadFailed ? '<span class="badge text-bg-danger ms-1">下载失败</span>' : ''}${nyaaName ? `<div class="text-muted small"${magnet ? ' style="display:none;"' : ''}>${esc(nyaaName)}</div>` : ''}</td>
+                        <td class="game-name-cell editable-cell">${esc(row.name)}${reviewBadge}${duplicateBadge}${downloadFailed ? '<span class="badge text-bg-danger ms-1">下载失败</span>' : ''}${nyaaName ? `<div class="text-muted small"${magnet ? ' style="display:none;"' : ''}>${esc(nyaaName)}</div>` : ''}</td>
                         <td class="company-col">${esc(row.company || '')}</td>
                         <td class="kind-col">${esc(brandKindText)}</td>
                         <td class="actions-col">
@@ -394,7 +409,7 @@
     }
 
     function updateSelectionButtons() {
-        const boxes = Array.from(document.querySelectorAll('#games-body input.game-checkbox'));
+        const boxes = Array.from(document.querySelectorAll('#games-body input.game-checkbox:not(:disabled)'));
         const anyChecked = boxes.some(cb => cb.checked);
         const allChecked = boxes.length > 0 && boxes.every(cb => cb.checked);
         document.getElementById('toggle-select').textContent = allChecked ? '全不选' : '全选';
@@ -402,7 +417,7 @@
     }
 
     document.getElementById('toggle-select').addEventListener('click', () => {
-        const boxes = Array.from(document.querySelectorAll('#games-body input.game-checkbox'));
+        const boxes = Array.from(document.querySelectorAll('#games-body input.game-checkbox:not(:disabled)'));
         const allChecked = boxes.length > 0 && boxes.every(cb => cb.checked);
         boxes.forEach(cb => cb.checked = !allChecked);
         updateSelectionButtons();
@@ -428,7 +443,7 @@
     async function submit115(tr, btn) {
         const magnet = tr.dataset.magnet || '';
         const year = yearFromRow(tr);
-        if (!magnet || !year || tr.dataset.reviewStatus === 'pending') return;
+        if (!magnet || !year || tr.dataset.reviewStatus === 'pending' || tr.dataset.magnetDuplicate === '1') return;
 
         const origText = btn.textContent;
         btn.disabled = true;
@@ -746,6 +761,7 @@
 
         if (checkBtn) {
             const tr = checkBtn.closest('tr');
+            if (tr.dataset.magnetDuplicate === '1') return;
             document.getElementById('check-modal-egs-id').value = tr.dataset.egsId || '';
             document.getElementById('modal-game-name').textContent = tr.dataset.name || '-';
             document.getElementById('modal-magnet').value = tr.dataset.magnet || '';
@@ -864,7 +880,7 @@
 
         for (const tr of rows) {
             const submitBtn = tr.querySelector('.btn-115-submit');
-            if (!tr.dataset.magnet || !yearFromRow(tr) || tr.dataset.reviewStatus === 'pending') { fail++; continue; }
+            if (!tr.dataset.magnet || !yearFromRow(tr) || tr.dataset.reviewStatus === 'pending' || tr.dataset.magnetDuplicate === '1') { fail++; continue; }
             try {
                 const res = await fetch('api.php?action=115_submit', {
                     method: 'POST',

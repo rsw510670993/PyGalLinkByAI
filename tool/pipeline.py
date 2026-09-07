@@ -242,7 +242,7 @@ def execute_job(state, save, should_stop):
             sql += ' AND CAST(substr(date,6,2) AS INTEGER) = ?'
             params.append(state['month'])
         if action in ('check', 'submit'):
-            sql += ' AND COALESCE(downloaded,0) = 0'
+            sql += ' AND COALESCE(downloaded,0) = 0 AND COALESCE(magnet_duplicate,0) = 0'
         if action == 'submit':
             sql += ' AND COALESCE(submitted_115,0) = 0'
         rows = conn.execute(sql + ' ORDER BY date, egs_id', params).fetchall()
