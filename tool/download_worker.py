@@ -23,6 +23,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--year", type=int, required=True)
     parser.add_argument("--month", type=int, default=0)
+    parser.add_argument("--source", choices=["getchu", "egs"], default="getchu")
     args = parser.parse_args()
 
     paths = runtime_paths()
@@ -44,6 +45,7 @@ def main():
 
     status = {
         "running": True,
+        "source": args.source,
         "pid": os.getpid(),
         "year": int(args.year),
         "month": int(args.month),
@@ -69,7 +71,12 @@ def main():
             status["updated_at"] = now_ts()
             write_json_atomic(paths["download_status_path"], status)
 
-            ok = tool.download_games_by_month(int(args.year), m)
+            if args.source == "egs":
+                from tool.egs_magnet import run_magnet
+                result = run_magnet(int(args.year), month=m, should_stop=lambda: _stop_requested)
+                ok = not result["error"] and not result.get("stopped")
+            else:
+                ok = tool.download_games_by_month(int(args.year), m)
             success_all = success_all and bool(ok)
 
             status["finished_months"] += 1

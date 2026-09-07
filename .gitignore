@@ -165,7 +165,15 @@ cython_debug/
 uninstall.py
 .trae/
 getchu.db
+egs.db
+egs.db-shm
+egs.db-wal
 .python-version
 status/
 logs/
 tool/115-cookies.txt
+/db_backups/
+/thumbnails/
+*.db-shm
+*.db-wal
+/tool/config/key/

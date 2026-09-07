@@ -19,9 +19,9 @@ function as_int($value, $default = null) {
     return intval($value);
 }
 
-function run_cli($args) {
+function run_cli($args, $entry = 'cli.py') {
     $root = realpath(__DIR__ . '/..');
-    $cli = __DIR__ . '/cli.py';
+    $cli = __DIR__ . '/' . $entry;
 
     $python = getenv('PYTHON_BIN');
     if (!$python) {
@@ -68,8 +68,38 @@ function run_cli($args) {
 
 $action = isset($_GET['action']) ? $_GET['action'] : '';
 
+if ($action === 'pipeline_preflight') {
+    $actionName = strval($_GET['pipeline_action'] ?? 'check');
+    $args = ['preflight', '--action', $actionName,
+             '--start-year', strval(as_int($_GET['start_year'] ?? null, 0)),
+             '--end-year', strval(as_int($_GET['end_year'] ?? null, 0)),
+             '--month', strval(as_int($_GET['month'] ?? null, 0))];
+    [$code, $data] = run_cli($args, 'pipeline_entry.py');
+    json_response($data);
+}
+
+if (in_array($action, ['pipeline_start', 'pipeline_status', 'pipeline_stop'], true)) {
+    if ($action !== 'pipeline_status' && ($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+        json_response(['status' => 'error', 'message' => '请使用 POST 请求']);
+    }
+    $body = read_json_body();
+    if ($action === 'pipeline_status') {
+        $args = ['status'];
+    } elseif ($action === 'pipeline_stop') {
+        $args = ['stop', '--job-id', strval($body['job_id'] ?? '')];
+    } else {
+        $args = ['start', '--action', strval($body['action'] ?? ''),
+                 '--start-year', strval(as_int($body['start_year'] ?? null, 0)),
+                 '--end-year', strval(as_int($body['end_year'] ?? null, 0)),
+                 '--month', strval(as_int($body['month'] ?? null, 0))];
+        if (($body['execute'] ?? false) === true) $args[] = '--execute';
+    }
+    [$code, $data] = run_cli($args, 'pipeline_entry.py');
+    json_response($data);
+}
+
 if ($action === 'years') {
-    [$code, $data] = run_cli(['years']);
+    [$code, $data] = run_cli(['years', '--source', ($_GET['source'] ?? '') === 'egs' ? 'egs' : 'getchu']);
     json_response($data);
 }
 
@@ -90,6 +120,136 @@ if ($action === 'games') {
     if ($month !== null) $args[] = strval($month);
 
     [$code, $data] = run_cli($args);
+    json_response($data);
+}
+
+if ($action === 'egs_games') {
+    $page = as_int($_GET['page'] ?? 1, 1);
+    $perPage = as_int($_GET['per_page'] ?? 50, 50);
+    $year = as_int($_GET['year'] ?? null, null);
+    $month = as_int($_GET['month'] ?? null, null);
+    $q = isset($_GET['q']) ? trim((string)$_GET['q']) : '';
+    $brandKind = strtoupper(trim(strval($_GET['brand_kind'] ?? '')));
+    if (!in_array($brandKind, ['CIRCLE', 'CORPORATION'], true)) {
+        $brandKind = '';
+    }
+    $review = trim(strval($_GET['review'] ?? ''));
+    if (!in_array($review, ['pending'], true)) {
+        $review = '';
+    }
+
+    $args = ['egs', 'games', '--page', strval(max(1, $page)), '--per-page', strval(max(1, $perPage))];
+    if ($year !== null) { $args[] = '--year'; $args[] = strval($year); }
+    if ($month !== null) { $args[] = '--month'; $args[] = strval($month); }
+    if ($q !== '') { $args[] = '--q'; $args[] = $q; }
+    if ($brandKind !== '') { $args[] = '--brand-kind'; $args[] = $brandKind; }
+    if ($review !== '') { $args[] = '--review'; $args[] = $review; }
+
+    [$code, $data] = run_cli($args);
+    json_response($data);
+}
+
+if ($action === 'egs_update') {
+    $body = read_json_body();
+    $egsId = as_int($body['egs_id'] ?? null, null);
+    if (!$egsId) {
+        json_response(['success' => false, 'message' => '缺少 egs_id']);
+    }
+
+    $args = ['egs', 'update', '--egs-id', strval($egsId)];
+    if (!empty($body['new_date'])) { $args[] = '--new-date'; $args[] = strval($body['new_date']); }
+    if (!empty($body['new_name'])) { $args[] = '--new-name'; $args[] = strval($body['new_name']); }
+    if (!empty($body['new_company'])) { $args[] = '--new-company'; $args[] = strval($body['new_company']); }
+    if (array_key_exists('new_link', $body)) { $args[] = '--new-link'; $args[] = strval($body['new_link']); }
+    if (array_key_exists('new_nyaa_name', $body)) { $args[] = '--new-nyaa-name'; $args[] = strval($body['new_nyaa_name']); }
+    if (array_key_exists('new_downloaded', $body) && $body['new_downloaded'] !== null) {
+        $args[] = '--new-downloaded';
+        $args[] = strval(intval($body['new_downloaded']));
+    }
+    if (array_key_exists('new_submitted_115', $body) && $body['new_submitted_115'] !== null) {
+        $args[] = '--new-submitted-115';
+        $args[] = strval(intval($body['new_submitted_115']));
+    }
+    if (array_key_exists('new_submitted_pick_code', $body) && $body['new_submitted_pick_code'] !== null) {
+        $args[] = '--new-submitted-pick-code';
+        $args[] = strval($body['new_submitted_pick_code']);
+    }
+
+    [$code, $data] = run_cli($args);
+    json_response($data);
+}
+
+if ($action === 'egs_delete') {
+    $body = read_json_body();
+    $egsId = as_int($body['egs_id'] ?? null, null);
+    if (!$egsId) {
+        json_response(['success' => false, 'message' => '缺少 egs_id']);
+    }
+    [$code, $data] = run_cli(['egs', 'delete', '--egs-id', strval($egsId)]);
+    json_response($data);
+}
+
+if ($action === 'egs_review_detail') {
+    $egsId = as_int($_GET['egs_id'] ?? null, null);
+    if (!$egsId) {
+        json_response(['success' => false, 'message' => '缺少 egs_id']);
+    }
+    [$code, $data] = run_cli(['egs', 'review_detail', '--egs-id', strval($egsId)]);
+    json_response($data);
+}
+
+if ($action === 'egs_review_decide') {
+    $body = read_json_body();
+    $egsId = as_int($body['egs_id'] ?? null, null);
+    $decision = strval($body['decision'] ?? '');
+    if (!$egsId || !in_array($decision, ['approve', 'reject', 'reopen'], true)) {
+        json_response(['success' => false, 'message' => '参数错误']);
+    }
+    $args = ['egs', 'review_decide', '--egs-id', strval($egsId), '--decision', $decision];
+    if (!empty($body['candidate_id'])) {
+        $args[] = '--candidate-id';
+        $args[] = strval(intval($body['candidate_id']));
+    }
+    if (array_key_exists('manual_magnet', $body) && $body['manual_magnet'] !== null && $body['manual_magnet'] !== '') {
+        $args[] = '--manual-magnet';
+        $args[] = strval($body['manual_magnet']);
+    }
+    if (array_key_exists('manual_nyaa_name', $body) && $body['manual_nyaa_name'] !== null && $body['manual_nyaa_name'] !== '') {
+        $args[] = '--manual-nyaa-name';
+        $args[] = strval($body['manual_nyaa_name']);
+    }
+    if (array_key_exists('note', $body) && $body['note'] !== null && $body['note'] !== '') {
+        $args[] = '--note';
+        $args[] = strval($body['note']);
+    }
+    [$code, $data] = run_cli($args);
+    json_response($data);
+}
+
+if ($action === 'egs_review_blacklist') {
+    [$code, $data] = run_cli(['egs', 'review_blacklist', 'list']);
+    json_response($data);
+}
+
+if ($action === 'egs_review_blacklist_add') {
+    $body = read_json_body();
+    $company = trim(strval($body['company'] ?? ''));
+    if ($company === '') {
+        json_response(['success' => false, 'message' => '公司名不能为空']);
+    }
+    $args = ['egs', 'review_blacklist', 'add', '--company', $company];
+    if (!empty($body['note'])) { $args[] = '--note'; $args[] = strval($body['note']); }
+    [$code, $data] = run_cli($args);
+    json_response($data);
+}
+
+if ($action === 'egs_review_blacklist_remove') {
+    $body = read_json_body();
+    $company = trim(strval($body['company'] ?? ''));
+    if ($company === '') {
+        json_response(['success' => false, 'message' => '公司名不能为空']);
+    }
+    [$code, $data] = run_cli(['egs', 'review_blacklist', 'remove', '--company', $company]);
     json_response($data);
 }
 
@@ -129,7 +289,7 @@ if ($action === 'start_download') {
     if ($year === null) {
         json_response(['status' => 'error', 'message' => '参数错误']);
     }
-    [$code, $data] = run_cli(['download', 'start', '--year', strval($year), '--month', strval($month)]);
+    [$code, $data] = run_cli(['download', 'start', '--year', strval($year), '--month', strval($month), '--source', ($body['source'] ?? '') === 'egs' ? 'egs' : 'getchu']);
     json_response($data);
 }
 
@@ -197,7 +357,7 @@ if ($action === '115_check_all_start') {
     $body = read_json_body();
     $year = $body['year'] ?? '';
     $month = $body['month'] ?? '';
-    $args = ['115', 'check_all', 'start'];
+    $args = ['115', 'check_all', 'start', '--source', ($body['source'] ?? '') === 'egs' ? 'egs' : 'getchu'];
     if ($year) { $args[] = '--year'; $args[] = strval($year); }
     if ($month) { $args[] = '--month'; $args[] = strval($month); }
     [$code, $data] = run_cli($args);
@@ -250,6 +410,66 @@ if ($action === 'delete_game') {
         json_response(['success' => false, 'message' => '缺少必填字段 date/name']);
     }
     [$code, $data] = run_cli(['delete_game', '--date', $date, '--name', $name]);
+    json_response($data);
+}
+
+if ($action === 'egs_organize_confirm') {
+    $body = read_json_body();
+    $date = trim(strval($body['date'] ?? ''));
+    $name = trim(strval($body['name'] ?? ''));
+    if (!$date || !$name) {
+        json_response(['success' => false, 'message' => '缺少必填字段 date/name']);
+    }
+    [$code, $data] = run_cli(['egs', 'organize_confirm', '--date', $date, '--name', $name]);
+    json_response($data);
+}
+
+if ($action === 'egs_retry_magnet') {
+    $body = read_json_body();
+    $egsId = as_int($body['egs_id'] ?? null, null);
+    if (!$egsId) {
+        json_response(['success' => false, 'message' => '缺少 egs_id']);
+    }
+    [$code, $data] = run_cli(['egs', 'retry_magnet', '--egs-id', strval($egsId)]);
+    json_response($data);
+}
+
+if ($action === 'organize_issues') {
+    $args = ['egs', 'organize_issues'];
+    if (($_GET['all'] ?? '') === '1') {
+        $args[] = '--all';
+    }
+    [$code, $data] = run_cli($args);
+    json_response($data);
+}
+
+if ($action === 'organize_issue_resolve') {
+    $body = read_json_body();
+    $id = intval($body['id'] ?? 0);
+    if (!$id) {
+        json_response(['success' => false, 'message' => '缺少必填字段 id']);
+    }
+    [$code, $data] = run_cli(['egs', 'organize_issue_resolve', '--id', strval($id)]);
+    json_response($data);
+}
+
+if ($action === 'organize_issue_reject') {
+    $body = read_json_body();
+    $id = intval($body['id'] ?? 0);
+    if (!$id) {
+        json_response(['success' => false, 'message' => '缺少必填字段 id']);
+    }
+    [$code, $data] = run_cli(['egs', 'organize_issue_reject', '--id', strval($id)]);
+    json_response($data);
+}
+
+if ($action === 'organize_issue_reject_month') {
+    $body = read_json_body();
+    $id = intval($body['id'] ?? 0);
+    if (!$id) {
+        json_response(['success' => false, 'message' => '缺少必填字段 id']);
+    }
+    [$code, $data] = run_cli(['egs', 'organize_issue_reject_month', '--id', strval($id)]);
     json_response($data);
 }
 

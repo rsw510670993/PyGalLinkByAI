@@ -258,6 +258,55 @@ def qr_login_step3(uid, app="alipaymini"):
         return {"success": False, "message": str(e)}
 
 
+def _magnet_info_hash(magnet):
+    """从磁链中提取 info_hash（小写 hex），失败返回空串。"""
+    parsed = parse_magnet_simple(magnet or "")
+    return parsed.get("infohash_hex") or ""
+
+
+def _error_response(exc):
+    """尽量从 p115client 异常中取出原始 115 响应 dict，取不到返回 None。"""
+    resp = getattr(exc, "message", None)
+    return resp if isinstance(resp, dict) else None
+
+
+def _is_duplicate_task_error(exc):
+    """115 对重复离线任务的拒绝：lixianssp errcode=10008 / web errno=919。"""
+    resp = _error_response(exc)
+    if resp is not None:
+        inner = resp.get("data") if isinstance(resp.get("data"), dict) else resp
+        if isinstance(inner, dict):
+            if str(inner.get("errcode") or "") == "10008" or str(inner.get("errno") or "") == "919":
+                return True
+    return "任务已存在" in str(exc)
+
+
+def _duplicate_task_info(exc, magnet):
+    """重复提交时回收已有任务信息：优先取 115 返回的 info_hash/pick_code，
+    否则按 info_hash 查离线任务列表补齐 pick_code。"""
+    info_hash = ""
+    pick_code = None
+    resp = _error_response(exc)
+    if resp is not None:
+        inner = resp.get("data") if isinstance(resp.get("data"), dict) else resp
+        if isinstance(inner, dict):
+            info_hash = str(inner.get("info_hash") or "").lower()
+            pick_code = inner.get("pick_code") or inner.get("pickcode") or inner.get("pc") or None
+    if not info_hash:
+        info_hash = _magnet_info_hash(magnet)
+    if not pick_code and info_hash:
+        ol = offline_list()
+        for task in ol.get("tasks", []) if ol.get("success") else []:
+            if not isinstance(task, dict):
+                continue
+            task_hash = str(task.get("info_hash") or "").lower()
+            task_url = str(task.get("url") or "").lower()
+            if info_hash in (task_hash, task_url):
+                pick_code = task.get("pick_code") or None
+                break
+    return {"info_hash": info_hash, "pick_code": pick_code}
+
+
 def offline_submit(magnet, save_path):
     client = load_client()
     if client is None:
@@ -267,6 +316,8 @@ def offline_submit(magnet, save_path):
         cid = 0
         if save_path:
             cid = _resolve_path_to_cid(save_path)
+            if not cid:
+                return {"success": False, "message": "无法定位下载目录: " + save_path}
         payload = {"url": magnet}
         if cid:
             payload["wp_path_id"] = cid
@@ -277,6 +328,18 @@ def offline_submit(magnet, save_path):
             pick_code = data.get("pick_code") or data.get("pickcode") or data.get("pc")
         return {"success": True, "pick_code": pick_code, "response": resp}
     except Exception as e:
+        if _is_duplicate_task_error(e):
+            # 任务已存在 = 该磁链已在 115 离线列表中，语义上等同于提交成功，
+            # 回收已有任务的 info_hash/pick_code 供上层落库，避免每次重跑都报错。
+            info = _duplicate_task_info(e, magnet)
+            return {
+                "success": True,
+                "duplicate": True,
+                "info_hash": info["info_hash"],
+                "pick_code": info["pick_code"],
+                "message": "任务已存在，视为提交成功",
+                "response": _error_response(e),
+            }
         return {"success": False, "message": str(e)}
 
 
@@ -386,7 +449,8 @@ def _normalize_for_comparison(name):
     first_bracket = name.find('[')
     if first_bracket > 0:
         name = name[first_bracket:]
-    name = re.split(r'\s*\+\s*', name)[0]
+    # 仅去掉“ + 追加内容/特典”后缀；不能用无空格的 + 切分（会误截公司名如 [Brand+1]）
+    name = re.split(r'\s+\+\s+', name)[0]
     name = re.sub(r'\]\s+\[', '][', name)
     name = name.lower()
     name = name.translate(str.maketrans('０１２３４５６７８９', '0123456789'))
@@ -447,14 +511,47 @@ def _strip_leading_dates_and_tags(s):
     return s.strip()
 
 
+def _is_safe_substring(needle, haystack):
+    """判断 needle 是否是 haystack 的边界完整子串。
+
+    不做无边界包含，避免《Game》被误判成《Game2》《GameX》等前作/异作。
+    """
+    if not needle or not haystack or len(needle) > len(haystack):
+        return False
+    start = 0
+    while True:
+        pos = haystack.find(needle, start)
+        if pos < 0:
+            return False
+        before_ok = pos == 0 or not haystack[pos - 1].isalnum()
+        after_pos = pos + len(needle)
+        after_ok = after_pos == len(haystack) or not haystack[after_pos].isalnum()
+        # 标题归一化会把感叹号等标点删除，但可能留下空格：
+        # ``SPIN!2`` 因而变成 ``SPIN 2``，而 ``B2-STYLE`` 等版本名也可能
+        # 接在旧作标题之后。空格后的字母/数字仍属于副标题、版本或续作后缀。
+        if after_ok and after_pos < len(haystack) and haystack[after_pos].isspace():
+            next_text = haystack[after_pos:].lstrip()
+            if next_text and next_text[0].isalnum():
+                after_ok = False
+        if before_ok and after_ok:
+            return True
+        start = pos + 1
+
+
 def _names_match(norm_dn, norm_fname):
     if not norm_dn or not norm_fname:
         return False
-    if norm_dn in norm_fname or norm_fname in norm_dn:
+    dn_core = _strip_leading_dates_and_tags(norm_dn).replace(" ", "")
+    fn_core = _strip_leading_dates_and_tags(norm_fname).replace(" ", "")
+    # 短词（如搜索产生的 ``style`` 目录）不能对长标题做包含匹配；
+    # 短作品名仍可通过核心标题完全相等命中。
+    if min(len(dn_core), len(fn_core)) <= 6:
+        return dn_core == fn_core
+    if _is_safe_substring(norm_dn, norm_fname) or _is_safe_substring(norm_fname, norm_dn):
         return True
     dn_compact = norm_dn.replace(" ", "")
     fn_compact = norm_fname.replace(" ", "")
-    if dn_compact and fn_compact and (dn_compact in fn_compact or fn_compact in dn_compact):
+    if _is_safe_substring(dn_compact, fn_compact) or _is_safe_substring(fn_compact, dn_compact):
         return True
     dn_codes = _leading_date_codes(norm_dn)
     fn_codes = _leading_date_codes(norm_fname)
@@ -466,12 +563,14 @@ def _names_match(norm_dn, norm_fname):
     if not common:
         dn_tail = _strip_leading_dates_and_tags(norm_dn)
         fn_tail = _strip_leading_dates_and_tags(norm_fname)
-        if dn_tail and fn_tail and (len(dn_tail) >= 8 or len(fn_tail) >= 8):
-            if dn_tail in fn_tail or fn_tail in dn_tail:
+        dn_compact_tail = dn_tail.replace(" ", "")
+        fn_compact_tail = fn_tail.replace(" ", "")
+        if dn_tail and fn_tail and min(len(dn_compact_tail), len(fn_compact_tail)) >= 6:
+            if _is_safe_substring(dn_tail, fn_tail) or _is_safe_substring(fn_tail, dn_tail):
                 return True
             dn2 = dn_tail.replace(" ", "")
             fn2 = fn_tail.replace(" ", "")
-            if dn2 and fn2 and (dn2 in fn2 or fn2 in dn2):
+            if _is_safe_substring(dn2, fn2) or _is_safe_substring(fn2, dn2):
                 return True
         return False
 
@@ -480,11 +579,11 @@ def _names_match(norm_dn, norm_fname):
     dn_no_date = re.sub(r'^(?:\[[^\]]+\]\s*)+', '', dn_no_date).strip()
     fn_no_date = re.sub(r'^(?:\[[^\]]+\]\s*)+', '', fn_no_date).strip()
     if dn_no_date and fn_no_date:
-        if dn_no_date in fn_no_date or fn_no_date in dn_no_date:
+        if _is_safe_substring(dn_no_date, fn_no_date) or _is_safe_substring(fn_no_date, dn_no_date):
             return True
         dn2 = dn_no_date.replace(" ", "")
         fn2 = fn_no_date.replace(" ", "")
-        return dn2 in fn2 or fn2 in dn2
+        return _is_safe_substring(dn2, fn2) or _is_safe_substring(fn2, dn2)
     return False
 
 
@@ -513,7 +612,8 @@ def _search_keyword_from_dn(dn):
         return f"[{date_bracket}]"
     if rest:
         return f"[{rest[0]}]"
-    name = re.split(r'\s*\+\s*', name)[0]
+    # 仅去掉“ + 追加内容/特典”后缀；不能用无空格的 + 切分（会误截公司名如 [Brand+1]）
+    name = re.split(r'\s+\+\s+', name)[0]
     return name.strip()[:30]
 
 
@@ -591,6 +691,7 @@ def check_magnet_exists(magnet, save_path, debug=False):
 
     matched_files = []
     in_offline = False
+    download_failed = False
     confidence = "none"
 
     dbg = None
@@ -609,13 +710,20 @@ def check_magnet_exists(magnet, save_path, debug=False):
         if isinstance(tasks, dict):
             tasks = tasks.get("data", []) if isinstance(tasks, dict) else []
         for task in tasks:
-            if isinstance(task, dict):
-                task_url = (task.get("url") or "").lower()
-                if magnet.lower() in task_url or (infohash_hex and infohash_hex in task_url):
-                    in_offline = True
-                    break
+            if not isinstance(task, dict):
+                continue
+            task_url = (task.get("url") or "").lower()
+            if not (magnet.lower() in task_url or (infohash_hex and infohash_hex in task_url)):
+                continue
+            # 失败任务不算“离线等待/已下载”，单独标记
+            display = str(task.get("display_status") or "").strip().lower()
+            if display in ("failed", "error"):
+                download_failed = True
+                continue
+            in_offline = True
+            break
         if dbg is not None:
-            dbg["steps"].append({"stage": "offline_list", "success": True, "tasks_len": len(tasks), "in_offline": in_offline})
+            dbg["steps"].append({"stage": "offline_list", "success": True, "tasks_len": len(tasks), "in_offline": in_offline, "download_failed": download_failed})
     else:
         if dbg is not None:
             dbg["steps"].append({"stage": "offline_list", "success": False, "message": ol.get("message")})
@@ -776,6 +884,7 @@ def check_magnet_exists(magnet, save_path, debug=False):
         "infohash_hex": infohash_hex,
         "matched_files": matched_files,
         "in_offline_tasks": in_offline,
+        "download_failed": download_failed,
         "dn": dn,
     }
     if dbg is not None:
@@ -784,3 +893,121 @@ def check_magnet_exists(magnet, save_path, debug=False):
     if dbg is not None and not dbg.get("has_cookie_file"):
         out["message"] = "cookie文件不存在或为空，可能未登录导致搜索结果为空"
     return out
+
+
+def _crumbs_to_path(crumbs, tail_name=None):
+    """把fs_files返回的path面包屑数组拼成完整路径，排除'根目录'/'回收站'"""
+    if not crumbs or not isinstance(crumbs, list):
+        return None
+    parts = []
+    for c in crumbs:
+        if not isinstance(c, dict):
+            continue
+        n = c.get("name") or ""
+        if n in ("根目录", "回收站") and not parts:
+            continue
+        parts.append(n)
+    if tail_name:
+        parts.append(tail_name)
+    return "/" + "/".join(parts) if parts else None
+
+
+def get_item_name(file_id):
+    """按file_id查询名称（fs_file_skim，用于cid精确校验）"""
+    client = load_client()
+    if client is None:
+        return None
+    try:
+        _, check_response = _import_p115client()
+        resp = check_response(client.fs_file_skim({"file_id": str(file_id)}))
+        data = resp.get("data") or []
+        if data and isinstance(data[0], dict):
+            return data[0].get("file_name")
+    except Exception:
+        pass
+    return None
+
+
+def get_item_info(file_id):
+    """按file_id取 {n, cid, pid, fc, pc}（fs_file；目录/文件通用）。失败返回None"""
+    client = load_client()
+    if client is None:
+        return None
+    try:
+        _, check_response = _import_p115client()
+        resp = check_response(client.fs_file({"file_id": str(file_id)}))
+        data = resp.get("data")
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            d0 = data[0]
+            return {"n": d0.get("n") or d0.get("file_name"), "cid": str(d0.get("cid") or file_id),
+                    "pid": d0.get("pid"), "fc": d0.get("fc"), "pc": d0.get("pc")}
+        if isinstance(data, dict) and data.get("cid"):
+            return {"n": data.get("n") or data.get("file_name"), "cid": str(data["cid"]),
+                    "pid": data.get("pid"), "fc": data.get("fc"), "pc": data.get("pc")}
+    except Exception:
+        pass
+    return None
+
+
+def rename_item(file_id, new_name):
+    """重命名115文件/目录（web端点batch_rename）"""
+    client = load_client()
+    if client is None:
+        return {"success": False, "message": "未登录"}
+    try:
+        _, check_response = _import_p115client()
+        resp = check_response(client.fs_rename({f"files_new_name[{file_id}]": new_name}))
+        return {"success": True, "response": resp}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+def delete_item(file_id):
+    """删除115文件/目录（进入回收站）。file_id 为 cid/fid 均可。"""
+    client = load_client()
+    if client is None:
+        return {"success": False, "message": "未登录"}
+    try:
+        _, check_response = _import_p115client()
+        resp = check_response(client.fs_delete(str(file_id)))
+        return {"success": True, "response": resp}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+def list_dir_children_names(cid, max_pages=20):
+    """列出目录下所有子项名称（分页），用于重名冲突检查。失败返回None"""
+    client = load_client()
+    if client is None:
+        return None
+    names = []
+    try:
+        _, check_response = _import_p115client()
+        offset = 0
+        for _ in range(max_pages):
+            resp = check_response(
+                client.fs_files({"cid": str(cid), "limit": 200, "offset": offset, "show_dir": 1})
+            )
+            data = resp.get("data") or []
+            for it in data:
+                if isinstance(it, dict) and it.get("n"):
+                    names.append(it["n"])
+            if len(data) < 200:
+                break
+            offset += len(data)
+        return names
+    except Exception:
+        return None
+
+
+def parent_crumbs_path(pid):
+    """获取指定目录cid的父链面包屑完整路径（不含自身名）"""
+    client = load_client()
+    if client is None:
+        return None
+    try:
+        _, check_response = _import_p115client()
+        resp = check_response(client.fs_files({"cid": str(pid), "limit": 1, "show_dir": 1}))
+        return _crumbs_to_path(resp.get("path"))
+    except Exception:
+        return None

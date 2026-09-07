@@ -3,12 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>日志</title>
+    <title>日志 · pyGal</title>
     <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.1/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .log-file-form { display: flex; align-items: center; gap: .5rem; }
+        .log-file-form .form-select { flex: 1 1 0; min-width: 0; width: auto; }
+        .log-file-form .btn { flex: 0 0 auto; white-space: nowrap; }
+    </style>
 </head>
-<body style="padding-top: 56px;">
+<body>
 <?php
-$base = rtrim(dirname(dirname($_SERVER['SCRIPT_NAME'])), '/');
 
 function load_tool_config() {
     $configPath = __DIR__ . '/config.json';
@@ -135,26 +139,16 @@ $safe = basename($selected);
 $selectedPath = $dir . DIRECTORY_SEPARATOR . $safe;
 $content = $safe ? tail_lines($selectedPath, 600, 600000) : '';
 ?>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark fixed-top">
-        <div class="container">
-            <a class="navbar-brand" href="#">日志</a>
-            <div class="navbar-nav">
-                <a class="nav-link" href="<?= $base ?>/index.php">首页</a>
-                <a class="nav-link" href="<?= $base ?>/tool/data.php">数据展示</a>
-                <a class="nav-link" href="<?= $base ?>/calendar.php">年历</a>
-                <a class="nav-link active" href="<?= $base ?>/tool/logs.php">日志</a>
-            </div>
-        </div>
-    </nav>
+<?php require dirname(__DIR__) . '/includes/header.php'; ?>
 
     <div class="container mt-4">
         <div class="card mb-3">
             <div class="card-body">
                 <div class="row g-2 align-items-end">
                     <div class="col-12 col-lg-8">
-                        <label class="form-label mb-1">选择日志文件</label>
-                        <form method="GET" class="d-flex gap-2">
-                            <select name="file" class="form-select">
+                        <label for="log-file" class="form-label mb-1">选择日志文件</label>
+                        <form method="GET" class="log-file-form">
+                            <select id="log-file" name="file" class="form-select">
                                 <?php foreach ($files as $f): ?>
                                     <option value="<?= htmlspecialchars($f) ?>" <?= $f === $safe ? 'selected' : '' ?>>
                                         <?= htmlspecialchars($f) ?>

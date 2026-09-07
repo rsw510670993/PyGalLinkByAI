@@ -57,7 +57,15 @@ def _download_status_default():
 
 
 def cmd_years(args):
-    years = tool.get_years_list()
+    if args.source == "egs":
+        from tool.egs_core import open_egs_db
+        conn = open_egs_db()
+        try:
+            years = [int(row[0]) for row in conn.execute("SELECT DISTINCT substr(date,1,4) FROM egs_games ORDER BY 1 DESC")]
+        finally:
+            conn.close()
+    else:
+        years = tool.get_years_list()
     _print({"years": years})
 
 
@@ -70,8 +78,8 @@ def cmd_calendar(args):
     start_year = base_year - 2
     end_year = base_year
 
-    conn = tool.core.open_db()
-    tool.core.ensure_getchu_schema(conn)
+    from tool.egs_core import open_egs_db
+    conn = open_egs_db()
     cursor = conn.cursor()
     cursor.execute(
         """
@@ -82,7 +90,7 @@ def cmd_calendar(args):
             SUM(CASE WHEN link IS NOT NULL AND link != '' THEN 1 ELSE 0 END) as magnet_total,
             SUM(CASE WHEN link IS NOT NULL AND link != '' AND COALESCE(downloaded, 0) = 1 THEN 1 ELSE 0 END) as magnet_downloaded,
             SUM(CASE WHEN link IS NOT NULL AND link != '' AND COALESCE(submitted_115, 0) = 1 THEN 1 ELSE 0 END) as magnet_submitted
-        FROM getchu_games
+        FROM egs_games
         WHERE CAST(substr(date, 1, 4) AS INTEGER) BETWEEN ? AND ?
         GROUP BY year, month
         ORDER BY year DESC, month DESC
@@ -322,6 +330,7 @@ def cmd_download_start(args):
             str(year),
             "--month",
             str(month),
+            "--source", args.source,
         ],
         cwd=_base_dir(),
         stdout=launch_fp,
@@ -532,7 +541,7 @@ def cmd_115_check_all_start(args):
     worker_args = [
         sys.executable,
         os.path.join(_base_dir(), "cli.py"),
-        "115", "check_all", "worker",
+        "115", "check_all", "worker", "--source", args.source,
     ]
     if args.year:
         worker_args += ["--year", str(args.year)]
@@ -620,6 +629,7 @@ def cmd_115_check_all_worker(args):
 
     status = {
         "running": True,
+        "source": args.source,
         "pid": os.getpid(),
         "year": int(args.year) if getattr(args, "year", None) else None,
         "month": int(args.month) if getattr(args, "month", None) else None,
@@ -634,10 +644,17 @@ def cmd_115_check_all_worker(args):
     }
     write_json_atomic(status_path, status)
 
-    conn = tool.core.open_db()
-    tool.core.ensure_getchu_schema(conn)
+    is_egs = args.source == "egs"
+    if is_egs:
+        from tool.egs_core import open_egs_db
+        conn = open_egs_db()
+    else:
+        conn = tool.core.open_db()
+        tool.core.ensure_getchu_schema(conn)
     cursor = conn.cursor()
     base_sql = "SELECT date, name, link FROM getchu_games WHERE link IS NOT NULL AND link != '' AND COALESCE(downloaded, 0) = 0"
+    if is_egs:
+        base_sql = base_sql.replace("SELECT date, name, link FROM getchu_games", "SELECT date, name, link, egs_id FROM egs_games")
     sql_params = []
     if args.year and args.month:
         base_sql += " AND substr(date, 1, 4) = ? AND CAST(substr(date, 6) AS INTEGER) = ?"
@@ -666,7 +683,8 @@ def cmd_115_check_all_worker(args):
     t = threading.Thread(target=_heartbeat, daemon=True)
     t.start()
 
-    for date, name, link in rows:
+    for row in rows:
+        date, name, link = tuple(row)[:3]
         try:
             status["current"] = {"date": date, "name": name}
             status["checked"] += 1
@@ -676,7 +694,15 @@ def cmd_115_check_all_worker(args):
             if err:
                 status["errors"].append(f"{date}/{name}: {err}")
             elif isinstance(result, dict) and result.get("exists"):
-                tool.core.set_downloaded_status(date, name, 1, result.get("infohash_hex"))
+                if is_egs:
+                    conn = open_egs_db()
+                    try:
+                        conn.execute("UPDATE egs_games SET downloaded = 1, infohash_hex = ?, updated_at = ? WHERE egs_id = ? AND link = ?", (result.get("infohash_hex"), now_ts(), row[3], link))
+                        conn.commit()
+                    finally:
+                        conn.close()
+                else:
+                    tool.core.set_downloaded_status(date, name, 1, result.get("infohash_hex"))
                 status["found_downloaded"] += 1
         except Exception as e:
             status["errors"].append(f"{date}/{name}: {e}")
@@ -919,11 +945,384 @@ def cmd_auto_idle_run(args):
     )
 
 
+def cmd_egs_crawl(args):
+    from tool.egs_core import crawl_egs_range
+    start_year = int(args.start_year)
+    end_year = int(args.end_year or args.start_year)
+    stats = crawl_egs_range(start_year, end_year, month=args.month, db_path=args.db)
+    _print(stats)
+
+
+def cmd_egs_status(args):
+    from tool.egs_core import open_egs_db
+    conn = open_egs_db(args.db)
+    try:
+        cur = conn.cursor()
+        tables = [r[0] for r in cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        ).fetchall()]
+        if "egs_games" not in tables:
+            _print({"exists": False, "tables": tables})
+            return
+        total = cur.execute("SELECT COUNT(*) FROM egs_games").fetchone()[0]
+        by_year = cur.execute(
+            "SELECT substr(date,1,4) AS year, COUNT(*) FROM egs_games GROUP BY year ORDER BY year"
+        ).fetchall()
+        by_month = cur.execute(
+            "SELECT date, COUNT(*) FROM egs_games GROUP BY date ORDER BY date"
+        ).fetchall()
+        has_link = cur.execute(
+            "SELECT COUNT(*) FROM egs_games WHERE link IS NOT NULL AND link != ''"
+        ).fetchone()[0]
+        _print({
+            "exists": True,
+            "db": conn.execute("SELECT file FROM pragma_database_list WHERE name='main'").fetchone()[0],
+            "total": total,
+            "by_year": [{"year": r[0], "count": r[1]} for r in by_year],
+            "by_month": [{"month": r[0], "count": r[1]} for r in by_month],
+            "has_link": has_link,
+        })
+    finally:
+        conn.close()
+
+
+def cmd_egs_games(args):
+    from tool.egs_core import open_egs_db, ensure_review_blacklist_schema
+    conn = open_egs_db(args.db)
+    try:
+        cur = conn.cursor()
+        ensure_review_blacklist_schema(conn)
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='egs_games'")
+        if cur.fetchone() is None:
+            _print({"data": [], "current_page": int(args.page), "per_page": int(args.per_page),
+                    "total": 0, "year": args.year, "month": args.month, "q": args.q})
+            return
+
+        conditions = []
+        params = []
+        if args.year is not None:
+            conditions.append("substr(date,1,4) = ?")
+            params.append(f"{int(args.year):04d}")
+        if args.month is not None:
+            conditions.append("substr(date,6,2) = ?")
+            params.append(f"{int(args.month):02d}")
+        if args.brand_kind:
+            conditions.append("brand_kind = ?")
+            params.append(str(args.brand_kind).strip().upper())
+        if getattr(args, "review", "") == "pending":
+            conditions.append("""
+                (link IS NULL OR link = '')
+                AND NOT EXISTS (
+                    SELECT 1 FROM egs_review_company_blacklist b
+                     WHERE b.company IN (egs_games.company, egs_games.egs_company)
+                )
+                AND EXISTS (
+                    SELECT 1 FROM egs_nyaa_candidates c
+                     WHERE c.egs_id = egs_games.egs_id
+                )
+                AND COALESCE((
+                    SELECT l.review_status FROM egs_nyaa_search_log l
+                     WHERE l.egs_id = egs_games.egs_id
+                ), 'pending') = 'pending'
+            """)
+        if args.q:
+            q = str(args.q).strip()
+            if q:
+                conditions.append("(name LIKE ? OR company LIKE ? OR name_kana LIKE ?)")
+                like = f"%{q}%"
+                params.extend([like, like, like])
+        where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+        total = cur.execute(f"SELECT COUNT(*) FROM egs_games{where}", params).fetchone()[0]
+        page = max(1, int(args.page))
+        per_page = max(1, int(args.per_page))
+        start = (page - 1) * per_page
+        tables = {r[0] for r in cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        review_select = ""
+        if "egs_nyaa_candidates" in tables:
+            review_select += """
+            , (SELECT COUNT(*) FROM egs_nyaa_candidates c
+                LEFT JOIN egs_nyaa_search_log l ON l.egs_id = c.egs_id
+                WHERE c.egs_id = egs_games.egs_id
+                  AND COALESCE(l.review_status, '') != 'rejected') AS candidate_count
+            """
+        if "egs_nyaa_search_log" in tables:
+            log_cols = {r[1] for r in cur.execute("PRAGMA table_info(egs_nyaa_search_log)")}
+            if "best_score" in log_cols:
+                review_select += """
+            , (SELECT l.best_score FROM egs_nyaa_search_log l
+                WHERE l.egs_id = egs_games.egs_id) AS best_score
+            """
+            if "review_status" in log_cols:
+                review_select += """
+            , (SELECT l.review_status FROM egs_nyaa_search_log l
+                WHERE l.egs_id = egs_games.egs_id) AS review_status
+            """
+        review_select += """
+        , EXISTS (
+              SELECT 1 FROM egs_review_company_blacklist b
+               WHERE b.company IN (egs_games.company, egs_games.egs_company)
+          ) AS review_blacklisted
+        """
+        rows = cur.execute(
+            f"""
+            SELECT egs_id, date, name, company, release_ts, egs_date, actual_release_ts, brand_kind,
+                   link, nyaa_name, downloaded, submitted_115, submitted_pick_code,
+                   download_failed, download_failed_at
+                  {review_select}
+              FROM egs_games{where}
+             ORDER BY date, release_ts, egs_id
+             LIMIT ? OFFSET ?
+            """,
+            params + [per_page, start],
+        ).fetchall()
+        _print({
+            "data": [dict(r) for r in rows],
+            "current_page": page,
+            "per_page": per_page,
+            "total": int(total or 0),
+            "year": args.year,
+            "month": args.month,
+            "review": getattr(args, "review", "") or "",
+            "q": args.q or "",
+        })
+    finally:
+        conn.close()
+
+
+def cmd_egs_magnet(args):
+    from tool.egs_magnet import run_magnet
+    stats = run_magnet(
+        year=int(args.year),
+        month=int(args.month) if args.month else None,
+        force=bool(args.force),
+        limit=int(args.limit or 0),
+        db_path=args.db,
+    )
+    _print(stats)
+
+
+def cmd_egs_update(args):
+    from tool.egs_core import update_egs_game_record
+    _print(update_egs_game_record(
+        egs_id=int(args.egs_id),
+        new_date=args.new_date,
+        new_name=args.new_name,
+        new_company=args.new_company,
+        new_link=args.new_link,
+        new_nyaa_name=args.new_nyaa_name,
+        new_downloaded=args.new_downloaded,
+        new_submitted_115=args.new_submitted_115,
+        new_submitted_pick_code=args.new_submitted_pick_code,
+        db_path=args.db,
+    ))
+
+
+def cmd_egs_delete(args):
+    from tool.egs_core import delete_egs_game_record
+    _print(delete_egs_game_record(int(args.egs_id), db_path=args.db))
+
+
+def cmd_egs_organize_confirm(args):
+    """人工确认后允许跨年移动/整理单个目录。"""
+    from tool.egs_core import open_egs_db
+    from tool.egs_organize import organize_single, record_organize_issue
+    conn = open_egs_db(args.db)
+    try:
+        row = conn.execute(
+            "SELECT egs_id FROM egs_games WHERE date=? AND name=?",
+            (str(args.date), str(args.name)),
+        ).fetchone()
+        result = organize_single(
+            str(args.date), str(args.name), dry_run=False,
+            conn=conn, confirmed_cross_year=True, confirmed_month_shift=True,
+        )
+        ok = result.get("status") in (
+            "renamed", "moved", "renamed_moved", "already_ok",
+            "found_set_downloaded", "wrapped_file",
+        )
+        # 整理待办联动：成功关闭对应待办，失败则刷新待办内容
+        record_organize_issue(
+            conn, date=str(args.date), name=str(args.name), code=result.get("status"),
+            executed=True, detail=result,
+            egs_id=row[0] if row else None,
+        )
+        _print({"success": ok, **result})
+    finally:
+        conn.close()
+
+
+def cmd_egs_organize_issues(args):
+    from tool.egs_core import open_egs_db
+    from tool.egs_organize import list_organize_issues
+    conn = open_egs_db(args.db)
+    try:
+        _print(list_organize_issues(conn, include_resolved=bool(args.all)))
+    finally:
+        conn.close()
+
+
+def cmd_egs_organize_issue_resolve(args):
+    from tool.egs_core import open_egs_db
+    from tool.egs_organize import resolve_organize_issue
+    conn = open_egs_db(args.db)
+    try:
+        _print(resolve_organize_issue(conn, int(args.id)))
+    finally:
+        conn.close()
+
+
+def cmd_egs_organize_issue_reject(args):
+    from tool.egs_core import open_egs_db
+    from tool.egs_organize import reject_organize_issue
+    conn = open_egs_db(args.db)
+    try:
+        _print(reject_organize_issue(conn, int(args.id)))
+    finally:
+        conn.close()
+
+def cmd_egs_organize_issue_reject_month(args):
+    from tool.egs_core import open_egs_db
+    from tool.egs_organize import reject_month_shift_issue
+    conn = open_egs_db(args.db)
+    try:
+        _print(reject_month_shift_issue(conn, int(args.id)))
+    finally:
+        conn.close()
+
+def cmd_egs_torrent_meta_backfill(args):
+    """存量回填：为已有磁链的行下载 .torrent 解析 info.name，供整理精确定位。"""
+    import sqlite3
+
+    import requests
+    from tool.egs_core import ensure_egs_schema, open_egs_db
+    from tool.egs_magnet import HEADERS, RequestPacer
+    from tool.torrent_meta import fetch_torrent_meta, meta_to_json
+
+    conn = open_egs_db(args.db)
+    ensure_egs_schema(conn)
+    conn.row_factory = sqlite3.Row
+    try:
+        sql = """
+            SELECT g.egs_id, g.date, g.name, g.link, g.infohash_hex
+              FROM egs_games g
+             WHERE COALESCE(g.link,'') != '' AND g.infohash_hex IS NOT NULL
+               AND (? OR COALESCE(g.torrent_name,'') = '')
+               AND (? OR g.date LIKE ?)
+             ORDER BY g.egs_id
+        """
+        rows = conn.execute(sql, (bool(args.force), bool(args.year), f"{args.year}-%" if args.year else None)).fetchall()
+        if args.limit:
+            rows = rows[:args.limit]
+        stats = {"total": len(rows), "ok": 0, "skip_no_view": 0, "fail": 0, "updated": []}
+        if not rows:
+            _print(stats)
+            return
+        session = requests.Session()
+        session.headers.update(HEADERS)
+        pacer = RequestPacer()
+        for row in rows:
+            cand = conn.execute(
+                """SELECT view_url FROM egs_nyaa_candidates
+                    WHERE egs_id=? AND infohash_hex=?
+                    ORDER BY selected DESC, id DESC LIMIT 1""",
+                (row['egs_id'], row['infohash_hex']),
+            ).fetchone()
+            if not cand or not cand['view_url']:
+                stats['skip_no_view'] += 1
+                continue
+            meta = fetch_torrent_meta(session, cand['view_url'], expected_infohash=row['infohash_hex'], pacer=pacer)
+            if not meta:
+                stats['fail'] += 1
+                continue
+            conn.execute(
+                """UPDATE egs_games SET torrent_name=?, torrent_files=?, torrent_size=?
+                    WHERE egs_id=?""",
+                (meta['name'], meta_to_json(meta), meta.get('total_size'), row['egs_id']),
+            )
+            conn.commit()
+            stats['ok'] += 1
+            stats['updated'].append({"egs_id": row['egs_id'], "name": row['name'],
+                                     "torrent_name": meta['name']})
+        _print(stats)
+    finally:
+        conn.close()
+
+
+def cmd_egs_retry_magnet(args):
+    """手动重爬：强制重新搜索候选；无更优磁链时保留 download_failed 标记。"""
+    import logging
+
+    import requests
+    from tool.egs_core import ensure_egs_schema, open_egs_db
+    from tool.egs_magnet import HEADERS, process_game
+
+    conn = open_egs_db(args.db)
+    ensure_egs_schema(conn)
+    try:
+        row = conn.execute(
+            "SELECT egs_id, date, name, company, release_ts FROM egs_games WHERE egs_id=?",
+            (int(args.egs_id),),
+        ).fetchone()
+        if not row:
+            _print({"success": False, "message": "记录不存在"})
+            return
+        session = requests.Session()
+        session.headers.update(HEADERS)
+        logger = logging.getLogger("egs_magnet")
+        status, result = process_game(conn, session, row, logger, force=True)
+        _print({"success": status in ("selected",), "status": status, **result})
+    finally:
+        conn.close()
+
+
+def cmd_egs_review_detail(args):
+    from tool.egs_magnet import review_detail
+    _print(review_detail(int(args.egs_id), db_path=args.db))
+
+
+def cmd_egs_review_decide(args):
+    from tool.egs_magnet import decide_review
+    _print(decide_review(
+        egs_id=int(args.egs_id),
+        decision=args.decision,
+        candidate_id=args.candidate_id,
+        manual_magnet=args.manual_magnet,
+        manual_nyaa_name=args.manual_nyaa_name,
+        note=args.note,
+        db_path=args.db,
+    ))
+
+
+def cmd_egs_review_blacklist(args):
+    from tool.egs_core import (
+        list_review_company_blacklist,
+        add_review_company_blacklist,
+        remove_review_company_blacklist,
+    )
+    if args.action == "add":
+        _print(add_review_company_blacklist(args.company, args.note, db_path=args.db))
+    elif args.action == "remove":
+        _print(remove_review_company_blacklist(args.company, db_path=args.db))
+    else:
+        conn = None
+        from tool.egs_core import open_egs_db, ensure_review_blacklist_schema
+        conn = open_egs_db(args.db)
+        try:
+            ensure_review_blacklist_schema(conn)
+            _print({"success": True, "data": list_review_company_blacklist(conn)})
+        finally:
+            if conn:
+                conn.close()
+
+
 def build_parser():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_years = sub.add_parser("years")
+    p_years.add_argument("--source", choices=["getchu", "egs"], default="getchu")
     p_years.set_defaults(func=cmd_years)
 
     p_calendar = sub.add_parser("calendar")
@@ -962,6 +1361,7 @@ def build_parser():
     p_download_start = download_sub.add_parser("start")
     p_download_start.add_argument("--year", type=int, required=True)
     p_download_start.add_argument("--month", type=int)
+    p_download_start.add_argument("--source", choices=["getchu", "egs"], default="getchu")
     p_download_start.set_defaults(func=cmd_download_start)
 
     p_download_stop = download_sub.add_parser("stop")
@@ -1007,6 +1407,7 @@ def build_parser():
     p_115_check_all_start = check_all_sub.add_parser("start")
     p_115_check_all_start.add_argument("--year", type=int)
     p_115_check_all_start.add_argument("--month", type=int)
+    p_115_check_all_start.add_argument("--source", choices=["getchu", "egs"], default="getchu")
     p_115_check_all_start.set_defaults(func=cmd_115_check_all_start)
 
     p_115_check_all_status = check_all_sub.add_parser("status")
@@ -1018,6 +1419,7 @@ def build_parser():
     p_115_check_all_worker = check_all_sub.add_parser("worker")
     p_115_check_all_worker.add_argument("--year", type=int)
     p_115_check_all_worker.add_argument("--month", type=int)
+    p_115_check_all_worker.add_argument("--source", choices=["getchu", "egs"], default="getchu")
     p_115_check_all_worker.set_defaults(func=cmd_115_check_all_worker)
 
     p_update = sub.add_parser("update_game")
@@ -1037,6 +1439,132 @@ def build_parser():
     p_delete.add_argument("--date", type=str, required=True)
     p_delete.add_argument("--name", type=str, required=True)
     p_delete.set_defaults(func=cmd_delete_game)
+
+    p_egs = sub.add_parser("egs")
+    egs_sub = p_egs.add_subparsers(dest="egs_action", required=True)
+
+    p_egs_crawl = egs_sub.add_parser("crawl")
+    p_egs_crawl.add_argument("--start-year", type=int, required=True, dest="start_year")
+    p_egs_crawl.add_argument("--end-year", type=int, dest="end_year")
+    p_egs_crawl.add_argument("--month", type=int, dest="month")
+    p_egs_crawl.add_argument("--db", type=str, dest="db")
+    p_egs_crawl.set_defaults(func=cmd_egs_crawl)
+
+    p_egs_status = egs_sub.add_parser("status")
+    p_egs_status.add_argument("--db", type=str, dest="db")
+    p_egs_status.set_defaults(func=cmd_egs_status)
+
+    p_egs_games = egs_sub.add_parser("games")
+    p_egs_games.add_argument("--page", type=int, default=1)
+    p_egs_games.add_argument("--per-page", type=int, default=50, dest="per_page")
+    p_egs_games.add_argument("--year", type=int)
+    p_egs_games.add_argument("--month", type=int)
+    p_egs_games.add_argument("--q", type=str, default="")
+    p_egs_games.add_argument("--brand-kind", type=str, dest="brand_kind", default="")
+    p_egs_games.add_argument("--review", type=str, choices=["", "pending"], default="")
+    p_egs_games.add_argument("--db", type=str)
+    p_egs_games.set_defaults(func=cmd_egs_games)
+
+    p_egs_magnet = egs_sub.add_parser("magnet")
+    p_egs_magnet.add_argument("--year", type=int, required=True)
+    p_egs_magnet.add_argument("--month", type=int)
+    p_egs_magnet.add_argument("--force", action="store_true",
+                              help="忽略搜索历史强制重搜")
+    p_egs_magnet.add_argument("--limit", type=int, default=0,
+                              help="最多处理N个游戏，0=不限")
+    p_egs_magnet.add_argument("--db", type=str)
+    p_egs_magnet.set_defaults(func=cmd_egs_magnet)
+
+    p_egs_update = egs_sub.add_parser("update")
+    p_egs_update.add_argument("--egs-id", type=int, required=True, dest="egs_id")
+    p_egs_update.add_argument("--new-date", type=str, dest="new_date")
+    p_egs_update.add_argument("--new-name", type=str, dest="new_name")
+    p_egs_update.add_argument("--new-company", type=str, dest="new_company")
+    p_egs_update.add_argument("--new-link", type=str, dest="new_link")
+    p_egs_update.add_argument("--new-nyaa-name", type=str, dest="new_nyaa_name")
+    p_egs_update.add_argument("--new-downloaded", type=int,
+                              choices=[0, 1], dest="new_downloaded")
+    p_egs_update.add_argument("--new-submitted-115", type=int,
+                              choices=[0, 1], dest="new_submitted_115")
+    p_egs_update.add_argument("--new-submitted-pick-code", type=str,
+                              dest="new_submitted_pick_code")
+    p_egs_update.add_argument("--db", type=str)
+    p_egs_update.set_defaults(func=cmd_egs_update)
+
+    p_egs_delete = egs_sub.add_parser("delete")
+    p_egs_delete.add_argument("--egs-id", type=int, required=True, dest="egs_id")
+    p_egs_delete.add_argument("--db", type=str)
+    p_egs_delete.set_defaults(func=cmd_egs_delete)
+
+    p_egs_organize_confirm = egs_sub.add_parser("organize_confirm")
+    p_egs_organize_confirm.add_argument("--date", required=True)
+    p_egs_organize_confirm.add_argument("--name", required=True)
+    p_egs_organize_confirm.add_argument("--db", type=str)
+    p_egs_organize_confirm.set_defaults(func=cmd_egs_organize_confirm)
+
+    p_egs_organize_issues = egs_sub.add_parser("organize_issues")
+    p_egs_organize_issues.add_argument("--all", action="store_true")
+    p_egs_organize_issues.add_argument("--db", type=str)
+    p_egs_organize_issues.set_defaults(func=cmd_egs_organize_issues)
+
+    p_egs_organize_issue_resolve = egs_sub.add_parser("organize_issue_resolve")
+    p_egs_organize_issue_resolve.add_argument("--id", type=int, required=True)
+    p_egs_organize_issue_resolve.add_argument("--db", type=str)
+    p_egs_organize_issue_resolve.set_defaults(func=cmd_egs_organize_issue_resolve)
+
+    p_egs_organize_issue_reject = egs_sub.add_parser("organize_issue_reject")
+    p_egs_organize_issue_reject.add_argument("--id", type=int, required=True)
+    p_egs_organize_issue_reject.add_argument("--db", type=str)
+    p_egs_organize_issue_reject.set_defaults(func=cmd_egs_organize_issue_reject)
+
+    p_egs_organize_issue_reject_month = egs_sub.add_parser("organize_issue_reject_month")
+    p_egs_organize_issue_reject_month.add_argument("--id", type=int, required=True)
+    p_egs_organize_issue_reject_month.add_argument("--db", type=str)
+    p_egs_organize_issue_reject_month.set_defaults(func=cmd_egs_organize_issue_reject_month)
+
+    p_egs_torrent_meta_backfill = egs_sub.add_parser("torrent_meta_backfill")
+    p_egs_torrent_meta_backfill.add_argument("--year", type=int, default=0)
+    p_egs_torrent_meta_backfill.add_argument("--limit", type=int, default=0)
+    p_egs_torrent_meta_backfill.add_argument("--force", action="store_true",
+                                             help="已回填的行也重新下载覆盖")
+    p_egs_torrent_meta_backfill.add_argument("--db", type=str)
+    p_egs_torrent_meta_backfill.set_defaults(func=cmd_egs_torrent_meta_backfill)
+
+    p_egs_retry_magnet = egs_sub.add_parser("retry_magnet")
+    p_egs_retry_magnet.add_argument("--egs-id", type=int, required=True, dest="egs_id")
+    p_egs_retry_magnet.add_argument("--db", type=str)
+    p_egs_retry_magnet.set_defaults(func=cmd_egs_retry_magnet)
+
+    p_egs_review_detail = egs_sub.add_parser("review_detail")
+    p_egs_review_detail.add_argument("--egs-id", type=int, required=True, dest="egs_id")
+    p_egs_review_detail.add_argument("--db", type=str)
+    p_egs_review_detail.set_defaults(func=cmd_egs_review_detail)
+
+    p_egs_review_decide = egs_sub.add_parser("review_decide")
+    p_egs_review_decide.add_argument("--egs-id", type=int, required=True, dest="egs_id")
+    p_egs_review_decide.add_argument("--decision", type=str, required=True,
+                                     choices=["approve", "reject", "reopen"])
+    p_egs_review_decide.add_argument("--candidate-id", type=int, dest="candidate_id")
+    p_egs_review_decide.add_argument("--manual-magnet", type=str, dest="manual_magnet")
+    p_egs_review_decide.add_argument("--manual-nyaa-name", type=str, dest="manual_nyaa_name")
+    p_egs_review_decide.add_argument("--note", type=str)
+    p_egs_review_decide.add_argument("--db", type=str)
+    p_egs_review_decide.set_defaults(func=cmd_egs_review_decide)
+
+    p_egs_review_blacklist = egs_sub.add_parser("review_blacklist")
+    egs_blacklist_sub = p_egs_review_blacklist.add_subparsers(dest="action", required=True)
+    p_blacklist_list = egs_blacklist_sub.add_parser("list")
+    p_blacklist_list.add_argument("--db", type=str)
+    p_blacklist_list.set_defaults(func=cmd_egs_review_blacklist)
+    p_blacklist_add = egs_blacklist_sub.add_parser("add")
+    p_blacklist_add.add_argument("--company", required=True)
+    p_blacklist_add.add_argument("--note", default="")
+    p_blacklist_add.add_argument("--db", type=str)
+    p_blacklist_add.set_defaults(func=cmd_egs_review_blacklist)
+    p_blacklist_remove = egs_blacklist_sub.add_parser("remove")
+    p_blacklist_remove.add_argument("--company", required=True)
+    p_blacklist_remove.add_argument("--db", type=str)
+    p_blacklist_remove.set_defaults(func=cmd_egs_review_blacklist)
 
     p_auto = sub.add_parser("auto")
     auto_sub = p_auto.add_subparsers(dest="action", required=True)
