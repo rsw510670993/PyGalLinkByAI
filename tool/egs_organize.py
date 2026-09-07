@@ -732,8 +732,9 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
     try:
         row = conn.execute(
             "SELECT company,link,COALESCE(downloaded,0),COALESCE(submitted_115,0),release_ts,"
-            " egs_date,actual_release_ts,torrent_name,COALESCE(magnet_duplicate,0),"
-            " duplicate_of_egs_id,COALESCE(submission_excluded,0),submission_excluded_reason"
+            " egs_date,actual_release_ts,torrent_name,COALESCE(download_failed,0),"
+            " COALESCE(magnet_duplicate,0),duplicate_of_egs_id,"
+            " COALESCE(submission_excluded,0),submission_excluded_reason"
             " FROM egs_games WHERE date=? AND name=?",
             (date, name),
         ).fetchone()
@@ -742,8 +743,12 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
             result["message"] = "游戏记录不存在"
             return result
         (company, link, downloaded, submitted, release_ts, egs_date, actual_release_ts,
-         torrent_name, magnet_duplicate, duplicate_of_egs_id,
+         torrent_name, download_failed, magnet_duplicate, duplicate_of_egs_id,
          submission_excluded, submission_excluded_reason) = row
+        if download_failed:
+            result["status"] = "not_downloaded"
+            result["message"] = "115离线任务下载失败，等待重新寻找磁链"
+            return result
         if submission_excluded:
             result["status"] = "not_submittable"
             result["message"] = "已归类为不应提交/整理" + (

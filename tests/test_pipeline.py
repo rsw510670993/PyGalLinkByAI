@@ -376,6 +376,22 @@ class PipelineTests(unittest.TestCase):
             with pipeline.locked():
                 pass
 
+    def test_download_failed_record_does_not_accept_partial_folder(self):
+        conn = sqlite3.connect(self.db)
+        self.addCleanup(conn.close)
+        organize.ensure_folder_schema(conn)
+        conn.execute('UPDATE egs_games SET download_failed=1 WHERE egs_id=1')
+        organize.save_folder_record(
+            conn, '2026-01', 'Game1', cid='partial', pid='12',
+            folder_name='Partial Game1', target_name='[20260101][Brand]Game1',
+        )
+        with patch.object(organize, 'get_item_name') as get_name:
+            result = organize.organize_single('2026-01', 'Game1', dry_run=False, conn=conn)
+        self.assertEqual(result['status'], 'not_downloaded')
+        self.assertIn('下载失败', result['message'])
+        get_name.assert_not_called()
+        self.assertEqual(conn.execute('SELECT downloaded FROM egs_games WHERE egs_id=1').fetchone()[0], 0)
+
     def test_pending_offline_task_is_not_organized(self):
         conn=sqlite3.connect(self.db)
         self.addCleanup(conn.close)
