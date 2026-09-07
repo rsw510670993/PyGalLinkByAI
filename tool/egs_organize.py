@@ -290,7 +290,11 @@ def locate_in_year_dir(year_dir_cid, dn, name, torrent_name=None):
                         "parent_path": parent_crumbs_path(it.get("pid")),
                         "is_dir": str(it.get("fc", "")) == "0", "pick_code": it.get("pc")}
 
-    # ② 退回 dn / EGS 名匹配
+    # 有 info.name 时它就是种子产物目录的身份；未命中不得退回短标题泛匹配。
+    if norm_tn:
+        return None
+
+    # ② 无 info.name 时才退回 dn / EGS 名匹配
     norm_dn = _normalize_for_comparison(dn)
     norm = _normalize_for_comparison(name)
     best = None
@@ -504,12 +508,17 @@ def locate_by_search(dn, name, torrent_name=None):
             if not fname or it.get("cid") in seen_ids:
                 continue
             norm_fname = _normalize_for_comparison(fname)
+            torrent_match = tn_match(fname)
             egs_match = bool(norm) and _names_match(norm, norm_fname)
-            if not (_names_match(norm_dn, norm_fname) or egs_match or tn_match(fname)):
+            if torrent_name:
+                # info.name 可用时禁止用 LUNA/LESSON 等短 EGS 标题兜底。
+                if not torrent_match:
+                    continue
+            elif not (_names_match(norm_dn, norm_fname) or egs_match):
                 continue
             seen_ids.add(it.get("cid"))
             is_dir = str(it.get("fc", "")) == "0"
-            score = (2 if is_dir else 0) + (1 if norm and norm in norm_fname else 0) + (2 if tn_match(fname) else 0)
+            score = (2 if is_dir else 0) + (1 if norm and norm in norm_fname else 0) + (2 if torrent_match else 0)
             if best is None or score > best[0]:
                 best = (score, it)
                 dir_hits = 1 if is_dir else 0

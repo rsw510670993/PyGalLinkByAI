@@ -176,6 +176,29 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(second['status'],'cross_year_rejected')
         self.assertEqual(organize.organize_report_outcome(second['status']),'skipped')
 
+    def test_torrent_info_name_blocks_short_title_fallback(self):
+        wrong = [
+            {'cid': '1', 'pid': '10', 'fc': 0, 'n': '[241229][LunaSystem] 七ヶ音学園旅行部'},
+            {'cid': '2', 'pid': '10', 'fc': 0, 'n': '[211224] [Key] LUNARiA -Virtualized Moonchild-'},
+        ]
+        torrent_name = '[WorkNite Games] LUNA v1.2.056'
+        with patch.object(organize, 'search_files', return_value=wrong):
+            result = organize.locate_by_search(
+                '[WorkNite Games] LUNA [English] [Uncensored]',
+                'LUNA', torrent_name=torrent_name,
+            )
+        self.assertIsNone(result)
+
+        exact = {'cid': '3', 'pid': '10', 'fc': 0, 'n': torrent_name}
+        with patch.object(organize, 'search_files', return_value=wrong + [exact]), \
+             patch.object(organize, 'parent_crumbs_path', return_value='/Downloads'):
+            result = organize.locate_by_search(
+                '[WorkNite Games] LUNA [English] [Uncensored]',
+                'LUNA', torrent_name=torrent_name,
+            )
+        self.assertEqual(result['cid'], '3')
+        self.assertFalse(result['ambiguous'])
+
     def test_duplicate_magnet_is_not_an_organize_issue(self):
         conn = sqlite3.connect(self.db)
         self.addCleanup(conn.close)
