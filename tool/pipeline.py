@@ -225,6 +225,8 @@ def execute_job(state, save, should_stop):
             SELECT * FROM egs_games
              WHERE CAST(substr(date,1,4) AS INTEGER) BETWEEN ? AND ?
                AND link IS NOT NULL AND link != ''
+               AND COALESCE(magnet_duplicate,0) = 0
+               AND COALESCE(submission_excluded,0) = 0
                AND NOT EXISTS (
                    SELECT 1 FROM egs_review_company_blacklist b
                     WHERE b.company IN (egs_games.company, egs_games.egs_company)
@@ -242,7 +244,7 @@ def execute_job(state, save, should_stop):
             sql += ' AND CAST(substr(date,6,2) AS INTEGER) = ?'
             params.append(state['month'])
         if action in ('check', 'submit'):
-            sql += ' AND COALESCE(downloaded,0) = 0 AND COALESCE(magnet_duplicate,0) = 0'
+            sql += ' AND COALESCE(downloaded,0) = 0'
         if action == 'submit':
             sql += ' AND COALESCE(submitted_115,0) = 0'
         rows = conn.execute(sql + ' ORDER BY date, egs_id', params).fetchall()

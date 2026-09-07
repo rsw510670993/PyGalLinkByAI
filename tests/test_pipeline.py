@@ -176,6 +176,40 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(second['status'],'cross_year_rejected')
         self.assertEqual(organize.organize_report_outcome(second['status']),'skipped')
 
+    def test_duplicate_magnet_is_not_an_organize_issue(self):
+        conn = sqlite3.connect(self.db)
+        self.addCleanup(conn.close)
+        organize.ensure_folder_schema(conn)
+        conn.execute(
+            'UPDATE egs_games SET magnet_duplicate=1,duplicate_of_egs_id=2 WHERE egs_id=1'
+        )
+        conn.commit()
+
+        with patch.object(organize, 'locate_by_search') as locate:
+            result = organize.organize_single('2026-01', 'Game1', dry_run=True, conn=conn)
+        self.assertEqual(result['status'], 'duplicate_magnet')
+        self.assertIn('不应提交', result['message'])
+        locate.assert_not_called()
+
+        organize.ensure_issue_schema(conn)
+        conn.execute(
+            """INSERT INTO egs_organize_issues
+               (egs_id,date,name,status,outcome,message,detail,run_at,resolved)
+               VALUES (1,'2026-01','Game1','shared_cid','failed','old','{}','2026-01-01',0)"""
+        )
+        conn.execute(
+            """INSERT INTO egs_organize_issues
+               (egs_id,date,name,status,outcome,message,detail,run_at,resolved)
+               VALUES (4,'2026-02','Game4','shared_cid','failed','old','{}','2026-01-01',0)"""
+        )
+        conn.commit()
+        listed = organize.list_organize_issues(conn, include_resolved=False)
+        self.assertEqual(listed['counts']['open'], 0)
+        excluded = conn.execute(
+            'SELECT submission_excluded,submission_excluded_reason FROM egs_games WHERE egs_id=4'
+        ).fetchone()
+        self.assertEqual(excluded, (1, 'shared_cid'))
+
     def test_names_match_rejects_unbounded_predecessor(self):
         from tool.p115_client import _names_match, _normalize_for_comparison
         dn=_normalize_for_comparison('[260227][Cuteuphoria] ドラコンカフェ2')

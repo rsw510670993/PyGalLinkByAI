@@ -6,7 +6,7 @@ import re
 import time
 from urllib.parse import unquote
 
-from .egs_core import open_egs_db as open_db
+from .egs_core import ensure_egs_schema, open_egs_db as open_db
 from .runtime import read_config, repo_root
 from .p115_client import (
     get_item_info,
@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS egs_organize_rejections (
 
 
 def ensure_folder_schema(conn):
+    ensure_egs_schema(conn)
     conn.execute(FOLDER_SCHEMA_SQL)
     conn.execute(REJECTION_SCHEMA_SQL)
     conn.commit()
@@ -703,7 +704,8 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
       missing_in_115          ⚠ 标记已下载/已提交但115找不到（execute时重置 submitted_115=0）
       not_downloaded          未下载（无磁链提交记录，正常）
       wrapped_file / would_wrap_file（单文件种子包文件夹）
-      conflict / ambiguous / shared_cid / no_dn_date / no_link / error
+      conflict / ambiguous / no_dn_date / no_link / error
+      duplicate_magnet / not_submittable（自动排除，不进入人工待办）
     """
     result = {
         "date": date, "name": name, "status": None,
@@ -720,8 +722,9 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
 
     try:
         row = conn.execute(
-            "SELECT company, link, COALESCE(downloaded,0), COALESCE(submitted_115,0), release_ts,"
-            " egs_date, actual_release_ts, torrent_name"
+            "SELECT company,link,COALESCE(downloaded,0),COALESCE(submitted_115,0),release_ts,"
+            " egs_date,actual_release_ts,torrent_name,COALESCE(magnet_duplicate,0),"
+            " duplicate_of_egs_id,COALESCE(submission_excluded,0),submission_excluded_reason"
             " FROM egs_games WHERE date=? AND name=?",
             (date, name),
         ).fetchone()
@@ -729,7 +732,26 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
             result["status"] = "error"
             result["message"] = "游戏记录不存在"
             return result
-        company, link, downloaded, submitted, release_ts, egs_date, actual_release_ts, torrent_name = row
+        (company, link, downloaded, submitted, release_ts, egs_date, actual_release_ts,
+         torrent_name, magnet_duplicate, duplicate_of_egs_id,
+         submission_excluded, submission_excluded_reason) = row
+        if submission_excluded:
+            result["status"] = "not_submittable"
+            result["message"] = "已归类为不应提交/整理" + (
+                f"（{submission_excluded_reason}）" if submission_excluded_reason else ""
+            )
+            return result
+        if magnet_duplicate:
+            owner = conn.execute(
+                "SELECT name FROM egs_games WHERE egs_id=?", (duplicate_of_egs_id,)
+            ).fetchone()
+            result["status"] = "duplicate_magnet"
+            result["duplicate_of_egs_id"] = duplicate_of_egs_id
+            result["message"] = (
+                f"与《{owner[0]}》共用磁链，已归类为不应提交/整理"
+                if owner else "共用磁链的重复记录，已归类为不应提交/整理"
+            )
+            return result
         if torrent_name:
             result["torrent_name"] = torrent_name
         result["egs_date"] = egs_date
@@ -897,20 +919,31 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
         result["old_path"] = (parent_path.rstrip("/") + "/" + old_name) if parent_path else old_name
         result["located_by"] = located_by
 
-        # ③.5 共享cid守卫（无论定位方式）：同一115目录被多行引用 → 只处理"记录中目标名
-        #     与当前目录名一致"的那一行，其余跳过待人工审阅（防重复行/共用磁链行改名互踢）
+        # ③.5 共享cid守卫：忽略已排除记录；明确由其他有效记录占用时，
+        #     当前游戏持久归类为“不应提交/整理”，避免重复生成人工待办或改名互踢。
         others = conn.execute(
-            "SELECT date, name, target_name FROM egs_115_folders"
-            " WHERE cid=? AND NOT (date=? AND name=?)",
+            """SELECT f.date,f.name,f.target_name
+                 FROM egs_115_folders f
+                 LEFT JOIN egs_games g ON g.date=f.date AND g.name=f.name
+                WHERE f.cid=? AND NOT (f.date=? AND f.name=?)
+                  AND COALESCE(g.magnet_duplicate,0)=0
+                  AND COALESCE(g.submission_excluded,0)=0""",
             (cid, date, name),
         ).fetchall()
         if others:
             my_record_holds = (located_by == "db_record" and old_name == target
                                and not any(o[2] == old_name for o in others))
             if not my_record_holds:
-                result["status"] = "shared_cid"
-                result["message"] = ("115目录被多行引用(" + "; ".join(
-                    f"{d}/{n[:20]}" for d, n, _t in others) + ")，跳过待人工审阅")
+                result["status"] = "not_submittable"
+                result["message"] = ("115目录已由其他游戏记录引用(" + "; ".join(
+                    f"{d}/{n[:20]}" for d, n, _t in others) + ")，已归类为不应提交/整理")
+                conn.execute(
+                    """UPDATE egs_games
+                          SET submission_excluded=1,submission_excluded_reason='shared_cid',updated_at=?
+                        WHERE date=? AND name=?""",
+                    (time.strftime("%Y-%m-%d %H:%M:%S"), date, name),
+                )
+                conn.commit()
                 return result
 
         # ④ 动作判定: 改名 + 移动
@@ -1210,7 +1243,7 @@ def organize_report_outcome(code):
     """整理状态 → 流水线报告归类（failed/skipped/success），与页面统计口径一致。"""
     if code in ('error', 'conflict', 'ambiguous', 'shared_cid', 'not_dir', 'no_dn_date', 'missing_in_115'):
         return 'failed'
-    if code in ('no_link', 'not_downloaded', 'in_offline', 'cross_year_confirm', 'month_shift_confirm', 'month_shift_rejected', 'cross_year_rejected'):
+    if code in ('no_link', 'not_downloaded', 'in_offline', 'duplicate_magnet', 'not_submittable', 'cross_year_confirm', 'month_shift_confirm', 'month_shift_rejected', 'cross_year_rejected'):
         return 'skipped'
     return 'success'
 
@@ -1238,7 +1271,9 @@ def record_organize_issue(conn, date, name, code, executed,
 
     # 已确认下载失败（download_failed=1）的行由磁链重爬流程处理，不再进入人工整理待办
     failed = conn.execute(
-        "SELECT 1 FROM egs_games WHERE COALESCE(download_failed,0)=1"
+        "SELECT 1 FROM egs_games WHERE"
+        " (COALESCE(download_failed,0)=1 OR COALESCE(magnet_duplicate,0)=1"
+        " OR COALESCE(submission_excluded,0)=1)"
         " AND (egs_id=? OR (egs_id IS NULL AND date=? AND name=?)) LIMIT 1",
         (egs_id, date, name),
     ).fetchone()
@@ -1381,6 +1416,36 @@ def reject_organize_issue(conn, issue_id):
 def list_organize_issues(conn, include_resolved=True, resolved_limit=100):
     """返回待处理与已解决（近 resolved_limit 条）待办，detail 反序列化为对象。"""
     ensure_issue_schema(conn)
+
+    # 共链重复项不是人工整理对象；若主记录的冲突来源也全是重复项，同样关闭旧待办。
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    open_rows = conn.execute(
+        "SELECT id,egs_id,date,name,status,detail FROM egs_organize_issues WHERE resolved=0"
+    ).fetchall()
+    obsolete_ids = []
+    for issue_id, egs_id, date, name, status, detail_json in open_rows:
+        duplicate = conn.execute(
+            "SELECT COALESCE(magnet_duplicate,0) FROM egs_games "
+            "WHERE egs_id=? OR (egs_id IS NULL AND date=? AND name=?) LIMIT 1",
+            (egs_id, date, name),
+        ).fetchone()
+        if duplicate and duplicate[0]:
+            obsolete_ids.append((now, issue_id))
+            continue
+        if status == "shared_cid":
+            conn.execute(
+                """UPDATE egs_games
+                      SET submission_excluded=1,submission_excluded_reason='shared_cid',updated_at=?
+                    WHERE egs_id=? OR (egs_id IS NULL AND date=? AND name=?)""",
+                (now, egs_id, date, name),
+            )
+            obsolete_ids.append((now, issue_id))
+    if obsolete_ids:
+        conn.executemany(
+            "UPDATE egs_organize_issues SET resolved=1,resolved_at=? WHERE id=? AND resolved=0",
+            obsolete_ids,
+        )
+        conn.commit()
 
     def _rows(where, params, limit=None):
         sql = ("SELECT id, egs_id, date, name, status, outcome, message, detail,"

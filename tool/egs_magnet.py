@@ -109,6 +109,8 @@ def ensure_egs_magnet_schema(conn: sqlite3.Connection) -> None:
             ("download_failed_at", "TEXT"),
             ("magnet_duplicate", "INTEGER NOT NULL DEFAULT 0"),
             ("duplicate_of_egs_id", "INTEGER"),
+            ("submission_excluded", "INTEGER NOT NULL DEFAULT 0"),
+            ("submission_excluded_reason", "TEXT"),
         ):
             if column not in cols:
                 conn.execute(f"ALTER TABLE egs_games ADD COLUMN {column} {decl}")

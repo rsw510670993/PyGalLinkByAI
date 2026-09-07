@@ -332,17 +332,21 @@
                 const downloadFailed = parseInt(row.download_failed || 0, 10) === 1;
                 const duplicate = parseInt(row.magnet_duplicate || 0, 10) === 1;
                 const duplicateOf = row.duplicate_of_name || '';
+                const submissionExcluded = parseInt(row.submission_excluded || 0, 10) === 1;
+                const notSubmittable = duplicate || submissionExcluded;
                 const candidateCount = parseInt(row.candidate_count || 0, 10);
                 const reviewStatus = row.review_status || '';
                 const blacklisted = parseInt(row.review_blacklisted || 0, 10) === 1;
                 const showReview = candidateCount > 0 && !magnet && !blacklisted && reviewStatus !== 'rejected';
                 const pendingReview = showReview && (!reviewStatus || reviewStatus === 'pending');
-                const rowClass = duplicate ? 'row-duplicate'
+                const rowClass = notSubmittable ? 'row-duplicate'
                     : (!magnet || downloadFailed ? '' : downloaded ? 'row-downloaded' : 'row-magnet');
-                const canMagnet = !!magnet && !duplicate;
+                const canMagnet = !!magnet && !notSubmittable;
                 const duplicateBadge = duplicate
                     ? `<span class="badge text-bg-secondary ms-1" title="继续参与搜链，找到不同磁链后自动恢复">重复磁链${duplicateOf ? `：${esc(duplicateOf)}` : ''}</span>`
-                    : '';
+                    : submissionExcluded
+                        ? '<span class="badge text-bg-secondary ms-1">不应提交</span>'
+                        : '';
                 const reviewBadge = pendingReview
                     ? '<span class="badge text-bg-warning ms-1">待审核</span>'
                     : '';
@@ -368,8 +372,9 @@
                         data-review-status="${esc(reviewStatus)}"
                         data-magnet-duplicate="${duplicate ? '1' : '0'}"
                         data-candidate-count="${esc(candidateCount)}">
+                        data-submission-excluded="${submissionExcluded ? '1' : '0'}"
                         <td class="check-col text-center">
-                            <input type="checkbox" class="game-checkbox form-check-input" ${duplicate ? 'disabled title="重复磁链不参与下载"' : ''}>
+                            <input type="checkbox" class="game-checkbox form-check-input" ${notSubmittable ? 'disabled title="该记录不参与下载"' : ''}>
                         </td>
                         <td class="ym-col">${esc(ymText)}${shiftBadge}</td>
                         <td class="game-name-cell editable-cell">${esc(row.name)}${reviewBadge}${duplicateBadge}${downloadFailed ? '<span class="badge text-bg-danger ms-1">下载失败</span>' : ''}${nyaaName ? `<div class="text-muted small"${magnet ? ' style="display:none;"' : ''}>${esc(nyaaName)}</div>` : ''}</td>
@@ -443,7 +448,7 @@
     async function submit115(tr, btn) {
         const magnet = tr.dataset.magnet || '';
         const year = yearFromRow(tr);
-        if (!magnet || !year || tr.dataset.reviewStatus === 'pending' || tr.dataset.magnetDuplicate === '1') return;
+        if (!magnet || !year || tr.dataset.reviewStatus === 'pending' || tr.dataset.magnetDuplicate === '1' || tr.dataset.submissionExcluded === '1') return;
 
         const origText = btn.textContent;
         btn.disabled = true;
@@ -761,7 +766,7 @@
 
         if (checkBtn) {
             const tr = checkBtn.closest('tr');
-            if (tr.dataset.magnetDuplicate === '1') return;
+            if (tr.dataset.magnetDuplicate === '1' || tr.dataset.submissionExcluded === '1') return;
             document.getElementById('check-modal-egs-id').value = tr.dataset.egsId || '';
             document.getElementById('modal-game-name').textContent = tr.dataset.name || '-';
             document.getElementById('modal-magnet').value = tr.dataset.magnet || '';
@@ -880,7 +885,7 @@
 
         for (const tr of rows) {
             const submitBtn = tr.querySelector('.btn-115-submit');
-            if (!tr.dataset.magnet || !yearFromRow(tr) || tr.dataset.reviewStatus === 'pending' || tr.dataset.magnetDuplicate === '1') { fail++; continue; }
+            if (!tr.dataset.magnet || !yearFromRow(tr) || tr.dataset.reviewStatus === 'pending' || tr.dataset.magnetDuplicate === '1' || tr.dataset.submissionExcluded === '1') { fail++; continue; }
             try {
                 const res = await fetch('api.php?action=115_submit', {
                     method: 'POST',

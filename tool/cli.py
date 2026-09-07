@@ -1071,6 +1071,8 @@ def cmd_egs_games(args):
                    link, nyaa_name, downloaded, submitted_115, submitted_pick_code,
                    download_failed, download_failed_at,
                    COALESCE(magnet_duplicate,0) AS magnet_duplicate, duplicate_of_egs_id,
+                   COALESCE(submission_excluded,0) AS submission_excluded,
+                   submission_excluded_reason,
                    (SELECT owner.name FROM egs_games owner
                      WHERE owner.egs_id=egs_games.duplicate_of_egs_id) AS duplicate_of_name
                   {review_select}
