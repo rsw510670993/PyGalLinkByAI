@@ -371,8 +371,8 @@
                         data-submitted-pick-code="${esc(row.submitted_pick_code || '')}"
                         data-review-status="${esc(reviewStatus)}"
                         data-magnet-duplicate="${duplicate ? '1' : '0'}"
-                        data-candidate-count="${esc(candidateCount)}">
                         data-submission-excluded="${submissionExcluded ? '1' : '0'}"
+                        data-candidate-count="${esc(candidateCount)}">
                         <td class="check-col text-center">
                             <input type="checkbox" class="game-checkbox form-check-input" ${notSubmittable ? 'disabled title="该记录不参与下载"' : ''}>
                         </td>
