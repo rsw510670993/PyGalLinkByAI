@@ -18,9 +18,25 @@
         .editable-cell { cursor: pointer; transition: background-color .15s; }
         .editable-cell:hover { background-color: rgba(13,110,253,.08); text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; }
         .editable-cell input { width: 100%; border: 1px solid #0d6efd; border-radius: 3px; padding: 2px 4px; font-size: inherit; font-family: inherit; }
-        .row-magnet { background-color: #e7f5ff !important; }
-        .row-downloaded { background-color: #e6f4ea !important; }
-        .row-review { background-color: #fff8e1 !important; }
+        /* Bootstrap 会在单元格上绘制表格背景，状态色必须直接设置到 td/th。 */
+        #gamesTable tbody tr.row-downloaded > * {
+            --bs-table-bg: #eaf7ee;
+            --bs-table-bg-state: #eaf7ee;
+            background-color: #eaf7ee;
+        }
+        #gamesTable tbody tr.row-magnet > * {
+            --bs-table-bg: #fff8df;
+            --bs-table-bg-state: #fff8df;
+            background-color: #fff8df;
+        }
+        #gamesTable.table-hover tbody tr.row-downloaded:hover > * {
+            --bs-table-bg-state: #dff2e5;
+            background-color: #dff2e5;
+        }
+        #gamesTable.table-hover tbody tr.row-magnet:hover > * {
+            --bs-table-bg-state: #fff1c2;
+            background-color: #fff1c2;
+        }
     </style>
 </head>
 <body class="bg-light">
@@ -259,6 +275,7 @@
 <script>
 (function () {
     let currentPage = 1;
+    let reviewDecisionPending = false;
     const perPage = 50;
 
     function esc(value) {
@@ -308,9 +325,9 @@
                 const blacklisted = parseInt(row.review_blacklisted || 0, 10) === 1;
                 const showReview = candidateCount > 0 && !magnet && !blacklisted && reviewStatus !== 'rejected';
                 const pendingReview = showReview && (!reviewStatus || reviewStatus === 'pending');
-                const rowClass = pendingReview
-                    ? 'row-review'
-                    : (downloaded || submitted) ? 'row-downloaded' : magnet ? 'row-magnet' : '';
+                const rowClass = !magnet || downloadFailed
+                    ? ''
+                    : downloaded ? 'row-downloaded' : 'row-magnet';
                 const canMagnet = !!magnet;
                 const reviewBadge = pendingReview
                     ? '<span class="badge text-bg-warning ms-1">待审核</span>'
@@ -518,9 +535,42 @@
         }).join('');
     }
 
+    function reviewTargetFromRow(tr) {
+        if (!tr) return null;
+        const egsId = parseInt(tr.dataset.egsId || '', 10);
+        if (!egsId) return null;
+        return {egsId, name: tr.dataset.name || '-'};
+    }
+
+    function nextReviewTarget(currentEgsId) {
+        const rows = Array.from(document.querySelectorAll('#games-body tr[data-egs-id]'))
+            .filter(tr => tr.querySelector('.review-btn'));
+        const currentIndex = rows.findIndex(tr => parseInt(tr.dataset.egsId || '', 10) === currentEgsId);
+        return reviewTargetFromRow(currentIndex >= 0 ? rows[currentIndex + 1] : rows[0]);
+    }
+
+    function firstReviewTarget() {
+        return reviewTargetFromRow(document.querySelector('#games-body tr[data-egs-id] .review-btn')?.closest('tr'));
+    }
+
+    function setReviewDecisionBusy(busy) {
+        document.querySelectorAll(
+            '#reviewModal .review-approve-btn, #review-manual-approve-btn, #review-reject-btn'
+        ).forEach(button => {
+            button.disabled = busy;
+        });
+    }
+
     async function decideReview(body) {
+        if (reviewDecisionPending) return;
+
         const resultEl = document.getElementById('review-result');
+        const currentEgsId = parseInt(body.egs_id || '', 10);
+        const queuedNext = nextReviewTarget(currentEgsId);
+        reviewDecisionPending = true;
+        setReviewDecisionBusy(true);
         resultEl.textContent = '保存审核结果中...';
+
         try {
             const res = await fetch('api.php?action=egs_review_decide', {
                 method: 'POST',
@@ -529,13 +579,23 @@
             });
             const data = await res.json();
             if (!data.success) throw new Error(data.message || '保存失败');
-            resultEl.textContent = '已保存';
-            setTimeout(() => {
-                bootstrap.Modal.getOrCreateInstance(document.getElementById('reviewModal')).hide();
-                load();
-            }, 250);
+
+            resultEl.textContent = '已保存，正在加载下一件...';
+            await load();
+            const next = queuedNext || firstReviewTarget();
+            if (next) {
+                await openReviewModal(next.egsId, next.name);
+            } else {
+                resultEl.textContent = '已保存，当前列表没有更多待审核项目';
+                setTimeout(() => {
+                    bootstrap.Modal.getOrCreateInstance(document.getElementById('reviewModal')).hide();
+                }, 500);
+            }
         } catch (err) {
             resultEl.textContent = '保存失败：' + err.message;
+        } finally {
+            reviewDecisionPending = false;
+            setReviewDecisionBusy(false);
         }
     }
 

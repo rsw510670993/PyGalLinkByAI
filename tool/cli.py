@@ -1173,6 +1173,24 @@ def cmd_egs_organize_issue_resolve(args):
         conn.close()
 
 
+def cmd_egs_organize_issue_reject(args):
+    from tool.egs_core import open_egs_db
+    from tool.egs_organize import reject_organize_issue
+    conn = open_egs_db(args.db)
+    try:
+        _print(reject_organize_issue(conn, int(args.id)))
+    finally:
+        conn.close()
+
+def cmd_egs_organize_issue_reject_month(args):
+    from tool.egs_core import open_egs_db
+    from tool.egs_organize import reject_month_shift_issue
+    conn = open_egs_db(args.db)
+    try:
+        _print(reject_month_shift_issue(conn, int(args.id)))
+    finally:
+        conn.close()
+
 def cmd_egs_torrent_meta_backfill(args):
     """存量回填：为已有磁链的行下载 .torrent 解析 info.name，供整理精确定位。"""
     import sqlite3
@@ -1493,6 +1511,16 @@ def build_parser():
     p_egs_organize_issue_resolve.add_argument("--id", type=int, required=True)
     p_egs_organize_issue_resolve.add_argument("--db", type=str)
     p_egs_organize_issue_resolve.set_defaults(func=cmd_egs_organize_issue_resolve)
+
+    p_egs_organize_issue_reject = egs_sub.add_parser("organize_issue_reject")
+    p_egs_organize_issue_reject.add_argument("--id", type=int, required=True)
+    p_egs_organize_issue_reject.add_argument("--db", type=str)
+    p_egs_organize_issue_reject.set_defaults(func=cmd_egs_organize_issue_reject)
+
+    p_egs_organize_issue_reject_month = egs_sub.add_parser("organize_issue_reject_month")
+    p_egs_organize_issue_reject_month.add_argument("--id", type=int, required=True)
+    p_egs_organize_issue_reject_month.add_argument("--db", type=str)
+    p_egs_organize_issue_reject_month.set_defaults(func=cmd_egs_organize_issue_reject_month)
 
     p_egs_torrent_meta_backfill = egs_sub.add_parser("torrent_meta_backfill")
     p_egs_torrent_meta_backfill.add_argument("--year", type=int, default=0)

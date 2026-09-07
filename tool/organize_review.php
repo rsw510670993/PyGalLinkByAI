@@ -144,6 +144,7 @@
             const actionBtn = meta.action
                 ? `<button class="btn btn-outline-primary btn-sm issue-retry" data-date="${escape(issue.date)}" data-name="${escape(issue.name)}" data-kind="${escape(issue.status)}">${meta.action}</button>`
                 : '<span class="text-muted small">等待下载完成，稍后重跑整理</span>';
+            const rejectBtn = `<button class="btn btn-outline-danger btn-sm issue-reject" data-id="${issue.id}" data-kind="${escape(issue.status)}">拒绝</button>`;
             return `
             <tr>
                 <td>${issueBadge(issue.status)}${issue.outcome === 'failed' ? '<div class="small text-danger mt-1">失败</div>' : ''}</td>
@@ -154,7 +155,7 @@
                 <td>
                     <div class="d-flex gap-1 flex-wrap">
                         ${actionBtn}
-                        <button class="btn btn-outline-secondary btn-sm issue-resolve" data-id="${issue.id}">标记已处理</button>
+                        ${rejectBtn}
                         <a class="btn btn-outline-secondary btn-sm" href="${egsLink(issue)}" target="_blank">EGS↗</a>
                     </div>
                 </td>
@@ -197,8 +198,21 @@
 
     $('open-body').addEventListener('click', async event => {
         const retry = event.target.closest('.issue-retry');
-        const resolve = event.target.closest('.issue-resolve');
-        if (retry) {
+        const reject = event.target.closest('.issue-reject');
+        if (reject) {
+            const persistent = ['month_shift_confirm', 'cross_year_confirm'].includes(reject.dataset.kind);
+            const prompt = persistent ? '确认拒绝该候选？后续整理不会再次提示同一个候选。' : '确认拒绝并关闭这条待办？';
+            if (!confirm(prompt)) return;
+            reject.disabled = true;
+            try {
+                const result = await api('organize_issue_reject', {id: Number(reject.dataset.id)});
+                if (result.success === false) throw new Error(result.message || '拒绝失败');
+                await load();
+            } catch (error) {
+                reject.disabled = false;
+                alert(error.message);
+            }
+        } else if (retry) {
             retry.disabled = true;
             retry.textContent = '整理中...';
             try {
@@ -208,16 +222,6 @@
             } catch (error) {
                 retry.disabled = false;
                 retry.textContent = metaOf(retry.dataset.kind).action;
-                alert(error.message);
-            }
-        } else if (resolve) {
-            resolve.disabled = true;
-            try {
-                const result = await api('organize_issue_resolve', {id: Number(resolve.dataset.id)});
-                if (result.success === false) throw new Error(result.message || '操作失败');
-                await load();
-            } catch (error) {
-                resolve.disabled = false;
                 alert(error.message);
             }
         }

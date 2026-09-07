@@ -526,6 +526,13 @@ def _is_safe_substring(needle, haystack):
         before_ok = pos == 0 or not haystack[pos - 1].isalnum()
         after_pos = pos + len(needle)
         after_ok = after_pos == len(haystack) or not haystack[after_pos].isalnum()
+        # 标题归一化会把感叹号等标点删除，但可能留下空格：
+        # ``SPIN!2`` 因而变成 ``SPIN 2``，而 ``B2-STYLE`` 等版本名也可能
+        # 接在旧作标题之后。空格后的字母/数字仍属于副标题、版本或续作后缀。
+        if after_ok and after_pos < len(haystack) and haystack[after_pos].isspace():
+            next_text = haystack[after_pos:].lstrip()
+            if next_text and next_text[0].isalnum():
+                after_ok = False
         if before_ok and after_ok:
             return True
         start = pos + 1
@@ -534,6 +541,12 @@ def _is_safe_substring(needle, haystack):
 def _names_match(norm_dn, norm_fname):
     if not norm_dn or not norm_fname:
         return False
+    dn_core = _strip_leading_dates_and_tags(norm_dn).replace(" ", "")
+    fn_core = _strip_leading_dates_and_tags(norm_fname).replace(" ", "")
+    # 短词（如搜索产生的 ``style`` 目录）不能对长标题做包含匹配；
+    # 短作品名仍可通过核心标题完全相等命中。
+    if min(len(dn_core), len(fn_core)) <= 6:
+        return dn_core == fn_core
     if _is_safe_substring(norm_dn, norm_fname) or _is_safe_substring(norm_fname, norm_dn):
         return True
     dn_compact = norm_dn.replace(" ", "")
@@ -550,7 +563,9 @@ def _names_match(norm_dn, norm_fname):
     if not common:
         dn_tail = _strip_leading_dates_and_tags(norm_dn)
         fn_tail = _strip_leading_dates_and_tags(norm_fname)
-        if dn_tail and fn_tail and (len(dn_tail) >= 8 or len(fn_tail) >= 8):
+        dn_compact_tail = dn_tail.replace(" ", "")
+        fn_compact_tail = fn_tail.replace(" ", "")
+        if dn_tail and fn_tail and min(len(dn_compact_tail), len(fn_compact_tail)) >= 6:
             if _is_safe_substring(dn_tail, fn_tail) or _is_safe_substring(fn_tail, dn_tail):
                 return True
             dn2 = dn_tail.replace(" ", "")

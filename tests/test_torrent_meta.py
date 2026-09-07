@@ -62,6 +62,18 @@ class TorrentNameMatchTests(unittest.TestCase):
         self.assertFalse(_torrent_name_matches(
             '[260327] [Empress] Game A',
             '[260327] [Empress] Game B'))
+        self.assertFalse(_torrent_name_matches(
+            '[251128] [Whirlpool] 猫忍えくすはーとSPIN！ 2 通常版',
+            '[230928] [Whirlpool] 猫忍えくすはーとSPIN！ + Bonus'))
+        self.assertFalse(_torrent_name_matches(
+            '[260327] [CLIP☆CRAFT] ユニオリズム・カルテット B2-STYLE + Mini Drama',
+            '[141226] [CLIP☆CRAFT] ユニオリズム・カルテット'))
+        self.assertFalse(_torrent_name_matches(
+            '[250228] [エウシュリー] 百千の定にかわたれし剋 彼女たちの東奔西走拡張パック',
+            '[240830] [エウシュリー] 百千の定にかわたれし剋 + Append + Update 1.01'))
+        self.assertFalse(_torrent_name_matches(
+            'LESSON',
+            '[241220] [だーくワン！] 催眠性指導 -Secret Lesson- + Tokuten'))
 
 
 class ShortNameCompanyTests(unittest.TestCase):

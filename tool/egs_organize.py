@@ -43,9 +43,23 @@ CREATE TABLE IF NOT EXISTS egs_115_folders (
 )
 """
 
+REJECTION_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS egs_organize_rejections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    value TEXT NOT NULL,
+    issue_id INTEGER,
+    created_at TEXT NOT NULL,
+    UNIQUE(date, name, kind, value)
+)
+"""
+
 
 def ensure_folder_schema(conn):
     conn.execute(FOLDER_SCHEMA_SQL)
+    conn.execute(REJECTION_SCHEMA_SQL)
     conn.commit()
 
 
@@ -237,12 +251,15 @@ def _torrent_name_matches(torrent_name, folder_name):
     b = _torrent_core_title(folder_name)
     if not a or not b:
         return False
+    ca, cb = a.replace(" ", ""), b.replace(" ", "")
+    # 极短标题（如 LESSON）只允许核心标题完全一致，不能命中旧作副标题。
+    if min(len(ca), len(cb)) <= 6:
+        return ca == cb
     if a == b:
         return True
     # 标题主体足够长时才允许互相包含（本篇 vs 包含补丁的合集标题等）
     if len(a) >= 6 and len(b) >= 6 and (_is_safe_substring(a, b) or _is_safe_substring(b, a)):
         return True
-    ca, cb = a.replace(" ", ""), b.replace(" ", "")
     if len(ca) >= 6 and len(cb) >= 6 and (ca == cb or _is_safe_substring(ca, cb) or _is_safe_substring(cb, ca)):
         return True
     return False
@@ -279,7 +296,8 @@ def locate_in_year_dir(year_dir_cid, dn, name, torrent_name=None):
     for it in items:
         fname = it.get("n") or ""
         norm_fname = _normalize_for_comparison(fname)
-        if not (_names_match(norm_dn, norm_fname) or (norm and len(norm) >= 3 and norm in norm_fname)):
+        egs_match = bool(norm) and _names_match(norm, norm_fname)
+        if not (_names_match(norm_dn, norm_fname) or egs_match):
             continue
         is_dir = str(it.get("fc", "")) == "0"
         score = (2 if is_dir else 0) + (1 if norm and norm in norm_fname else 0)
@@ -485,7 +503,8 @@ def locate_by_search(dn, name, torrent_name=None):
             if not fname or it.get("cid") in seen_ids:
                 continue
             norm_fname = _normalize_for_comparison(fname)
-            if not (_names_match(norm_dn, norm_fname) or (norm and norm in norm_fname) or tn_match(fname)):
+            egs_match = bool(norm) and _names_match(norm, norm_fname)
+            if not (_names_match(norm_dn, norm_fname) or egs_match or tn_match(fname)):
                 continue
             seen_ids.add(it.get("cid"))
             is_dir = str(it.get("fc", "")) == "0"
@@ -902,6 +921,18 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
         # 搬月护栏：磁链 dn 日期与 EGS 当前展示月份不同，必须人工批准后才改展示月份。
         approved_month = str(actual_release_ts or release_ts or egs_date or "")[:7]
         if str(dn_date)[:7] != approved_month and not confirmed_month_shift:
+            rejected = conn.execute(
+                "SELECT 1 FROM egs_organize_rejections"
+                " WHERE date=? AND name=? AND kind='month_shift' AND value=? LIMIT 1",
+                (date, name, str(dn_date)[:7]),
+            ).fetchone()
+            if rejected:
+                result["status"] = "month_shift_rejected"
+                result["confirmation_kind"] = "month_shift"
+                result["message"] = (
+                    f"已拒绝搬月至 {str(dn_date)[:7]}，保留当前月份 {approved_month}。"
+                )
+                return result
             result["status"] = "month_shift_confirm"
             result["confirmation_kind"] = "month_shift"
             result["proposed_actual_release_ts"] = dn_date
@@ -918,6 +949,17 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
         source_year = _source_year(parent_path, old_name)
         target_year = int(dn_date[:4])
         if need_move and source_year and source_year != target_year and not confirmed_cross_year:
+            rejected = conn.execute(
+                "SELECT 1 FROM egs_organize_rejections"
+                " WHERE date=? AND name=? AND kind='cross_year' AND value=? LIMIT 1",
+                (date, name, str(cid or "")),
+            ).fetchone()
+            if rejected:
+                result["status"] = "cross_year_rejected"
+                result["source_year"] = source_year
+                result["target_year"] = target_year
+                result["message"] = "已拒绝该跨年候选，保留原目录。"
+                return result
             result["status"] = "cross_year_confirm"
             result["source_year"] = source_year
             result["target_year"] = target_year
@@ -1168,7 +1210,7 @@ def organize_report_outcome(code):
     """整理状态 → 流水线报告归类（failed/skipped/success），与页面统计口径一致。"""
     if code in ('error', 'conflict', 'ambiguous', 'shared_cid', 'not_dir', 'no_dn_date', 'missing_in_115'):
         return 'failed'
-    if code in ('no_link', 'not_downloaded', 'in_offline', 'cross_year_confirm', 'month_shift_confirm'):
+    if code in ('no_link', 'not_downloaded', 'in_offline', 'cross_year_confirm', 'month_shift_confirm', 'month_shift_rejected', 'cross_year_rejected'):
         return 'skipped'
     return 'success'
 
@@ -1261,6 +1303,79 @@ def resolve_organize_issue(conn, issue_id, note=None):
     )
     conn.commit()
     return {"success": cur.rowcount > 0, "id": int(issue_id)}
+
+
+def reject_month_shift_issue(conn, issue_id):
+    """拒绝一次具体搬月建议，并持久化以免后续整理重复提示。"""
+    ensure_folder_schema(conn)
+    ensure_issue_schema(conn)
+    row = conn.execute(
+        "SELECT date, name, detail FROM egs_organize_issues"
+        " WHERE id=? AND resolved=0 AND status='month_shift_confirm'",
+        (int(issue_id),),
+    ).fetchone()
+    if not row:
+        return {"success": False, "message": "待办不存在、已处理或不是搬月确认"}
+    date, name, detail_json = row
+    try:
+        detail = json.loads(detail_json) if detail_json else {}
+    except (TypeError, ValueError):
+        detail = {}
+    target_month = detail.get("proposed_actual_release_month") or str(detail.get("dn_date") or "")[:7]
+    if not re.fullmatch(r"\d{4}-\d{2}", target_month or ""):
+        return {"success": False, "message": "待办缺少有效的目标月份"}
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    conn.execute(
+        "INSERT OR IGNORE INTO egs_organize_rejections"
+        " (date,name,kind,value,issue_id,created_at) VALUES (?,?,?,?,?,?)",
+        (date, name, "month_shift", target_month, int(issue_id), now),
+    )
+    cur = conn.execute(
+        "UPDATE egs_organize_issues SET resolved=1, resolved_at=?,"
+        " message=? WHERE id=? AND resolved=0",
+        (now, f"已拒绝搬月至 {target_month}，保留 {date}", int(issue_id)),
+    )
+    conn.commit()
+    return {"success": cur.rowcount > 0, "id": int(issue_id), "decision": "rejected", "target_month": target_month}
+
+def reject_organize_issue(conn, issue_id):
+    """明确拒绝待办；搬月和跨年候选会持久化，避免旧候选反复出现。"""
+    ensure_folder_schema(conn)
+    ensure_issue_schema(conn)
+    row = conn.execute(
+        "SELECT date, name, status, detail FROM egs_organize_issues"
+        " WHERE id=? AND resolved=0",
+        (int(issue_id),),
+    ).fetchone()
+    if not row:
+        return {"success": False, "message": "待办不存在或已处理"}
+    date, name, status, detail_json = row
+    try:
+        detail = json.loads(detail_json) if detail_json else {}
+    except (TypeError, ValueError):
+        detail = {}
+    if status == "month_shift_confirm":
+        return reject_month_shift_issue(conn, issue_id)
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    if status == "cross_year_confirm":
+        value = str(detail.get("cid") or "")
+        if not value:
+            return {"success": False, "message": "待办缺少跨年候选 CID"}
+        conn.execute(
+            "INSERT OR IGNORE INTO egs_organize_rejections"
+            " (date,name,kind,value,issue_id,created_at) VALUES (?,?,?,?,?,?)",
+            (date, name, "cross_year", value, int(issue_id), now),
+        )
+        label = "已拒绝跨年候选，保留原目录"
+    else:
+        label = "已人工拒绝处理"
+    cur = conn.execute(
+        "UPDATE egs_organize_issues SET resolved=1, resolved_at=?, message=?"
+        " WHERE id=? AND resolved=0",
+        (now, label, int(issue_id)),
+    )
+    conn.commit()
+    return {"success": cur.rowcount > 0, "id": int(issue_id), "decision": "rejected"}
 
 
 def list_organize_issues(conn, include_resolved=True, resolved_limit=100):

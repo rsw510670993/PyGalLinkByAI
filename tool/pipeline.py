@@ -47,8 +47,8 @@ def validate(action, start_year, end_year, month):
         raise ValueError('年份范围须为 1980–3000，结束年不能小于起始年，月份须为 0–12')
 
 
-def pending_review_count(start_year: int, end_year: int, month: int = 0) -> int:
-    """统计指定年月范围内仍需人工审核的记录数。"""
+def pending_review_summary(start_year: int, end_year: int, month: int = 0) -> dict:
+    """按年份统计指定范围内仍需人工审核的记录。"""
     from .egs_core import open_egs_db, ensure_egs_schema, ensure_review_blacklist_schema
     from .egs_magnet import ensure_egs_magnet_schema
 
@@ -57,9 +57,9 @@ def pending_review_count(start_year: int, end_year: int, month: int = 0) -> int:
         ensure_egs_schema(conn)
         ensure_egs_magnet_schema(conn)
         ensure_review_blacklist_schema(conn)
-        row = conn.execute(
+        rows = conn.execute(
             """
-            SELECT COUNT(*)
+            SELECT CAST(substr(g.date,1,4) AS INTEGER) AS review_year, COUNT(*)
               FROM egs_games g
               JOIN egs_nyaa_search_log l ON l.egs_id = g.egs_id
              WHERE CAST(substr(g.date,1,4) AS INTEGER) BETWEEN ? AND ?
@@ -72,12 +72,20 @@ def pending_review_count(start_year: int, end_year: int, month: int = 0) -> int:
                    SELECT 1 FROM egs_review_company_blacklist b
                     WHERE b.company IN (g.company, g.egs_company)
                )
+             GROUP BY review_year
+             ORDER BY review_year
             """,
             (int(start_year), int(end_year), int(month), int(month)),
-        ).fetchone()
-        return int(row[0] if row else 0)
+        ).fetchall()
+        years = [{'year': int(row[0]), 'count': int(row[1])} for row in rows]
+        return {'count': sum(item['count'] for item in years), 'years': years}
     finally:
         conn.close()
+
+
+def pending_review_count(start_year: int, end_year: int, month: int = 0) -> int:
+    """统计指定年月范围内仍需人工审核的记录数。"""
+    return int(pending_review_summary(start_year, end_year, month)['count'])
 
 
 def start(action, start_year, end_year, month=0, execute=False):
@@ -370,8 +378,15 @@ def main():
         if args.command == 'preflight':
             action = args.action or 'check'
             validate(action, args.start_year or 1980, args.end_year or 3000, args.month or 0)
-            count = pending_review_count(args.start_year, args.end_year, args.month) if action == 'check' else 0
-            print(json.dumps({'status': 'success', 'action': action, 'count': count}, ensure_ascii=False))
+            summary = pending_review_summary(args.start_year, args.end_year, args.month) if action == 'check' else {'count': 0, 'years': []}
+            review_year = summary['years'][0]['year'] if summary['years'] else None
+            print(json.dumps({
+                'status': 'success',
+                'action': action,
+                'count': summary['count'],
+                'review_year': review_year,
+                'review_years': summary['years'],
+            }, ensure_ascii=False))
             return
         if args.command == 'start':
             result = start(args.action, args.start_year, args.end_year, args.month, args.execute)

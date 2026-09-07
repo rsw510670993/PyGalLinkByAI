@@ -9,7 +9,7 @@
     let calendarRequest = 0;
     let lastRefresh = 0;
     let crossYearRows = [];
-    let crossYearShownJob = '';
+    let confirmationLoadedJob = '';
     const params = new URLSearchParams(location.search);
     const year = Number(params.get('year')) || new Date().getFullYear();
     $('start-year').value = $('end-year').value = $('calendar-year').value = year;
@@ -39,7 +39,8 @@
                 <td class="small">${escape(kindText)}<div class="text-muted">${escape(d.old_path || d.old_name || '')}</div></td>
                 <td class="small">${escape(d.dn_date || '')}<div class="text-muted">${escape(d.target_path || d.target_name || '')}</div></td>
                 <td class="text-end">
-                    <button type="button" class="btn btn-outline-warning btn-sm confirm-cross-year-btn" data-hidden-date="${escape(d.date || '')}" data-hidden-name="${escape(row.name || '')}">批准搬月</button>
+                    <button type="button" class="btn btn-outline-warning btn-sm confirm-cross-year-btn" data-hidden-date="${escape(row.date || d.date || '')}" data-hidden-name="${escape(row.name || '')}">
+                        ${row.status === 'month_shift_confirm' ? '批准搬月' : '批准跨年移动'}</button>
                 </td>
             </tr>`;
         }).join('') || '<tr><td colspan="3" class="text-center text-muted py-3">暂无待确认项</td></tr>';
@@ -65,16 +66,29 @@
             return `<div class="border-bottom py-2"><strong>${escape(row.name)}</strong>：${escape(row.message)}${target}</div>`;
         }).join('') || '<span class="text-muted">暂无处理结果</span>';
 
-        if (task.action === 'organize' && !task.running) {
-            const rows = (task.results || []).filter(row => row.detail?.requires_confirmation);
-            if (rows.length && crossYearShownJob !== task.job_id) {
-                crossYearRows = rows;
-                crossYearShownJob = task.job_id;
-                renderCrossYearRows();
-                bootstrap.Modal.getOrCreateInstance($('crossYearModal')).show();
-            }
+    }
+
+    async function loadOpenConfirmations(task) {
+        if (task.action !== 'organize' || task.running || confirmationLoadedJob === task.job_id) return;
+        confirmationLoadedJob = task.job_id;
+        try {
+            const data = await api('organize_issues');
+            const startYear = Number(task.start_year || 0), endYear = Number(task.end_year || 0);
+            const taskMonth = Number(task.month || 0);
+            crossYearRows = (data.open || []).filter(row => {
+                if (!['month_shift_confirm', 'cross_year_confirm'].includes(row.status)) return false;
+                const [rowYear, rowMonth] = String(row.date || '').split('-').map(Number);
+                if ((startYear && rowYear < startYear) || (endYear && rowYear > endYear)) return false;
+                return !taskMonth || rowMonth === taskMonth;
+            });
+            renderCrossYearRows();
+            if (crossYearRows.length) bootstrap.Modal.getOrCreateInstance($('crossYearModal')).show();
+        } catch (error) {
+            confirmationLoadedJob = '';
+            console.error('读取整理待办失败', error);
         }
     }
+
     async function poll() {
         if (loading) return;
         loading = true;
@@ -83,6 +97,7 @@
             const task = await api('pipeline_status');
             ready = true;
             showTask(task);
+            await loadOpenConfirmations(task);
             if ((previous?.running && !task.running) || (task.running && Date.now() - lastRefresh > 15000)) await loadCalendar();
         } catch (error) {
             ready = false;
@@ -103,7 +118,17 @@
                 const preflight = await api(`pipeline_preflight&pipeline_action=check&start_year=${startYear}&end_year=${endYear}&month=${month}`);
                 if (Number(preflight.count || 0) > 0) {
                     $('pending-review-count').textContent = preflight.count;
-                    $('pending-review-link').href = `${basePath}/tool/egs.php?review=pending`;
+                    const reviewParams = new URLSearchParams({review: 'pending'});
+                    const reviewYear = Number(preflight.review_year);
+                    if (Number.isInteger(reviewYear) && reviewYear >= 1980 && reviewYear <= 3000) {
+                        reviewParams.set('year', String(reviewYear));
+                    } else if (startYear === endYear) {
+                        reviewParams.set('year', String(startYear));
+                    }
+                    if (month >= 1 && month <= 12) {
+                        reviewParams.set('month', String(month));
+                    }
+                    $('pending-review-link').href = `${basePath}/tool/egs.php?${reviewParams.toString()}`;
                     bootstrap.Modal.getOrCreateInstance($('pendingReviewModal')).show();
                     return;
                 }

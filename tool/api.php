@@ -453,4 +453,24 @@ if ($action === 'organize_issue_resolve') {
     json_response($data);
 }
 
+if ($action === 'organize_issue_reject') {
+    $body = read_json_body();
+    $id = intval($body['id'] ?? 0);
+    if (!$id) {
+        json_response(['success' => false, 'message' => '缺少必填字段 id']);
+    }
+    [$code, $data] = run_cli(['egs', 'organize_issue_reject', '--id', strval($id)]);
+    json_response($data);
+}
+
+if ($action === 'organize_issue_reject_month') {
+    $body = read_json_body();
+    $id = intval($body['id'] ?? 0);
+    if (!$id) {
+        json_response(['success' => false, 'message' => '缺少必填字段 id']);
+    }
+    [$code, $data] = run_cli(['egs', 'organize_issue_reject_month', '--id', strval($id)]);
+    json_response($data);
+}
+
 json_response(['status' => 'error', 'message' => 'unknown action']);

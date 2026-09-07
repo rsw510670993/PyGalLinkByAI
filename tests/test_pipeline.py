@@ -155,6 +155,27 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(result['source_year'],2024)
         self.assertEqual(result['target_year'],2026)
 
+    def test_cross_year_rejection_is_scoped_to_candidate_cid(self):
+        conn=sqlite3.connect(self.db)
+        self.addCleanup(conn.close)
+        organize.ensure_folder_schema(conn)
+        location=dict(cid='old-123',pid='5',name='[20240101][Brand]Game1',
+                      parent_path='/GAL/GAL-2024',is_dir=True)
+        with patch.object(organize,'locate_by_search',return_value=location), \
+             patch.object(organize,'read_config',return_value={}):
+            first=organize.organize_single('2026-01','Game1',dry_run=True,conn=conn)
+        organize.record_organize_issue(
+            conn, '2026-01', 'Game1', first['status'], executed=False,
+            detail=first, egs_id=1,
+        )
+        issue_id=conn.execute('SELECT id FROM egs_organize_issues WHERE resolved=0').fetchone()[0]
+        self.assertTrue(organize.reject_organize_issue(conn,issue_id)['success'])
+        with patch.object(organize,'locate_by_search',return_value=location), \
+             patch.object(organize,'read_config',return_value={}):
+            second=organize.organize_single('2026-01','Game1',dry_run=True,conn=conn)
+        self.assertEqual(second['status'],'cross_year_rejected')
+        self.assertEqual(organize.organize_report_outcome(second['status']),'skipped')
+
     def test_names_match_rejects_unbounded_predecessor(self):
         from tool.p115_client import _names_match, _normalize_for_comparison
         dn=_normalize_for_comparison('[260227][Cuteuphoria] ドラコンカフェ2')
@@ -162,6 +183,25 @@ class PipelineTests(unittest.TestCase):
         same=_normalize_for_comparison('[260227][Cuteuphoria] ドラコンカフェ2')
         self.assertFalse(_names_match(dn, old))
         self.assertTrue(_names_match(dn, same))
+
+    def test_names_match_rejects_numbered_sequel_after_removed_punctuation(self):
+        from tool.p115_client import _names_match, _normalize_for_comparison
+        sequel = _normalize_for_comparison(
+            '[251128] [Whirlpool] 猫忍えくすはーとSPIN！ 2 通常版')
+        predecessor = _normalize_for_comparison(
+            '[230928] [Whirlpool] 猫忍えくすはーとSPIN！ + Bonus')
+        self.assertFalse(_names_match(sequel, predecessor))
+
+    def test_names_match_rejects_ascii_style_suffix_on_old_title(self):
+        from tool.p115_client import _names_match, _normalize_for_comparison
+        remake = _normalize_for_comparison(
+            '[260327] [CLIP☆CRAFT] ユニオリズム・カルテット B2-STYLE + Mini Drama')
+        original = _normalize_for_comparison(
+            '[141226] [CLIP☆CRAFT] ユニオリズム・カルテット')
+        self.assertFalse(_names_match(remake, original))
+
+        generic = _normalize_for_comparison('style')
+        self.assertFalse(_names_match(remake, generic))
 
     def test_month_shift_prefers_magnet_dn_and_requires_confirmation(self):
         conn=sqlite3.connect(self.db)
@@ -183,6 +223,32 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(result['target_name'],'[20260227][Brand]Game10')
         self.assertEqual(result['proposed_actual_release_month'],'2026-02')
         self.assertIsNone(conn.execute('SELECT actual_release_ts FROM egs_games WHERE egs_id=10').fetchone()[0])
+
+    def test_month_shift_rejection_is_persistent(self):
+        conn=sqlite3.connect(self.db)
+        self.addCleanup(conn.close)
+        organize.ensure_folder_schema(conn)
+        conn.execute("""INSERT INTO egs_games(egs_id,model,egs_date,egs_name,egs_company,date,name,company,release_ts,link)
+                        VALUES (10,'PC','2025-12-26','Game10','Brand','2025-12','Game10','Brand','2025-12-26',?)""",
+                     ('magnet:?xt=urn:btih:' + 'b'*40 + '&dn=%5B260227%5D%20%5BBrand%5D%20Game10',))
+        conn.commit()
+        location=dict(cid='123',pid='5',name='[20260227][Brand]Game10',parent_path='/GAL/GAL-2026',is_dir=True)
+        with patch.object(organize,'locate_by_search',return_value=location), \
+             patch.object(organize,'read_config',return_value={}):
+            first=organize.organize_single('2025-12','Game10',dry_run=True,conn=conn)
+        self.assertEqual(first['status'],'month_shift_confirm')
+        organize.record_organize_issue(
+            conn, '2025-12', 'Game10', first['status'], executed=False,
+            detail=first, egs_id=10,
+        )
+        issue_id=conn.execute('SELECT id FROM egs_organize_issues WHERE resolved=0').fetchone()[0]
+        rejected=organize.reject_organize_issue(conn,issue_id)
+        self.assertTrue(rejected['success'])
+        with patch.object(organize,'locate_by_search',return_value=location), \
+             patch.object(organize,'read_config',return_value={}):
+            second=organize.organize_single('2025-12','Game10',dry_run=True,conn=conn)
+        self.assertEqual(second['status'],'month_shift_rejected')
+        self.assertEqual(organize.organize_report_outcome(second['status']),'skipped')
 
     def test_month_shift_confirmation_updates_display_and_actual(self):
         conn=sqlite3.connect(self.db)
