@@ -140,8 +140,34 @@ def ensure_egs_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+_BUNDLE_OR_EXPANSION_RE = re.compile(
+    r"(?:\bDLC\b|アペンド|追加(?:版|編|シナリオ|コンテンツ)|本編カラー化|"
+    r"ファンディスク|同梱|セット|パック|コンプリート|合集|"
+    r"\bappend\b|\bexpansion\b|\bcomplete\b|\bcollection\b)",
+    re.IGNORECASE,
+)
+
+
+def _duplicate_owner(members):
+    """Choose the row that best represents the shared torrent's complete content."""
+    expansions = [row for row in members if _BUNDLE_OR_EXPANSION_RE.search(row["name"] or "")]
+    plain = [row for row in members if row not in expansions]
+    if expansions and plain:
+        latest_expansion = max(
+            expansions,
+            key=lambda row: (str(row["release_ts"] or row["date"] or ""), int(row["egs_id"])),
+        )
+        latest_plain_date = max(str(row["release_ts"] or row["date"] or "") for row in plain)
+        if str(latest_expansion["release_ts"] or latest_expansion["date"] or "") > latest_plain_date:
+            return latest_expansion
+    return min(
+        members,
+        key=lambda row: (len((row["name"] or "").strip()), int(row["egs_id"])),
+    )
+
+
 def refresh_magnet_duplicates(conn: sqlite3.Connection, infohashes=None) -> None:
-    """按 infohash 重建共链关系；每组最短标题（同长时 egs_id 最小）为主记录。"""
+    """按 infohash 重建共链关系；更晚的 DLC/合集优先，否则以最短标题为主记录。"""
     hashes = {
         str(value or "").strip().lower()
         for value in (infohashes or []) if str(value or "").strip()
@@ -150,7 +176,7 @@ def refresh_magnet_duplicates(conn: sqlite3.Connection, infohashes=None) -> None
         marks = ",".join("?" for _ in hashes)
         values = tuple(sorted(hashes))
         rows = conn.execute(
-            f"SELECT egs_id,name,lower(trim(infohash_hex)) AS hash FROM egs_games "
+            f"SELECT egs_id,date,release_ts,name,lower(trim(infohash_hex)) AS hash FROM egs_games "
             f"WHERE lower(trim(COALESCE(infohash_hex,''))) IN ({marks})", values
         ).fetchall()
         conn.execute(
@@ -159,7 +185,7 @@ def refresh_magnet_duplicates(conn: sqlite3.Connection, infohashes=None) -> None
         )
     else:
         rows = conn.execute(
-            "SELECT egs_id,name,lower(trim(infohash_hex)) AS hash FROM egs_games "
+            "SELECT egs_id,date,release_ts,name,lower(trim(infohash_hex)) AS hash FROM egs_games "
             "WHERE trim(COALESCE(infohash_hex,'')) != ''"
         ).fetchall()
         conn.execute("UPDATE egs_games SET magnet_duplicate=0,duplicate_of_egs_id=NULL")
@@ -169,10 +195,7 @@ def refresh_magnet_duplicates(conn: sqlite3.Connection, infohashes=None) -> None
     for members in groups.values():
         if len(members) < 2:
             continue
-        owner = min(
-            members,
-            key=lambda row: (len((row["name"] or "").strip()), int(row["egs_id"])),
-        )
+        owner = _duplicate_owner(members)
         conn.executemany(
             "UPDATE egs_games SET magnet_duplicate=1,duplicate_of_egs_id=? WHERE egs_id=?",
             ((int(owner["egs_id"]), int(row["egs_id"])) for row in members if row["egs_id"] != owner["egs_id"]),

@@ -252,6 +252,13 @@ def execute_job(state, save, should_stop):
         save()
         year_dirs = {}
         submitted_tasks = {}  # info_hash -> {'egs_id','name','pick_code'}，本轮内同磁链只提交一次
+        check_offline_tasks = None
+        if action == 'check' and rows:
+            from .p115_client import offline_list
+            offline = offline_list()
+            if not offline.get('success'):
+                raise RuntimeError(offline.get('message') or '无法读取115离线任务列表')
+            check_offline_tasks = offline.get('tasks') or []
         if action == 'organize':
             from .egs_organize import ensure_folder_schema, organize_single, organize_report_outcome, record_organize_issue
             ensure_folder_schema(conn)
@@ -263,8 +270,21 @@ def execute_job(state, save, should_stop):
             save()
             try:
                 if action == 'check':
+                    from .egs_organize import adopt_downloaded_folder_by_infohash
                     from .cli import _check_magnet_exists_with_timeout
-                    result, error = _check_magnet_exists_with_timeout(row['link'], 60)
+                    reused = adopt_downloaded_folder_by_infohash(
+                        conn, row['date'], name, row['link'], row['infohash_hex'],
+                    )
+                    if reused:
+                        report(
+                            name, 'success',
+                            f"相同磁链，复用已下载目录（来源: {reused['source']}）",
+                        )
+                        continue
+                    result, error = _check_magnet_exists_with_timeout(
+                        row['link'], 60, strict_infohash=True,
+                        offline_tasks=check_offline_tasks,
+                    )
                     if error:
                         raise RuntimeError(error)
                     if result.get('download_failed'):
@@ -282,16 +302,36 @@ def execute_job(state, save, should_stop):
                         conn.commit()
                         report(name, 'failed', '115下载任务失败，已回滚为无磁链；可重新爬取其他磁链')
                     elif result.get('exists'):
-                        conn.execute('UPDATE egs_games SET downloaded=1, download_failed=0, infohash_hex=?, updated_at=? WHERE egs_id=? AND link=?',
-                                     (result.get('infohash_hex'), now_ts(), row['egs_id'], row['link']))
+                        conn.execute(
+                            '''UPDATE egs_games
+                                  SET downloaded=1, submitted_115=1, download_failed=0,
+                                      infohash_hex=?, updated_at=?
+                                WHERE egs_id=? AND link=?''',
+                            (result.get('infohash_hex'), now_ts(), row['egs_id'], row['link']))
                         conn.commit()
                         report(name, 'success', '校对确认已下载')
                     else:
                         report(name, 'skipped', result.get('message') or '尚未找到已下载内容')
                 elif action == 'submit':
                     from .p115_client import offline_submit, _magnet_info_hash
-                    from .egs_organize import resolve_cid, mkdir_year_dir
+                    from .egs_organize import (
+                        adopt_downloaded_folder_by_infohash, resolve_cid, mkdir_year_dir,
+                    )
                     info_hash = _magnet_info_hash(row['link'])
+                    reused = adopt_downloaded_folder_by_infohash(
+                        conn, row['date'], name, row['link'], row['infohash_hex'],
+                    )
+                    if reused:
+                        report(
+                            name, 'success',
+                            f"相同磁链，复用已下载目录（来源: {reused['source']}）",
+                        )
+                        if info_hash:
+                            submitted_tasks[info_hash] = {
+                                'egs_id': row['egs_id'], 'name': name,
+                                'pick_code': reused.get('pick_code') or '',
+                            }
+                        continue
                     prior = submitted_tasks.get(info_hash) if info_hash else None
                     if prior is None:
                         year = int(row['date'][:4])
@@ -335,6 +375,23 @@ def execute_job(state, save, should_stop):
         conn.close()
 
 
+def cleanup_success_backup(backup_path):
+    """Delete only this pipeline's generated DB backup after a complete run."""
+    if not backup_path:
+        return False
+    target = Path(backup_path).resolve()
+    backup_dir = (Path(repo_root()) / 'db_backups').resolve()
+    if (target.parent != backup_dir
+            or not target.name.startswith('egs.before_pipeline_')
+            or target.suffix != '.db'):
+        return False
+    try:
+        target.unlink()
+    except FileNotFoundError:
+        pass
+    return True
+
+
 def worker(job_id):
     # The launcher holds the lock until the initial state including PID is written.
     with locked(blocking=True):
@@ -352,6 +409,9 @@ def worker(job_id):
             execute_job(state, save, should_stop)
             state['outcome'] = 'stopped' if should_stop() else 'partial' if state['failed'] else 'complete'
             state['message'] = {'stopped': '已停止', 'partial': '已完成，部分项目需处理', 'complete': '已完成'}[state['outcome']]
+            if state['outcome'] == 'complete' and cleanup_success_backup(state.get('backup')):
+                state['backup'] = None
+                state['backup_cleaned'] = True
         except Exception as exc:
             state['outcome'] = 'error'
             state['message'] = str(exc)

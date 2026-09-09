@@ -101,6 +101,30 @@ class ShortNameCompanyTests(unittest.TestCase):
 
 
 class DownloadFailedDetectionTests(unittest.TestCase):
+    def test_offline_list_reads_every_page(self):
+        from unittest.mock import patch
+        from tool.p115_client import offline_list
+
+        class Client:
+            def __init__(self):
+                self.pages = []
+
+            def offline_list(self, payload):
+                page = payload['page']
+                self.pages.append(page)
+                return {
+                    'page': page, 'page_count': 2,
+                    'tasks': [{'info_hash': str(page) * 40}],
+                }
+
+        client = Client()
+        with patch('tool.p115_client.load_client', return_value=client), \
+             patch('tool.p115_client._import_p115client', return_value=(None, lambda value: value)):
+            result = offline_list()
+        self.assertTrue(result['success'])
+        self.assertEqual(client.pages, [1, 2])
+        self.assertEqual(len(result['tasks']), 2)
+
     def test_check_magnet_exists_marks_failed_task(self):
         from unittest.mock import patch
         from tool.p115_client import check_magnet_exists
@@ -125,9 +149,12 @@ class DownloadFailedDetectionTests(unittest.TestCase):
             'tasks': [{'info_hash': h, 'url': magnet, 'display_status': '', 'status': 0}],
         }):
             out = check_magnet_exists(magnet, '')
+            strict = check_magnet_exists(magnet, '', strict_infohash=True)
         self.assertFalse(out['download_failed'])
         self.assertTrue(out['in_offline_tasks'])
         self.assertTrue(out['exists'])
+        self.assertTrue(strict['in_offline_tasks'])
+        self.assertFalse(strict['exists'])
 
 
 class PendingRowsDownloadFailedTests(unittest.TestCase):

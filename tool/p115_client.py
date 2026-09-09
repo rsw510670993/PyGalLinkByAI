@@ -343,6 +343,21 @@ def offline_submit(magnet, save_path):
         return {"success": False, "message": str(e)}
 
 
+def _offline_tasks_from_response(resp):
+    if not isinstance(resp, dict):
+        return []
+    for key in ("tasks", "data", "list"):
+        value = resp.get(key)
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            for nested_key in ("tasks", "data", "list"):
+                nested = value.get(nested_key)
+                if isinstance(nested, list):
+                    return nested
+    return []
+
+
 def offline_list():
     client = load_client()
     if client is None:
@@ -350,21 +365,16 @@ def offline_list():
     try:
         _, check_response = _import_p115client()
         resp = check_response(client.offline_list({"page": 1, "page_size": 100}))
-        tasks = []
-        if isinstance(resp, dict):
-            for k in ("tasks", "data", "list"):
-                v = resp.get(k)
-                if isinstance(v, list):
-                    tasks = v
-                    break
-                if isinstance(v, dict):
-                    for kk in ("tasks", "data", "list"):
-                        vv = v.get(kk)
-                        if isinstance(vv, list):
-                            tasks = vv
-                            break
-                    if tasks:
-                        break
+        tasks = _offline_tasks_from_response(resp)
+        try:
+            page_count = min(100, max(1, int(resp.get("page_count") or 1)))
+        except (AttributeError, TypeError, ValueError):
+            page_count = 1
+        for page in range(2, page_count + 1):
+            page_resp = check_response(
+                client.offline_list({"page": page, "page_size": 100})
+            )
+            tasks.extend(_offline_tasks_from_response(page_resp))
         return {"success": True, "tasks": tasks, "response": resp}
     except Exception as e:
         return {"success": False, "message": str(e), "tasks": []}
@@ -671,7 +681,8 @@ def _extra_keywords_from_dn(dn):
     return uniq
 
 
-def check_magnet_exists(magnet, save_path, debug=False):
+def check_magnet_exists(magnet, save_path, debug=False, strict_infohash=False,
+                        offline_tasks=None):
     parsed = parse_magnet_simple(magnet)
     if not parsed.get("ok"):
         out = {
@@ -691,8 +702,10 @@ def check_magnet_exists(magnet, save_path, debug=False):
 
     matched_files = []
     in_offline = False
+    offline_finished = False
     download_failed = False
     confidence = "none"
+    cid = None
 
     dbg = None
     if debug:
@@ -704,7 +717,8 @@ def check_magnet_exists(magnet, save_path, debug=False):
             "steps": [],
         }
 
-    ol = offline_list()
+    ol = ({"success": True, "tasks": offline_tasks}
+          if offline_tasks is not None else offline_list())
     if ol.get("success"):
         tasks = ol.get("tasks", [])
         if isinstance(tasks, dict):
@@ -721,6 +735,18 @@ def check_magnet_exists(magnet, save_path, debug=False):
                 download_failed = True
                 continue
             in_offline = True
+            if display == "finished":
+                offline_finished = True
+            try:
+                offline_finished = offline_finished or int(task.get("status")) == 2
+            except (TypeError, ValueError):
+                pass
+            try:
+                offline_finished = offline_finished or float(
+                    task.get("percentDone") or task.get("percent_done") or 0
+                ) >= 100
+            except (TypeError, ValueError):
+                pass
             break
         if dbg is not None:
             dbg["steps"].append({"stage": "offline_list", "success": True, "tasks_len": len(tasks), "in_offline": in_offline, "download_failed": download_failed})
@@ -728,7 +754,9 @@ def check_magnet_exists(magnet, save_path, debug=False):
         if dbg is not None:
             dbg["steps"].append({"stage": "offline_list", "success": False, "message": ol.get("message")})
 
-    if dn:
+    # EGS 的复用身份必须是 infohash。严格模式只接受离线任务中的精确 hash，
+    # 不再用标题/目录名推断“已经下载”；同标题的另一条磁链属于新内容。
+    if dn and not strict_infohash:
         actual_save_path = save_path or _get_default_save_path()
         cid = _resolve_path_to_cid(actual_save_path) if actual_save_path else 0
         keyword = _search_keyword_from_dn(dn)
@@ -879,13 +907,15 @@ def check_magnet_exists(magnet, save_path, debug=False):
             confidence = "low"
 
     out = {
-        "exists": bool(matched_files) or in_offline,
+        "exists": bool(matched_files) or (in_offline and (offline_finished or not strict_infohash)),
         "confidence": confidence,
         "infohash_hex": infohash_hex,
         "matched_files": matched_files,
         "in_offline_tasks": in_offline,
+        "offline_finished": offline_finished,
         "download_failed": download_failed,
         "dn": dn,
+        "strict_infohash": bool(strict_infohash),
     }
     if dbg is not None:
         dbg["result"] = {"matched_len": len(matched_files), "in_offline": in_offline, "confidence": confidence}

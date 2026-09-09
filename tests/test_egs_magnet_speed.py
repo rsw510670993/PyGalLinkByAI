@@ -177,4 +177,35 @@ class MagnetSpeedTests(unittest.TestCase):
             finally:
                 conn.close()
 
-if __name__ == '__main__':unittest.main()
+    def test_newer_dlc_bundle_owns_shared_magnet(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = egs_core.open_egs_db(str(Path(tmp) / "egs.db"))
+            try:
+                egs_core.ensure_egs_schema(conn)
+                for ident, date, release, name in (
+                    (1, "2025-09", "2025-09-19", "ドキドキ!性感マッサージ"),
+                    (2, "2026-06", "2026-06-28",
+                     "ドキドキ!性感マッサージ【タツ姐編+本編カラー化DLC】"),
+                ):
+                    conn.execute(
+                        """INSERT INTO egs_games
+                           (egs_id,model,egs_date,egs_name,egs_company,date,name,company,
+                            release_ts,link,infohash_hex,downloaded,submitted_115)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (ident, "PC", release, name, "ツインテール教", date, name,
+                         "ツインテール教", release, LINK, HASH, 1, 1),
+                    )
+                egs_core.refresh_magnet_duplicates(conn)
+                conn.commit()
+
+                states = {
+                    row["egs_id"]: (row["magnet_duplicate"], row["duplicate_of_egs_id"])
+                    for row in conn.execute(
+                        "SELECT egs_id,magnet_duplicate,duplicate_of_egs_id FROM egs_games"
+                    )
+                }
+                self.assertEqual(states, {1: (1, 2), 2: (0, None)})
+            finally:
+                conn.close()
+
+if __name__ == "__main__":unittest.main()

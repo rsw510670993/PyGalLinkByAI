@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import sqlite3
 import time
 from urllib.parse import unquote
 
@@ -92,6 +93,103 @@ def save_folder_record(conn, date, name, **kw):
          rec.get("date_code"), rec.get("company"), rec.get("status"), int(time.time())),
     )
     conn.commit()
+
+
+def _exact_infohash(link, stored_infohash=None):
+    """Return a normalized 40-char hex infohash, never a title-derived identity."""
+    try:
+        value = str(parse_magnet_simple(link or "").get("infohash_hex") or "").lower()
+    except Exception:
+        value = ""
+    if re.fullmatch(r"[0-9a-f]{40}", value):
+        return value
+    value = str(stored_infohash or "").strip().lower()
+    return value if re.fullmatch(r"[0-9a-f]{40}", value) else None
+
+
+def find_downloaded_folder_by_infohash(conn, link, stored_infohash=None, getchu_db_path=None):
+    """Find an existing 115 folder only when its owning row has the exact infohash."""
+    conn.execute(FOLDER_SCHEMA_SQL)
+    wanted = _exact_infohash(link, stored_infohash)
+    if not wanted:
+        return None
+
+    rows = conn.execute(
+        """SELECT g.date,g.name,g.link,g.infohash_hex,
+                  f.cid,f.pid,f.pick_code,f.folder_name,f.folder_path
+             FROM egs_games g JOIN egs_115_folders f
+               ON f.date=g.date AND f.name=g.name
+            WHERE COALESCE(g.downloaded,0)=1 AND COALESCE(f.cid,'')!=''"""
+    ).fetchall()
+    for row in rows:
+        if _exact_infohash(row[2], row[3]) == wanted:
+            return {
+                "source": "egs", "infohash_hex": wanted,
+                "source_date": row[0], "source_name": row[1],
+                "cid": str(row[4]), "pid": row[5], "pick_code": row[6],
+                "name": row[7], "folder_path": row[8],
+            }
+
+    db_path = getchu_db_path or os.path.join(repo_root(), "getchu.db")
+    if not os.path.exists(db_path):
+        return None
+    legacy = None
+    try:
+        legacy = sqlite3.connect(f"file:{os.path.abspath(db_path)}?mode=ro", uri=True)
+        rows = legacy.execute(
+            """SELECT g.date,g.name,g.link,g.infohash_hex,
+                      f.cid,f.pid,f.pick_code,f.folder_name,f.folder_path
+                 FROM getchu_games g JOIN getchu_115_folders f
+                   ON f.date=g.date AND f.name=g.name
+                WHERE COALESCE(g.downloaded,0)=1 AND COALESCE(f.cid,'')!=''"""
+        ).fetchall()
+        for row in rows:
+            if _exact_infohash(row[2], row[3]) == wanted:
+                return {
+                    "source": "getchu", "infohash_hex": wanted,
+                    "source_date": row[0], "source_name": row[1],
+                    "cid": str(row[4]), "pid": row[5], "pick_code": row[6],
+                    "name": row[7], "folder_path": row[8],
+                }
+    except sqlite3.Error:
+        return None
+    finally:
+        if legacy is not None:
+            legacy.close()
+    return None
+
+
+def adopt_downloaded_folder_by_infohash(conn, date, name, link, stored_infohash=None,
+                                        getchu_db_path=None, verify_remote=True):
+    """Attach a downloaded folder to an EGS row iff the magnet infohash is identical."""
+    match = find_downloaded_folder_by_infohash(
+        conn, link, stored_infohash=stored_infohash, getchu_db_path=getchu_db_path,
+    )
+    if not match:
+        return None
+    actual_name = get_item_name(match["cid"]) if verify_remote else match.get("name")
+    if not actual_name:
+        return None
+    folder_path = match.get("folder_path")
+    if match.get("pid"):
+        parent_path = parent_crumbs_path(match["pid"])
+        if parent_path:
+            folder_path = parent_path.rstrip("/") + "/" + actual_name
+    save_folder_record(
+        conn, date, name, cid=match["cid"], pid=match.get("pid"),
+        pick_code=match.get("pick_code"), folder_name=actual_name,
+        folder_path=folder_path, status="adopted_same_infohash",
+    )
+    conn.execute(
+        """UPDATE egs_games
+              SET downloaded=1, submitted_115=1, submitted_pick_code=?, infohash_hex=?
+            WHERE date=? AND name=?""",
+        (match.get("pick_code"), match["infohash_hex"], date, name),
+    )
+    conn.commit()
+    match["name"] = actual_name
+    match["folder_path"] = folder_path
+    return match
 
 
 GAL_ROOT = "/GAL"
@@ -731,7 +829,7 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
 
     try:
         row = conn.execute(
-            "SELECT company,link,COALESCE(downloaded,0),COALESCE(submitted_115,0),release_ts,"
+            "SELECT company,link,infohash_hex,COALESCE(downloaded,0),COALESCE(submitted_115,0),release_ts,"
             " egs_date,actual_release_ts,torrent_name,COALESCE(download_failed,0),"
             " COALESCE(magnet_duplicate,0),duplicate_of_egs_id,"
             " COALESCE(submission_excluded,0),submission_excluded_reason"
@@ -742,7 +840,7 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
             result["status"] = "error"
             result["message"] = "游戏记录不存在"
             return result
-        (company, link, downloaded, submitted, release_ts, egs_date, actual_release_ts,
+        (company, link, infohash_hex, downloaded, submitted, release_ts, egs_date, actual_release_ts,
          torrent_name, download_failed, magnet_duplicate, duplicate_of_egs_id,
          submission_excluded, submission_excluded_reason) = row
         if download_failed:
@@ -812,27 +910,28 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
             else:
                 rec = None  # cid失效（目录被删等），回退搜索
 
-        # ② 定位：先按 .torrent info.name 直读年份目录（info.name == 115 目录名，
-        #    可绕过 dn 展示名不一致导致的误判）；再退回 dn 全局搜索 + dn 直读兜底
+        # ② 严格按 infohash 定位。标题、torrent_name 和目录名只能用于命名，
+        #    不能证明内容相同；不同磁链即使同标题也必须视作新内容。
         if old_name is None:
-            ydir = resolve_cid(year_dir_path)
             loc = None
-            if torrent_name and ydir:
-                loc = locate_in_year_dir(ydir, dn_of(link), name, torrent_name=torrent_name)
-                if loc is not None:
-                    loc["located_by"] = "torrent_name"
+            reused = find_downloaded_folder_by_infohash(conn, link, infohash_hex)
+            if reused:
+                actual_name = get_item_name(reused["cid"])
+                if actual_name:
+                    reused_pid = reused.get("pid")
+                    reused_parent = parent_crumbs_path(reused_pid) if reused_pid else None
+                    if not reused_parent:
+                        reused_parent = (reused.get("folder_path") or "").rsplit("/", 1)[0] or None
+                    loc = {
+                        "cid": reused["cid"], "pid": reused_pid, "name": actual_name,
+                        "parent_path": reused_parent, "is_dir": True,
+                        "pick_code": reused.get("pick_code"),
+                        "located_by": "same_infohash_" + reused["source"],
+                    }
             if loc is None:
-                loc = locate_by_search(dn_of(link), name, torrent_name=torrent_name)
-            if loc is None and ydir:
-                # 兜底: 直读 dn 年份目录（搜索索引未收录新目录时仍可定位）
-                loc = locate_in_year_dir(ydir, dn_of(link), name)
-                if loc is not None and loc.get("ambiguous"):
-                    loc = None
-            if loc is None:
-                # ③ 存在性检查：离线任务（已完成产物可继续整理）→ 缺失 → 未下载
-                off = locate_offline_task_product(link)
+                # 115 离线任务的定位同样只接受精确 infohash。
+                off = locate_offline_task_product(link, infohash_hex)
                 if off and off.get("offline_failed"):
-                    # 115 任务已失败且不会自动完成：重置下载/提交状态，供重新提交
                     if downloaded or submitted:
                         result["status"] = "missing_in_115"
                         result["message"] = "⚠ 115离线任务失败，未生成下载产物"
@@ -879,14 +978,14 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
                     return result
                 if off and off.get("cid") and off.get("name"):
                     loc = off
-                elif magnet_in_offline_tasks(link):
+                elif magnet_in_offline_tasks(link, infohash_hex):
                     result["status"] = "in_offline"
                     result["message"] = "磁链在115离线任务中，等待下载完成"
                     return result
                 if loc is None:
                     if downloaded or submitted:
                         result["status"] = "missing_in_115"
-                        result["message"] = "⚠ 标记已下载/已提交，但115中未找到文件夹"
+                        result["message"] = "⚠ 标记已下载/已提交，但115中未找到相同磁链的文件夹"
                         if not dry_run and submitted:
                             conn.execute(
                                 "UPDATE egs_games SET submitted_115=0 WHERE date=? AND name=?",
@@ -897,36 +996,30 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
                             result["message"] += "；已重置 submitted_115=0 供重提"
                         return result
                     result["status"] = "not_downloaded"
-                    result["message"] = "115中未找到（尚未下载）"
+                    result["message"] = "未找到相同磁链的已下载内容"
                     return result
-            if loc.get("ambiguous"):
-                result["status"] = "ambiguous"
-                result["message"] = "命中多个候选目录，为安全起见跳过"
-                return result
             if not loc.get("is_dir"):
-                # 命中的是文件：先取真实父目录信息（搜索结果无pid，用fs_file查）
                 info = get_item_info(loc["cid"]) or {}
                 if info and not _item_is_single_file(str(info.get("cid") or loc["cid"]),
                                                      info.get("n") or loc.get("name"),
                                                      info.get("fc")):
-                    # 实际是目录（搜索索引把目录内文件当命中）→ 按目录处理
                     loc = {"cid": info["cid"], "pid": info.get("pid"), "name": info.get("n"),
                            "parent_path": parent_crumbs_path(info.get("pid")) if info.get("pid") else None,
-                           "is_dir": True, "pick_code": info.get("pc")}
+                           "is_dir": True, "pick_code": info.get("pc"),
+                           "located_by": loc.get("located_by")}
                 else:
-                    # 单文件种子 → 建规范文件夹包进去（用户指定策略）
                     if info.get("pid"):
                         loc["pid"] = info["pid"]
                         loc["parent_path"] = parent_crumbs_path(info["pid"])
-                    wrap = _wrap_file_torrent(conn, loc, dn_of(link), target, year_dir_path,
-                                              dry_run, year_dirs, date_code, company,
-                                              date, name, result)
-                    return wrap
+                    return _wrap_file_torrent(
+                        conn, loc, dn_of(link), target, year_dir_path, dry_run, year_dirs,
+                        date_code, company, date, name, result,
+                    )
             cid = loc.get("cid")
             pid = loc.get("pid")
             old_name = loc.get("name")
             parent_path = loc.get("parent_path")
-            located_by = loc.get("located_by") or "search"
+            located_by = loc.get("located_by") or "exact_infohash"
 
         result["cid"] = cid
         result["old_name"] = old_name

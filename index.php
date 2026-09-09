@@ -13,6 +13,9 @@
         .calendar-table .month-select:hover { text-decoration: underline; }
         .calendar-table .month-select:focus-visible { outline: 2px solid #0d6efd; outline-offset: 3px; border-radius: 2px; }
         #task-details { max-height: 360px; overflow: auto; }
+        .task-result-group > summary { cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
+        .task-result-group > summary:hover { background: rgba(0, 0, 0, .035); }
+        .task-result-group[open] > summary { border-bottom: 1px solid var(--bs-border-color); }
         .scope-form .form-control, .scope-form .form-select { min-width: 0; }
     </style>
 </head>

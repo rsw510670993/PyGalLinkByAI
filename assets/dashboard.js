@@ -2,6 +2,18 @@
     const $ = id => document.getElementById(id);
     const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const labels = {crawl:'获取游戏清单', magnet:'获取下载用磁链', check:'校对115', submit:'提交115', organize:'整理115'};
+    const resultTypeLabels = {
+        success:'成功', failed:'失败/待处理', skipped:'跳过',
+        already_ok:'已符合规范', found_set_downloaded:'已确认下载',
+        renamed:'已重命名', moved:'已移动', renamed_moved:'已重命名并移动',
+        wrapped_file:'已归入文件夹', would_rename:'预览：重命名',
+        would_move:'预览：移动', would_rename_moved:'预览：重命名并移动',
+        would_wrap_file:'预览：归入文件夹', would_set_downloaded:'预览：补记下载',
+        cross_year_confirm:'待确认跨年', month_shift_confirm:'待确认搬月',
+        conflict:'名称冲突', missing_in_115:'115 未找到', in_offline:'等待离线下载',
+        not_downloaded:'尚未下载', no_link:'无磁链', no_dn_date:'磁链缺日期',
+        duplicate_magnet:'共链重复', not_submittable:'已排除', error:'错误'
+    };
     let currentTask = null;
     let loading = false;
     let launching = false;
@@ -10,6 +22,8 @@
     let lastRefresh = 0;
     let crossYearRows = [];
     let confirmationLoadedJob = '';
+    let resultGroupJob = '';
+    const resultGroupOpen = new Map();
     const params = new URLSearchParams(location.search);
     const year = Number(params.get('year')) || new Date().getFullYear();
     $('start-year').value = $('end-year').value = $('calendar-year').value = year;
@@ -46,6 +60,40 @@
         }).join('') || '<tr><td colspan="3" class="text-center text-muted py-3">暂无待确认项</td></tr>';
     }
 
+    function renderTaskResults(results, jobId) {
+        if (resultGroupJob !== jobId) {
+            resultGroupJob = jobId;
+            resultGroupOpen.clear();
+        }
+        if (!results.length) return '<span class="text-muted">暂无处理结果</span>';
+        const groups = new Map();
+        results.forEach((row, index) => {
+            const type = row.detail?.status || row.outcome || 'other';
+            if (!groups.has(type)) groups.set(type, {type, outcome:row.outcome || 'other', rows:[], index});
+            groups.get(type).rows.push(row);
+        });
+        const priority = {failed:0, skipped:1, success:2, other:3};
+        return [...groups.values()].sort((a, b) =>
+            (priority[a.outcome] ?? 3) - (priority[b.outcome] ?? 3) || a.index - b.index
+        ).map(group => {
+            const badge = group.outcome === 'failed' ? 'text-bg-danger'
+                : group.outcome === 'success' ? 'text-bg-success'
+                : group.outcome === 'skipped' ? 'text-bg-secondary' : 'text-bg-light';
+            const rows = group.rows.map(row => {
+                const detail = row.detail;
+                const target = detail?.target_path
+                    ? `<div class="text-muted">${escape(detail.old_path || '待定位')} → ${escape(detail.target_path)}</div>` : '';
+                return `<div class="border-bottom py-2"><strong>${escape(row.name)}</strong>：${escape(row.message)}${target}</div>`;
+            }).join('');
+            const isOpen = resultGroupOpen.has(group.type)
+                ? resultGroupOpen.get(group.type) : group.outcome === 'failed';
+            return `<details class="task-result-group border rounded mb-2" data-result-type="${escape(group.type)}"${isOpen ? ' open' : ''}>
+                <summary class="px-2 py-2"><span>${escape(resultTypeLabels[group.type] || group.type)}</span>
+                    <span class="badge ${badge}">${group.rows.length}</span></summary>
+                <div class="px-2">${rows}</div></details>`;
+        }).join('');
+    }
+
     function showTask(task) {
         currentTask = task;
         buttons();
@@ -60,11 +108,11 @@
         $('task-counts').innerHTML = `已处理 ${task.done || 0}/${task.total || 0} · 成功 ${task.success || 0} · 待处理/失败 ${task.failed || 0} · 跳过 ${task.skipped || 0}`
             + (task.action === 'organize' && !task.running && (task.failed || 0) > 0
                 ? ` · <a href="${basePath}/tool/organize_review.php">打开整理待办 →</a>` : '');
-        $('task-details').innerHTML = (task.results || []).map(row => {
-            const detail = row.detail;
-            const target = detail?.target_path ? `<div class="text-muted">${escape(detail.old_path || '待定位')} → ${escape(detail.target_path)}</div>` : '';
-            return `<div class="border-bottom py-2"><strong>${escape(row.name)}</strong>：${escape(row.message)}${target}</div>`;
-        }).join('') || '<span class="text-muted">暂无处理结果</span>';
+        const taskDetails = $('task-details');
+        taskDetails.innerHTML = renderTaskResults(task.results || [], task.job_id);
+        taskDetails.querySelectorAll('.task-result-group').forEach(group => {
+            group.addEventListener('toggle', () => resultGroupOpen.set(group.dataset.resultType, group.open));
+        });
 
     }
 

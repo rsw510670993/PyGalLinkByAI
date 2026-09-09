@@ -87,9 +87,20 @@ def cmd_calendar(args):
             substr(date, 1, 4) as year,
             CAST(substr(date, 6, 2) AS INTEGER) as month,
             COUNT(*) as total,
-            SUM(CASE WHEN link IS NOT NULL AND link != '' THEN 1 ELSE 0 END) as magnet_total,
-            SUM(CASE WHEN link IS NOT NULL AND link != '' AND COALESCE(downloaded, 0) = 1 THEN 1 ELSE 0 END) as magnet_downloaded,
-            SUM(CASE WHEN link IS NOT NULL AND link != '' AND COALESCE(submitted_115, 0) = 1 THEN 1 ELSE 0 END) as magnet_submitted
+            SUM(CASE WHEN link IS NOT NULL AND link != ''
+                           AND COALESCE(magnet_duplicate,0)=0
+                           AND COALESCE(submission_excluded,0)=0
+                     THEN 1 ELSE 0 END) as magnet_total,
+            SUM(CASE WHEN link IS NOT NULL AND link != ''
+                           AND COALESCE(magnet_duplicate,0)=0
+                           AND COALESCE(submission_excluded,0)=0
+                           AND COALESCE(downloaded,0)=1
+                     THEN 1 ELSE 0 END) as magnet_downloaded,
+            SUM(CASE WHEN link IS NOT NULL AND link != ''
+                           AND COALESCE(magnet_duplicate,0)=0
+                           AND COALESCE(submission_excluded,0)=0
+                           AND COALESCE(submitted_115,0)=1
+                     THEN 1 ELSE 0 END) as magnet_submitted
         FROM egs_games
         WHERE CAST(substr(date, 1, 4) AS INTEGER) BETWEEN ? AND ?
         GROUP BY year, month
@@ -465,17 +476,20 @@ def _check_all_status_default():
     }
 
 
-def _check_magnet_exists_child(link, q):
+def _check_magnet_exists_child(link, q, strict_infohash=False, offline_tasks=None):
     try:
         from tool.p115_client import check_magnet_exists
 
-        res = check_magnet_exists(link, "")
+        res = check_magnet_exists(
+            link, "", strict_infohash=strict_infohash, offline_tasks=offline_tasks,
+        )
         q.put({"ok": True, "res": res})
     except Exception as e:
         q.put({"ok": False, "error": str(e)})
 
 
-def _check_magnet_exists_with_timeout(link, timeout_s=60):
+def _check_magnet_exists_with_timeout(link, timeout_s=60, strict_infohash=False,
+                                      offline_tasks=None):
     if os.name != "nt":
         try:
             ctx = mp.get_context("fork")
@@ -483,7 +497,10 @@ def _check_magnet_exists_with_timeout(link, timeout_s=60):
             ctx = mp.get_context("spawn")
 
         q = ctx.Queue(maxsize=1)
-        p = ctx.Process(target=_check_magnet_exists_child, args=(link, q))
+        p = ctx.Process(
+            target=_check_magnet_exists_child,
+            args=(link, q, strict_infohash, offline_tasks),
+        )
         p.daemon = True
         p.start()
         p.join(timeout_s)
@@ -507,7 +524,9 @@ def _check_magnet_exists_with_timeout(link, timeout_s=60):
     def _run():
         from tool.p115_client import check_magnet_exists
 
-        return check_magnet_exists(link, "")
+        return check_magnet_exists(
+            link, "", strict_infohash=strict_infohash, offline_tasks=offline_tasks,
+        )
 
     ex = cf.ThreadPoolExecutor(max_workers=1)
     try:
@@ -690,14 +709,20 @@ def cmd_115_check_all_worker(args):
             status["checked"] += 1
             status["updated_at"] = now_ts()
             write_json_atomic(status_path, status)
-            result, err = _check_magnet_exists_with_timeout(link, 60)
+            result, err = _check_magnet_exists_with_timeout(link, 60, strict_infohash=is_egs)
             if err:
                 status["errors"].append(f"{date}/{name}: {err}")
             elif isinstance(result, dict) and result.get("exists"):
                 if is_egs:
                     conn = open_egs_db()
                     try:
-                        conn.execute("UPDATE egs_games SET downloaded = 1, infohash_hex = ?, updated_at = ? WHERE egs_id = ? AND link = ?", (result.get("infohash_hex"), now_ts(), row[3], link))
+                        conn.execute(
+                            """UPDATE egs_games
+                                  SET downloaded=1, submitted_115=1, download_failed=0,
+                                      infohash_hex=?, updated_at=?
+                                WHERE egs_id=? AND link=?""",
+                            (result.get("infohash_hex"), now_ts(), row[3], link),
+                        )
                         conn.commit()
                     finally:
                         conn.close()
