@@ -47,6 +47,10 @@
         "NSW"
     ],
     "per_page": 50,
+    "magnet_request_interval": 1.2,
+    "magnet_min_request_interval": 1.0,
+    "magnet_max_request_interval": 15,
+    "magnet_torrent_interval": 0.6,
     "organize_name_format": "[{compact_date}][{company}]{name}",
     "115_save_path": "/我的下载/Getchu",
     "115_cookies_path": "115-cookies.txt"

@@ -195,7 +195,8 @@ def execute_job(state, save, should_stop):
                             metrics = result.get('metrics', {})
                             summary = (f"待搜索 {result['total']}，匹配 {result['selected']}，无结果 {result['no_result']}，低分 {result['low_score']}，错误 {result['error']}；"
                                        f"跳过：已有磁链 {result.get('skip_linked', 0)}，搜索历史 {result.get('skip_history', 0)}，未发售 {result.get('skip_unreleased', 0)}；"
-                                       f"请求 {metrics.get('requests', 0)} 次，网络 {metrics.get('network_seconds', 0):.1f}s，等待 {metrics.get('wait_seconds', 0):.1f}s，满分提前结束 {metrics.get('early_stops', 0)} 部")
+                                       f"请求 {metrics.get('requests', 0)} 次，网络 {metrics.get('network_seconds', 0):.1f}s，等待 {metrics.get('wait_seconds', 0):.1f}s，满分提前结束 {metrics.get('early_stops', 0)} 部；"
+                                       f"末段间隔 {result.get('final_interval', 0):.2f}s，429退避 {metrics.get('backoffs', 0)} 次")
                             if result.get('stopped'):
                                 state['results'].append(dict(name=name, outcome='skipped', message='已停止（本月未完成）；' + summary, detail=result))
                                 save()

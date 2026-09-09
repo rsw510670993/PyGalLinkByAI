@@ -130,6 +130,12 @@ def torrent_id_from_url(view_url: str | None) -> str | None:
     return m.group(1) if m else None
 
 
+def _notify(pacer, method, *args):
+    callback = getattr(pacer, method, None) if pacer is not None else None
+    if callable(callback):
+        callback(*args)
+
+
 def fetch_torrent_meta(session, view_url: str | None, expected_infohash: str | None = None,
                        pacer=None, timeout: int = REQUEST_TIMEOUT) -> dict | None:
     """从 sukebei 下载 .torrent 并解析 info 元数据；任何失败返回 None（调用方降级）。"""
@@ -138,7 +144,9 @@ def fetch_torrent_meta(session, view_url: str | None, expected_infohash: str | N
         return None
     url = f"{SUKEBEI_BASE}/download/{tid}.torrent"
     if pacer is not None:
-        pacer.before_request()
+        # .torrent 是静态下载，使用比搜索页更短的间隔；退避时会随全局间隔放大。
+        step = getattr(pacer, "torrent_step", None)
+        pacer.before_request(step() if callable(step) else None)
     started = time.monotonic()
     try:
         resp = session.get(url, timeout=timeout)
@@ -149,13 +157,24 @@ def fetch_torrent_meta(session, view_url: str | None, expected_infohash: str | N
         pacer.check_stop()
     if resp.status_code == 429:
         logger.warning("sukebei torrent 429: %s", url)
+        retry_after = 15.0
+        try:
+            retry_after = max(15.0, float(resp.headers.get("Retry-After", "")))
+        except (TypeError, ValueError):
+            pass
+        if callable(getattr(pacer, "on_rate_limited", None)):
+            pacer.on_rate_limited(retry_after)
+        elif pacer is not None:
+            pacer.defer(retry_after)
         return None
     if resp.status_code != 200 or not resp.content:
         logger.debug("sukebei torrent download failed: %s status=%s", url, resp.status_code)
+        _notify(pacer, "note_failure")
         return None
     meta = parse_torrent(resp.content, expected_infohash=expected_infohash)
     if meta is None:
         return None
+    _notify(pacer, "on_success")
     logger.info("TORRENT_META %s | info.name=%s", expected_infohash or "", meta["name"][:60])
     return meta
 

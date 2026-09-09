@@ -35,6 +35,8 @@ class MagnetSpeedTests(unittest.TestCase):
     def test_request_interval_shared_across_searches_without_final_sleep(self):
         clock = Clock()
         session = requests.Session()
+        session._egs_pacer = magnet.RequestPacer(
+            interval=2.5, min_interval=2.5, max_interval=2.5, torrent_interval=2.5)
         starts = []
         def fetch(*args, **kwargs):
             starts.append(clock.now)
@@ -47,6 +49,73 @@ class MagnetSpeedTests(unittest.TestCase):
         self.assertAlmostEqual(clock.now,8.5)
         self.assertAlmostEqual(session._egs_pacer.metrics['network_seconds'],4)
         self.assertAlmostEqual(session._egs_pacer.metrics['wait_seconds'],4.5)
+
+    def test_pacing_config_overrides_defaults(self):
+        with patch.object(magnet, 'read_config', return_value={
+                'magnet_request_interval': 1.2,
+                'magnet_min_request_interval': 0.8,
+                'magnet_max_request_interval': 9.0,
+                'magnet_torrent_interval': 0.7}):
+            pacer = magnet.RequestPacer()
+        self.assertEqual((pacer.interval, pacer.min_interval, pacer.max_interval),
+                         (1.2, 0.8, 9.0))
+        self.assertAlmostEqual(pacer.torrent_step(), 0.7)
+
+    def test_429_backs_off_then_success_recovers_towards_floor(self):
+        pacer = magnet.RequestPacer(interval=1.0, min_interval=0.5, max_interval=8.0,
+                                    torrent_interval=0.4)
+        pacer.on_rate_limited(0)
+        self.assertAlmostEqual(pacer.interval, 2.0)
+        pacer.on_rate_limited(0)
+        self.assertAlmostEqual(pacer.interval, 4.0)
+        pacer.on_rate_limited(0)
+        self.assertAlmostEqual(pacer.interval, 8.0)
+        pacer.on_rate_limited(0)
+        self.assertAlmostEqual(pacer.interval, 8.0)
+        self.assertEqual(pacer.metrics['backoffs'], 3)
+        for _ in range(magnet.RECOVERY_STREAK * 14):
+            pacer.on_success()
+        self.assertAlmostEqual(pacer.interval, 0.5)
+        self.assertGreaterEqual(pacer.metrics['recoveries'], 1)
+
+    def test_torrent_step_shorter_than_search_and_grows_during_backoff(self):
+        pacer = magnet.RequestPacer(interval=1.2, min_interval=0.8, max_interval=15.0,
+                                    torrent_interval=0.6)
+        self.assertAlmostEqual(pacer.torrent_step(), 0.6)
+        pacer.interval = 15.0
+        self.assertAlmostEqual(pacer.torrent_step(), 7.5)
+        pacer.interval = 0.8
+        self.assertAlmostEqual(pacer.torrent_step(), 0.6)
+
+    def test_before_request_uses_explicit_step(self):
+        clock = Clock()
+        pacer = magnet.RequestPacer(interval=5.0, min_interval=1.0, max_interval=10.0)
+        with patch.object(magnet.time, 'monotonic', clock.monotonic), \
+             patch.object(magnet.time, 'sleep', clock.sleep):
+            pacer.before_request()
+            pacer.before_request(interval=0.5)
+        self.assertAlmostEqual(clock.now, 5.0)
+        self.assertAlmostEqual(pacer.next_request_at, 5.5)
+        self.assertEqual(pacer.metrics['requests'], 2)
+
+    def test_torrent_429_updates_shared_pacer(self):
+        from tool import torrent_meta
+        clock = Clock()
+        pacer = magnet.RequestPacer(interval=1.0, min_interval=0.5, max_interval=8.0,
+                                    torrent_interval=0.6)
+        session = requests.Session()
+        def fetch(*args, **kwargs):
+            clock.now += 0.2
+            return response(429, {'Retry-After': '30'})
+        with patch.object(torrent_meta.time, 'monotonic', clock.monotonic), \
+             patch.object(torrent_meta.time, 'sleep', clock.sleep), \
+             patch.object(session, 'get', side_effect=fetch):
+            result = torrent_meta.fetch_torrent_meta(
+                session, 'https://sukebei.nyaa.si/view/123', pacer=pacer)
+        self.assertIsNone(result)
+        self.assertEqual(pacer.metrics['backoffs'], 1)
+        self.assertAlmostEqual(pacer.interval, 2.0)
+        self.assertGreaterEqual(pacer.next_request_at, 30.0)
 
     def test_maximum_score_stops_and_preserves_best(self):
         candidate=dict(nyaa_title='[girlcelly] [Studio] Example Game!',nyaa_date='2026-01-01 00:00',magnet=LINK,infohash_hex=HASH)

@@ -30,17 +30,49 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pa
 
 from tool.egs_core import open_egs_db, refresh_magnet_duplicates
 from tool.egs_match import MAX_SCORE, THRESHOLD, extract_infohash, select_best
+from tool.runtime import read_config
 
 SUKEBEI_URL = "https://sukebei.nyaa.si/"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
     "Accept-Language": "ja,en;q=0.8",
 }
-REQUEST_INTERVAL = 2.5
+REQUEST_INTERVAL = 1.2          # 搜索请求默认间隔（秒），可被 config.json 覆盖
+MIN_REQUEST_INTERVAL = 1.0      # 连续成功后可收缩到的最小间隔（约 1 req/s）
+MAX_REQUEST_INTERVAL = 15.0     # 触发 429 后指数退避的上限
+TORRENT_INTERVAL = 0.6          # .torrent 下载后使用的间隔（其余请求仍受全局间隔约束）
+RECOVERY_STREAK = 10            # 连续成功多少次后尝试收缩一次间隔
+RECOVERY_FACTOR = 0.8
+BACKOFF_FACTOR = 2.0
 MAX_PER_QUERY = 10
 REQUEST_TIMEOUT = 15
 MAX_ATTEMPTS = 2          # 原始请求 + 重试 1 次
 TIMEOUT_ABORT_LIMIT = 20  # 累计超时达到该值则终止本轮
+
+
+def pacing_config():
+    """读取可选的节流配置；缺失或非法时回退到模块默认值。"""
+    raw = read_config() or {}
+
+    def number(key, default, floor=0.05):
+        try:
+            return max(floor, float(raw.get(key, default)))
+        except (TypeError, ValueError):
+            return float(default)
+
+    interval = number("magnet_request_interval", REQUEST_INTERVAL)
+    min_interval = number("magnet_min_request_interval", MIN_REQUEST_INTERVAL)
+    max_interval = number("magnet_max_request_interval", MAX_REQUEST_INTERVAL)
+    torrent_interval = number("magnet_torrent_interval", TORRENT_INTERVAL)
+    min_interval = min(min_interval, max_interval)
+    interval = min(max(interval, min_interval), max_interval)
+    torrent_interval = min(torrent_interval, interval)
+    return {
+        "interval": interval,
+        "min_interval": min_interval,
+        "max_interval": max_interval,
+        "torrent_interval": torrent_interval,
+    }
 
 
 class TimeoutLimitExceeded(Exception):
@@ -162,21 +194,40 @@ class SearchStopped(Exception):
 
 
 class RequestPacer:
-    """One request-start interval across queries, games, retries and months."""
-    def __init__(self, should_stop=None):
+    """全局请求节流：默认间隔 + 429 指数退避 + 连续成功缓慢提速。
+
+    搜索页与 .torrent 下载共用同一个实例，保证任意两次请求启动之间至少间隔
+    「上一次请求设置的间隔」；.torrent 使用更短的间隔，避免每个种子都付一次
+    完整的搜索间隔。
+    """
+    def __init__(self, should_stop=None, interval=None, min_interval=None,
+                 max_interval=None, torrent_interval=None):
+        cfg = pacing_config()
         self.should_stop = should_stop
+        self.min_interval = float(cfg["min_interval"] if min_interval is None else min_interval)
+        self.max_interval = float(cfg["max_interval"] if max_interval is None else max_interval)
+        self.min_interval = min(self.min_interval, self.max_interval)
+        start = float(cfg["interval"] if interval is None else interval)
+        self.interval = min(max(start, self.min_interval), self.max_interval)
+        self._torrent_interval = float(cfg["torrent_interval"] if torrent_interval is None else torrent_interval)
         self.next_request_at = 0.0
+        self._ok_streak = 0
         self.metrics = {"requests": 0, "network_seconds": 0.0, "wait_seconds": 0.0,
-                        "retries": 0, "http_429": 0, "timeouts": 0, "early_stops": 0}
+                        "retries": 0, "http_429": 0, "timeouts": 0, "early_stops": 0,
+                        "backoffs": 0, "recoveries": 0}
 
     def check_stop(self):
         if self.should_stop and self.should_stop():
             raise SearchStopped()
 
     def defer(self, seconds):
-        self.next_request_at = max(self.next_request_at, time.monotonic() + seconds)
+        self.next_request_at = max(self.next_request_at, time.monotonic() + float(seconds))
 
-    def before_request(self):
+    def torrent_step(self):
+        """.torrent 下载后使用的间隔；退避时随全局间隔一起放大。"""
+        return max(0.2, min(self.interval, max(self._torrent_interval, self.interval * 0.5)))
+
+    def before_request(self, interval=None):
         self.check_stop()
         started = time.monotonic()
         try:
@@ -189,8 +240,30 @@ class RequestPacer:
         finally:
             self.metrics["wait_seconds"] += time.monotonic() - started
         self.check_stop()
-        self.next_request_at = time.monotonic() + REQUEST_INTERVAL
+        step = self.interval if interval is None else max(0.05, float(interval))
+        self.next_request_at = time.monotonic() + step
         self.metrics["requests"] += 1
+
+    def on_success(self):
+        """连续成功达到阈值后，向 min_interval 收缩一档。"""
+        self._ok_streak += 1
+        if self._ok_streak >= RECOVERY_STREAK and self.interval > self.min_interval:
+            self.interval = max(self.min_interval, self.interval * RECOVERY_FACTOR)
+            self._ok_streak = 0
+            self.metrics["recoveries"] += 1
+
+    def on_rate_limited(self, wait_seconds=None):
+        """收到 429：立即退避并抬高稳态间隔（最多到 max_interval）。"""
+        self._ok_streak = 0
+        if wait_seconds:
+            self.defer(wait_seconds)
+        if self.interval < self.max_interval:
+            self.interval = min(self.max_interval, self.interval * BACKOFF_FACTOR)
+            self.metrics["backoffs"] += 1
+
+    def note_failure(self):
+        """网络/解析类失败：中断连续成功计数，但不抬高稳态间隔。"""
+        self._ok_streak = 0
 
 
 def _retry_after(response, fallback):
@@ -228,15 +301,19 @@ def _search_once(session: requests.Session, query: str, logger: logging.Logger):
             if resp.status_code == 429:
                 pacer.metrics["http_429"] += 1
                 wait = _retry_after(resp, 15 * (attempt + 1))
-                pacer.defer(wait)
+                pacer.on_rate_limited(wait)
                 last_err = RuntimeError("HTTP 429")
-                logger.warning("sukebei 429，后续请求等待%ss: %s", wait, query[:40])
+                logger.warning("sukebei 429，后续请求等待%ss，间隔升至%.1fs: %s",
+                               wait, pacer.interval, query[:40])
                 continue
             resp.raise_for_status()
-            return _parse_result_page(resp.text)
+            result = _parse_result_page(resp.text)
+            pacer.on_success()
+            return result
         except requests.Timeout as exc:
             _timeout_count += 1
             pacer.metrics["timeouts"] += 1
+            pacer.note_failure()
             last_err = exc
             logger.warning("超时(第%s次, 累计%s/%s) %s: %s", attempt + 1,
                            _timeout_count, TIMEOUT_ABORT_LIMIT, query[:40], exc)
@@ -247,6 +324,7 @@ def _search_once(session: requests.Session, query: str, logger: logging.Logger):
         except (SearchStopped, TimeoutLimitExceeded):
             raise
         except Exception as exc:
+            pacer.note_failure()
             last_err = exc
             logger.warning("搜索失败(第%s次) %s: %s", attempt + 1, query[:40], exc)
             if attempt + 1 < MAX_ATTEMPTS:
@@ -657,6 +735,7 @@ def run_magnet(year: int, month: int | None = None, force: bool = False,
                 status["results"].append(result)
         status["metrics"] = {key: round(value - baseline[key], 3)
                              for key, value in pacer.metrics.items()}
+        status["final_interval"] = round(pacer.interval, 3)
         status["elapsed_seconds"] = round(time.monotonic() - started, 3)
         logger.info("NYAA_SUMMARY %s", json.dumps({key: value for key, value in status.items() if key != "results"}, ensure_ascii=False))
         return status
