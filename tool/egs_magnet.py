@@ -44,6 +44,7 @@ TORRENT_INTERVAL = 0.6          # .torrent 下载后使用的间隔（其余请�
 RECOVERY_STREAK = 10            # 连续成功多少次后尝试收缩一次间隔
 RECOVERY_FACTOR = 0.8
 BACKOFF_FACTOR = 2.0
+EARLY_STOP_SCORE = 60.0         # 精确名称+公司命中且达到该分数时，跳过后续放宽查询
 MAX_PER_QUERY = 10
 REQUEST_TIMEOUT = 15
 MAX_ATTEMPTS = 2          # 原始请求 + 重试 1 次
@@ -73,6 +74,19 @@ def pacing_config():
         "max_interval": max_interval,
         "torrent_interval": torrent_interval,
     }
+
+
+def early_stop_threshold():
+    """提前结束后续放宽查询的分数阈值（magnet_early_stop_score）。
+
+    夹在 THRESHOLD 与 MAX_SCORE 之间；设为 MAX_SCORE(65) 即恢复“只认满分”的旧行为。
+    """
+    raw = read_config() or {}
+    try:
+        value = float(raw.get("magnet_early_stop_score", EARLY_STOP_SCORE))
+    except (TypeError, ValueError):
+        value = EARLY_STOP_SCORE
+    return min(max(value, THRESHOLD), MAX_SCORE)
 
 
 class TimeoutLimitExceeded(Exception):
@@ -214,7 +228,7 @@ class RequestPacer:
         self._ok_streak = 0
         self.metrics = {"requests": 0, "network_seconds": 0.0, "wait_seconds": 0.0,
                         "retries": 0, "http_429": 0, "timeouts": 0, "early_stops": 0,
-                        "backoffs": 0, "recoveries": 0}
+                        "queries_saved": 0, "backoffs": 0, "recoveries": 0}
 
     def check_stop(self):
         if self.should_stop and self.should_stop():
@@ -377,9 +391,31 @@ def _parse_result_page(html: str) -> list[dict]:
     return out
 
 
+def _confident_enough(game, best, score, detail, threshold) -> bool:
+    """是否已足够确信，可跳过后续放宽查询。
+
+    - 满分（MAX_SCORE）无条件提前结束（与旧行为一致）；
+    - 达到 EARLY_STOP_SCORE 时，必须是「精确名称」命中，且在有公司数据时公司也命中，
+      避免为了速度牺牲明显更优的候选。
+    """
+    if not best or not extract_infohash(best.get("magnet")):
+        return False
+    if score >= MAX_SCORE:
+        return True
+    if score < threshold:
+        return False
+    detail = detail or {}
+    if "name_exact" not in detail:
+        return False
+    company = (game or {}).get("company") or ""
+    if company and "company" not in detail:
+        return False
+    return True
+
+
 def search_candidates(session: requests.Session, name: str, company: str,
                       logger: logging.Logger, game=None) -> list[dict]:
-    """Preserve query ordering and candidate ties; stop only at the score ceiling."""
+    """Preserve query ordering and candidate ties; stop at the score ceiling or a confident match."""
     queries = []
     if company:
         queries.append(f"{name} {company}")
@@ -388,19 +424,22 @@ def search_candidates(session: requests.Session, name: str, company: str,
     if stripped.strip() and stripped.strip() != name:
         queries.append(stripped)
 
+    query_list = list(dict.fromkeys(queries))
+    threshold = early_stop_threshold()
     merged = {}
-    for query in dict.fromkeys(queries):
+    for index, query in enumerate(query_list):
         # Do not cache incomplete searches as no-result/low-score outcomes.
         items = _search_once(session, query, logger)
         for item in items:
             merged.setdefault(item["infohash_hex"], item)
         candidates = list(merged.values())[:MAX_PER_QUERY]
         if game and candidates:
-            best, score, _ = select_best(game, candidates, THRESHOLD)
-            if best and score >= MAX_SCORE and extract_infohash(best.get("magnet")):
+            best, score, detail = select_best(game, candidates, THRESHOLD)
+            if _confident_enough(game, best, score, detail, threshold):
                 pacer = getattr(session, "_egs_pacer", None)
                 if pacer:
                     pacer.metrics["early_stops"] += 1
+                    pacer.metrics["queries_saved"] += len(query_list) - index - 1
                 break
         if len(merged) >= MAX_PER_QUERY:
             break

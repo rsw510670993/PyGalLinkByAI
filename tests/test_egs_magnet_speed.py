@@ -135,6 +135,59 @@ class MagnetSpeedTests(unittest.TestCase):
         self.assertEqual(len(result),1)
         self.assertEqual(result[0]['score'],55)
 
+    def test_confident_exact_company_match_stops_early(self):
+        candidate = dict(nyaa_title='[girlcelly] [Studio] Example Game!',
+                         nyaa_date='2026-01-20 00:00', magnet=LINK, infohash_hex=HASH)
+        session = requests.Session(); session._egs_pacer = magnet.RequestPacer()
+        with patch.object(magnet, 'read_config', return_value={'magnet_early_stop_score': 60}), \
+             patch.object(magnet, '_search_once', return_value=[candidate]) as search:
+            result = magnet.search_candidates(session, GAME['name'], GAME['company'], LOG, game=GAME)
+        self.assertEqual(search.call_count, 1)
+        self.assertEqual(result[0]['score'], 60)
+        self.assertEqual(session._egs_pacer.metrics['early_stops'], 1)
+        self.assertEqual(session._egs_pacer.metrics['queries_saved'], 2)
+
+    def test_partial_name_match_does_not_stop_early(self):
+        game = dict(name='MainTitleLong - SubtitleXYZ', company='Studio',
+                    date='2026-01', release_date='2026-01-01')
+        candidate = dict(nyaa_title='[girlcelly] [Studio] MainTitleLong',
+                         nyaa_date='2026-01-01 00:00', magnet=LINK, infohash_hex=HASH)
+        session = requests.Session(); session._egs_pacer = magnet.RequestPacer()
+        with patch.object(magnet, 'read_config', return_value={'magnet_early_stop_score': 60}), \
+             patch.object(magnet, '_search_once', return_value=[candidate]) as search:
+            result = magnet.search_candidates(session, game['name'], game['company'], LOG, game=game)
+        self.assertEqual(result[0]['score'], 60)
+        self.assertEqual(search.call_count, 3)
+        self.assertEqual(session._egs_pacer.metrics['early_stops'], 0)
+
+    def test_confident_stop_requires_company_when_known(self):
+        candidate = dict(nyaa_title='[girlcelly] Example Game!',
+                         nyaa_date='2026-01-01 00:00', magnet=LINK, infohash_hex=HASH)
+        session = requests.Session(); session._egs_pacer = magnet.RequestPacer()
+        with patch.object(magnet, 'read_config', return_value={'magnet_early_stop_score': 55}), \
+             patch.object(magnet, '_search_once', return_value=[candidate]) as search:
+            result = magnet.search_candidates(session, GAME['name'], GAME['company'], LOG, game=GAME)
+        self.assertEqual(result[0]['score'], 55)
+        self.assertEqual(search.call_count, 3)
+        self.assertEqual(session._egs_pacer.metrics['early_stops'], 0)
+
+    def test_early_stop_score_at_max_restores_old_behavior(self):
+        candidate = dict(nyaa_title='[girlcelly] [Studio] Example Game!',
+                         nyaa_date='2026-01-20 00:00', magnet=LINK, infohash_hex=HASH)
+        session = requests.Session(); session._egs_pacer = magnet.RequestPacer()
+        with patch.object(magnet, 'read_config', return_value={'magnet_early_stop_score': 65}), \
+             patch.object(magnet, '_search_once', return_value=[candidate]) as search:
+            result = magnet.search_candidates(session, GAME['name'], GAME['company'], LOG, game=GAME)
+        self.assertEqual(result[0]['score'], 60)
+        self.assertEqual(search.call_count, 3)
+        self.assertEqual(session._egs_pacer.metrics['early_stops'], 0)
+
+    def test_early_stop_threshold_is_clamped_and_safe(self):
+        with patch.object(magnet, 'read_config', return_value={'magnet_early_stop_score': 200}):
+            self.assertEqual(magnet.early_stop_threshold(), magnet.MAX_SCORE)
+        with patch.object(magnet, 'read_config', return_value={'magnet_early_stop_score': 'bad'}):
+            self.assertEqual(magnet.early_stop_threshold(), magnet.EARLY_STOP_SCORE)
+
     def test_failed_search_does_not_write_history_or_link(self):
         with tempfile.TemporaryDirectory() as tmp:
             conn=egs_core.open_egs_db(str(Path(tmp)/'egs.db'))
