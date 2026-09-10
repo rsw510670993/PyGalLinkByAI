@@ -135,6 +135,19 @@ class MagnetSpeedTests(unittest.TestCase):
         self.assertEqual(len(result),1)
         self.assertEqual(result[0]['score'],55)
 
+    def test_search_discards_english_candidate_before_scoring(self):
+        english = dict(nyaa_title='Example Game! [English]', nyaa_date='2026-01-01 00:00', magnet=LINK, infohash_hex=HASH)
+        with patch.object(magnet, '_search_once', return_value=[english]):
+            result = magnet.search_candidates(requests.Session(), GAME['name'], GAME['company'], LOG, game=GAME)
+        self.assertEqual(result, [])
+
+    def test_search_allows_english_when_game_name_requests_it(self):
+        game = dict(name='Example Game! 英語版', company='Studio', date='2026-01', release_date='2026-01-01')
+        english = dict(nyaa_title='Example Game! English Edition [English]', nyaa_date='2026-01-01 00:00', magnet=LINK, infohash_hex=HASH)
+        with patch.object(magnet, '_search_once', return_value=[english]):
+            result = magnet.search_candidates(requests.Session(), game['name'], game['company'], LOG, game=game)
+        self.assertEqual(len(result), 1)
+
     def test_confident_exact_company_match_stops_early(self):
         candidate = dict(nyaa_title='[girlcelly] [Studio] Example Game!',
                          nyaa_date='2026-01-20 00:00', magnet=LINK, infohash_hex=HASH)
@@ -257,6 +270,25 @@ class MagnetSpeedTests(unittest.TestCase):
                 short = conn.execute('SELECT result_count,best_score,review_status FROM egs_nyaa_search_log WHERE egs_id=2').fetchone()
                 self.assertEqual((ordinary['result_count'], ordinary['best_score'], ordinary['review_status']), (0, None, 'none'))
                 self.assertEqual((short['result_count'], short['best_score'], short['review_status']), (1, 0.0, 'pending'))
+            finally: conn.close()
+
+    def test_schema_prunes_unselected_english_but_preserves_selected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = egs_core.open_egs_db(str(Path(tmp) / 'egs.db'))
+            try:
+                egs_core.ensure_egs_schema(conn); magnet.ensure_egs_magnet_schema(conn)
+                conn.execute("INSERT INTO egs_games(egs_id,model,egs_date,egs_name,egs_company,date,name,company,release_ts) VALUES (1,'PC','2026-01-01','作品名','Studio','2026-01','作品名','Studio','2026-01-01')")
+                conn.execute("INSERT INTO egs_nyaa_candidates(egs_id,name,nyaa_title,infohash_hex,score,selected) VALUES (1,'作品名','Wrong [English]',?,30,0)", ('a' * 40,))
+                conn.execute("INSERT INTO egs_nyaa_candidates(egs_id,name,nyaa_title,infohash_hex,score,selected) VALUES (1,'作品名','Old selected [English]',?,30,1)", ('b' * 40,))
+                conn.execute("INSERT INTO egs_nyaa_search_log(egs_id,name,result_count,best_score,review_status) VALUES (1,'作品名',2,30,'pending')")
+                conn.commit()
+
+                magnet.ensure_egs_magnet_schema(conn)
+
+                rows = conn.execute('SELECT infohash_hex FROM egs_nyaa_candidates ORDER BY infohash_hex').fetchall()
+                self.assertEqual([row['infohash_hex'] for row in rows], ['b' * 40])
+                log = conn.execute('SELECT result_count,best_score,review_status FROM egs_nyaa_search_log').fetchone()
+                self.assertEqual((log['result_count'], log['best_score'], log['review_status']), (1, 30.0, 'pending'))
             finally: conn.close()
 
     def test_stop_interrupts_retry_wait(self):

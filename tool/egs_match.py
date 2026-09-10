@@ -62,6 +62,18 @@ def is_abnormally_short_name(name):
     return 0 < len(signal) <= SHORT_NAME_MAX
 
 
+def contains_english_marker(text):
+    """English releases are excluded unless the EGS title asks for one."""
+    value = str(text or "")
+    return "english" in value.lower() or "英語" in value
+
+
+def allows_english_candidate(game_name, candidate_title):
+    """Reject English-tagged candidates unless English is part of the game name."""
+    return (not contains_english_marker(candidate_title)
+            or contains_english_marker(game_name))
+
+
 def extract_infohash(magnet):
     if not magnet:
         return None

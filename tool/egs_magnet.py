@@ -32,6 +32,7 @@ from tool.egs_core import open_egs_db, refresh_magnet_duplicates
 from tool.egs_match import (
     MAX_SCORE,
     THRESHOLD,
+    allows_english_candidate,
     extract_infohash,
     is_abnormally_short_name,
     select_best,
@@ -224,6 +225,60 @@ def ensure_egs_magnet_schema(conn: sqlite3.Connection) -> None:
                  WHERE egs_id=?
                 """,
                 ((egs_id,) for egs_id in affected_egs_ids),
+            )
+        conn.execute(
+            """
+            UPDATE egs_nyaa_search_log
+               SET result_count=0, best_score=NULL, review_status='none',
+                   reviewed_at=COALESCE(reviewed_at, tried_at)
+             WHERE review_status='pending'
+               AND NOT EXISTS (
+                   SELECT 1 FROM egs_nyaa_candidates c
+                    WHERE c.egs_id=egs_nyaa_search_log.egs_id
+               )
+            """
+        )
+    except sqlite3.OperationalError:
+        pass
+    # English 版候选与分数无关，默认不参与匹配和审核；只有 EGS 游戏名明确
+    # 包含 English/英語 时例外。已选中或仍被游戏引用的旧记录留待单独审计。
+    try:
+        english_rows = conn.execute(
+            """
+            SELECT c.id, c.egs_id, c.nyaa_title, c.infohash_hex, c.selected,
+                   g.name, g.infohash_hex AS game_infohash
+              FROM egs_nyaa_candidates c
+              JOIN egs_games g ON g.egs_id = c.egs_id
+             WHERE lower(COALESCE(c.nyaa_title, '')) LIKE '%english%'
+            """
+        ).fetchall()
+        remove_english = [
+            row for row in english_rows
+            if not allows_english_candidate(row["name"], row["nyaa_title"])
+            and not bool(row["selected"])
+            and str(row["infohash_hex"] or "").lower()
+                != str(row["game_infohash"] or "").lower()
+        ]
+        if remove_english:
+            conn.executemany(
+                "DELETE FROM egs_nyaa_candidates WHERE id=?",
+                ((row["id"],) for row in remove_english),
+            )
+            affected = sorted({row["egs_id"] for row in remove_english})
+            conn.executemany(
+                """
+                UPDATE egs_nyaa_search_log
+                   SET result_count=(
+                           SELECT COUNT(*) FROM egs_nyaa_candidates c
+                            WHERE c.egs_id=egs_nyaa_search_log.egs_id
+                       ),
+                       best_score=(
+                           SELECT MAX(c.score) FROM egs_nyaa_candidates c
+                            WHERE c.egs_id=egs_nyaa_search_log.egs_id
+                       )
+                 WHERE egs_id=?
+                """,
+                ((egs_id,) for egs_id in affected),
             )
         conn.execute(
             """
@@ -486,6 +541,8 @@ def search_candidates(session: requests.Session, name: str, company: str,
         # Do not cache incomplete searches as no-result/low-score outcomes.
         items = _search_once(session, query, logger)
         for item in items:
+            if not allows_english_candidate(name, item.get("nyaa_title")):
+                continue
             merged.setdefault(item["infohash_hex"], item)
         candidates = list(merged.values())[:MAX_PER_QUERY]
         if game and candidates:
@@ -515,6 +572,13 @@ def _save_candidates(conn: sqlite3.Connection, egs_id: int, date: str, name: str
     """候选落库，带评分与选中标记。"""
     now_str = time.strftime("%Y-%m-%d %H:%M:%S")
     for c in cands:
+        if not allows_english_candidate(name, c.get("nyaa_title")):
+            if c.get("infohash_hex"):
+                conn.execute(
+                    "DELETE FROM egs_nyaa_candidates WHERE egs_id=? AND infohash_hex=? AND COALESCE(selected,0)=0",
+                    (egs_id, c.get("infohash_hex")),
+                )
+            continue
         if float(c.get("score") or 0) <= 0 and not is_abnormally_short_name(name):
             if c.get("infohash_hex"):
                 conn.execute(
@@ -576,6 +640,9 @@ def process_game(conn: sqlite3.Connection, session: requests.Session, row,
     game = {"name": name, "company": company or "", "date": date,
             "release_date": release_ts}
     cands = search_candidates(session, name, company or "", logger, game=game)
+    # Defensive filtering for injected/custom search providers as well as the
+    # normal search_candidates path.
+    cands = [c for c in cands if allows_english_candidate(name, c.get("nyaa_title"))]
     best, best_score, best_detail = select_best(game, cands, THRESHOLD)
     best_key = best.get("infohash_hex") if best else None
     _save_candidates(conn, egs_id, date, name, cands, best_key)

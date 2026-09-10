@@ -77,6 +77,17 @@ class TorrentNameMatchTests(unittest.TestCase):
 
 
 class ShortNameCompanyTests(unittest.TestCase):
+    def test_english_candidate_requires_marker_in_game_name(self):
+        from tool.egs_match import allows_english_candidate
+
+        self.assertFalse(allows_english_candidate(
+            "作品名", "Translated title [English Patched]"))
+        self.assertTrue(allows_english_candidate(
+            "作品名 English版", "Translated title [English]"))
+        self.assertTrue(allows_english_candidate(
+            "作品名 英語版", "Translated title [English]"))
+        self.assertTrue(allows_english_candidate("作品名", "作品名 [Japanese]"))
+
     def test_short_name_length_ignores_punctuation(self):
         from tool.egs_match import is_abnormally_short_name
 
