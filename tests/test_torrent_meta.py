@@ -77,6 +77,13 @@ class TorrentNameMatchTests(unittest.TestCase):
 
 
 class ShortNameCompanyTests(unittest.TestCase):
+    def test_short_name_length_ignores_punctuation(self):
+        from tool.egs_match import is_abnormally_short_name
+
+        self.assertTrue(is_abnormally_short_name("Re:BF"))
+        self.assertTrue(is_abnormally_short_name("D.C.5"))
+        self.assertFalse(is_abnormally_short_name("悪魔の少女"))
+
     def test_short_name_requires_company(self):
         from tool.egs_match import THRESHOLD, score_candidate
 

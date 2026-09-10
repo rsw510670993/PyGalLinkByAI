@@ -29,7 +29,13 @@ from bs4 import BeautifulSoup
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
 from tool.egs_core import open_egs_db, refresh_magnet_duplicates
-from tool.egs_match import MAX_SCORE, THRESHOLD, extract_infohash, select_best
+from tool.egs_match import (
+    MAX_SCORE,
+    THRESHOLD,
+    extract_infohash,
+    is_abnormally_short_name,
+    select_best,
+)
 from tool.runtime import read_config
 
 SUKEBEI_URL = "https://sukebei.nyaa.si/"
@@ -184,6 +190,55 @@ def ensure_egs_magnet_schema(conn: sqlite3.Connection) -> None:
          )
         """
     )
+    # 零分通常只是宽松搜索带回的噪声，不进入审核档案。极短游戏名缺少足够的
+    # 字符信号，仍保留零分候选供人工辨认。
+    try:
+        zero_rows = conn.execute(
+            """
+            SELECT c.id, c.egs_id, g.name
+              FROM egs_nyaa_candidates c
+              JOIN egs_games g ON g.egs_id = c.egs_id
+             WHERE COALESCE(c.score, 0) = 0
+            """
+        ).fetchall()
+        remove_ids = [row["id"] for row in zero_rows
+                      if not is_abnormally_short_name(row["name"])]
+        affected_egs_ids = sorted({row["egs_id"] for row in zero_rows
+                                   if not is_abnormally_short_name(row["name"])})
+        if remove_ids:
+            conn.executemany(
+                "DELETE FROM egs_nyaa_candidates WHERE id=?",
+                ((candidate_id,) for candidate_id in remove_ids),
+            )
+            conn.executemany(
+                """
+                UPDATE egs_nyaa_search_log
+                   SET result_count=(
+                           SELECT COUNT(*) FROM egs_nyaa_candidates c
+                            WHERE c.egs_id=egs_nyaa_search_log.egs_id
+                       ),
+                       best_score=(
+                           SELECT MAX(c.score) FROM egs_nyaa_candidates c
+                            WHERE c.egs_id=egs_nyaa_search_log.egs_id
+                       )
+                 WHERE egs_id=?
+                """,
+                ((egs_id,) for egs_id in affected_egs_ids),
+            )
+        conn.execute(
+            """
+            UPDATE egs_nyaa_search_log
+               SET result_count=0, best_score=NULL, review_status='none',
+                   reviewed_at=COALESCE(reviewed_at, tried_at)
+             WHERE review_status='pending'
+               AND NOT EXISTS (
+                   SELECT 1 FROM egs_nyaa_candidates c
+                    WHERE c.egs_id=egs_nyaa_search_log.egs_id
+               )
+            """
+        )
+    except sqlite3.OperationalError:
+        pass
     # 审核采用后同样只保留被采用的候选。
     conn.execute(
         """
@@ -460,6 +515,13 @@ def _save_candidates(conn: sqlite3.Connection, egs_id: int, date: str, name: str
     """候选落库，带评分与选中标记。"""
     now_str = time.strftime("%Y-%m-%d %H:%M:%S")
     for c in cands:
+        if float(c.get("score") or 0) <= 0 and not is_abnormally_short_name(name):
+            if c.get("infohash_hex"):
+                conn.execute(
+                    "DELETE FROM egs_nyaa_candidates WHERE egs_id=? AND infohash_hex=?",
+                    (egs_id, c.get("infohash_hex")),
+                )
+            continue
         conn.execute(
             """
             INSERT INTO egs_nyaa_candidates
@@ -517,6 +579,10 @@ def process_game(conn: sqlite3.Connection, session: requests.Session, row,
     best, best_score, best_detail = select_best(game, cands, THRESHOLD)
     best_key = best.get("infohash_hex") if best else None
     _save_candidates(conn, egs_id, date, name, cands, best_key)
+    # select_best also annotates every candidate with its score. Do not keep
+    # zero-score noise unless the game title itself is exceptionally short.
+    if not is_abnormally_short_name(name):
+        cands = [c for c in cands if float(c.get("score") or 0) > 0]
 
     result = {
         "egs_id": egs_id,

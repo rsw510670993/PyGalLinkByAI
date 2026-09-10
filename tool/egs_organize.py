@@ -15,6 +15,7 @@ from .p115_client import (
     search_files,
     get_item_name,
     rename_item,
+    delete_item,
     list_dir_children_names,
     parent_crumbs_path,
     _normalize_for_comparison,
@@ -305,7 +306,10 @@ def move_item(file_id, to_cid):
 
 
 def list_dir_children(cid, max_pages=30):
-    """列出目录子项完整信息 [{n, cid, pid, fc, pc}]（fs_files直读，不走搜索索引）。失败返回None"""
+    """列出目录子项，统一令 cid 表示可操作的条目 ID。
+
+    文件结果使用 fid 标识文件，cid 表示父目录；目录结果才使用 cid 标识自身。
+    """
     client = _load_client()
     if client is None:
         return None
@@ -321,8 +325,16 @@ def list_dir_children(cid, max_pages=30):
             data = resp.get("data") or []
             for it in data:
                 if isinstance(it, dict) and it.get("n"):
-                    items.append({"n": it["n"], "cid": it.get("cid"), "pid": it.get("pid"),
-                                  "fc": it.get("fc"), "pc": it.get("pc")})
+                    fid = it.get("fid")
+                    is_dir = not fid and str(it.get("fc", "")) != "1"
+                    item_id = it.get("cid") if is_dir else fid
+                    parent_id = it.get("pid") if is_dir else (it.get("pid") or it.get("cid") or cid)
+                    items.append({
+                        "n": it["n"], "cid": str(item_id) if item_id else None,
+                        "pid": str(parent_id) if parent_id not in (None, "") else None,
+                        "fc": 0 if is_dir else 1, "pc": it.get("pc"),
+                        "fid": str(fid) if fid else None, "is_dir": is_dir,
+                    })
             if len(data) < 200:
                 break
             offset += len(data)
@@ -488,21 +500,10 @@ def magnet_in_offline_tasks(magnet, infohash_hex=None):
 def _item_is_single_file(cid, name, fc=None):
     """判断115条目是否是文件。
 
-    115的 fc 在目录/文件上都可能为0，不能单独依赖；这里用扩展名 + 目录列表校验。
+    本函数只接收标准化后的条目元数据。文件必须明确为 fc=1；目录即使名称
+    以 .zip/.rar 结尾也不能按文件处理。
     """
-    name = name or ""
-    ext = os.path.splitext(name)[1].lower()
-    if ext in {".zip", ".rar", ".7z", ".001", ".iso", ".exe", ".mp4", ".mkv"}:
-        children = list_dir_children(cid)
-        if children:
-            # 文件会把自己作为一个子项返回；目录则返回真实内容。
-            return len(children) == 1 and str(children[0].get("cid")) == str(cid)
-        return True
-    children = list_dir_children(cid)
-    if children:
-        return (len(children) == 1 and str(children[0].get("cid")) == str(cid)
-                and str(children[0].get("fc")) == "1")
-    return str(fc or "") not in ("0",)
+    return str(fc or "") == "1"
 
 
 def locate_offline_task_product(magnet, infohash_hex=None):
@@ -535,7 +536,7 @@ def locate_offline_task_product(magnet, infohash_hex=None):
         "pid": pid,
         "name": name,
         "parent_path": parent_crumbs_path(pid) if pid else None,
-        "is_dir": not _item_is_single_file(cid, name, info.get("fc")),
+        "is_dir": bool(info.get("is_dir", str(info.get("fc", "")) != "1")),
         "pick_code": info.get("pc") or task.get("pick_code"),
         "located_by": "offline_task",
         "offline_task": task,
@@ -603,7 +604,10 @@ def locate_by_search(dn, name, torrent_name=None):
             if not isinstance(it, dict):
                 continue
             fname = it.get("n") or ""
-            if not fname or it.get("cid") in seen_ids:
+            fid = it.get("fid")
+            is_dir = not fid and str(it.get("fc", "")) != "1"
+            item_id = it.get("cid") if is_dir else fid
+            if not fname or not item_id or str(item_id) in seen_ids:
                 continue
             norm_fname = _normalize_for_comparison(fname)
             torrent_match = tn_match(fname)
@@ -614,8 +618,7 @@ def locate_by_search(dn, name, torrent_name=None):
                     continue
             elif not (_names_match(norm_dn, norm_fname) or egs_match):
                 continue
-            seen_ids.add(it.get("cid"))
-            is_dir = str(it.get("fc", "")) == "0"
+            seen_ids.add(str(item_id))
             score = (2 if is_dir else 0) + (1 if norm and norm in norm_fname else 0) + (2 if torrent_match else 0)
             if best is None or score > best[0]:
                 best = (score, it)
@@ -632,13 +635,16 @@ def locate_by_search(dn, name, torrent_name=None):
     if best is None:
         return None
     it = best[1]
-    pid = it.get("pid")
+    fid = it.get("fid")
+    is_dir = not fid and str(it.get("fc", "")) != "1"
+    item_id = it.get("cid") if is_dir else fid
+    pid = it.get("pid") if is_dir else (it.get("pid") or it.get("cid"))
     return {
-        "cid": it.get("cid"),
+        "cid": str(item_id),
         "pid": pid,
         "name": it.get("n"),
         "parent_path": parent_crumbs_path(pid) if pid else None,
-        "is_dir": str(it.get("fc", "")) == "0",
+        "is_dir": is_dir,
         "ambiguous": dir_hits > 1,
         "pick_code": it.get("pc"),
     }
@@ -681,7 +687,7 @@ def _wrap_file_torrent(conn, loc, dn, target, year_dir_path, dry_run, year_dirs,
     matched = []
     norm_dn = _normalize_for_comparison(dn)
     for it in (siblings or []):
-        if str(it.get("fc", "1")) == "0":
+        if it.get("is_dir", str(it.get("fc", "1")) == "0"):
             continue  # 只要文件
         if _names_match(norm_dn, _normalize_for_comparison(it.get("n") or "")):
             matched.append(it)
@@ -756,6 +762,85 @@ def _wrap_file_torrent(conn, loc, dn, target, year_dir_path, dry_run, year_dirs,
     if row and row[0] == 0:
         set_downloaded(conn, date, name, str(new_cid))
         result["actions"].append("set_dl")
+    return result
+
+
+def _repair_double_wrapped_file(conn, rec, date, name, result, dry_run):
+    """展平旧版误生成的 ``规范目录/同名目录/文件`` 结构。
+
+    只处理数据库明确标为 wrapped_file、外层只有一个目录、内层只有普通文件
+    的情况。wrapped_file 是旧代码已创建外层并移动条目的操作凭据；目录结构
+    不满足该特征时保持不动。
+    """
+    if not rec or rec.get("status") != "wrapped_file" or not rec.get("cid"):
+        return None
+    outer_cid = str(rec["cid"])
+    outer_children = list_dir_children(outer_cid)
+    if outer_children is None:
+        result["status"] = "error"
+        result["message"] = "无法读取旧版单文件外层目录，未执行修复"
+        return result
+    if len(outer_children) != 1 or not outer_children[0].get("is_dir"):
+        return None
+    inner = outer_children[0]
+    inner_name = inner.get("n") or ""
+    inner_cid = str(inner.get("cid") or "")
+    if not inner_cid:
+        return None
+    payload = list_dir_children(inner_cid)
+    if payload is None:
+        result["status"] = "error"
+        result["message"] = "无法读取旧版单文件内层目录，未执行修复"
+        return result
+    if not payload or any(it.get("is_dir") for it in payload):
+        return None
+
+    result["nested_folder"] = {
+        "cid": inner_cid,
+        "name": inner_name,
+        "files": payload,
+    }
+    if dry_run:
+        result["status"] = "would_repair_double_wrap"
+        result["message"] = f"预览: 将移出{len(payload)}个文件并移除多余内层目录"
+        return result
+
+    record_operation(conn, date, name, result)
+    moved = 0
+    for item in payload:
+        fid = str(item.get("cid") or "")
+        if not fid:
+            result["status"] = "error"
+            result["message"] = "内层文件缺少 fid，已停止修复"
+            return result
+        mr = move_item(fid, outer_cid)
+        if not mr.get("success"):
+            result["status"] = "error"
+            result["message"] = f"展平文件失败({item.get('n', '')[:30]}): {mr.get('message')}"
+            return result
+        moved += 1
+        time.sleep(0.3)
+
+    remaining = list_dir_children(inner_cid)
+    if remaining is None or remaining:
+        result["status"] = "error"
+        result["message"] = "文件移出后内层目录非空，已保留目录供检查"
+        return result
+    deleted = delete_item(inner_cid)
+    if not deleted.get("success"):
+        result["status"] = "error"
+        result["message"] = "多余内层目录移入回收站失败: " + str(deleted.get("message", ""))
+        return result
+
+    result["status"] = "repaired_double_wrap"
+    result["actions"] = ["flatten_double_wrap", "trash_empty_inner"]
+    result["message"] = f"已展平{moved}个文件，多余空目录已移入回收站"
+    save_folder_record(
+        conn, date, name, cid=outer_cid, pid=rec.get("pid"),
+        folder_name=rec.get("folder_name"), folder_path=rec.get("folder_path"),
+        target_name=rec.get("target_name"), date_code=rec.get("date_code"),
+        company=rec.get("company"), status="repaired_double_wrap",
+    )
     return result
 
 
@@ -1025,6 +1110,13 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
         result["old_name"] = old_name
         result["old_path"] = (parent_path.rstrip("/") + "/" + old_name) if parent_path else old_name
         result["located_by"] = located_by
+
+        # 修复旧版把 115 自动生成的单文件目录再次包裹所形成的双层结构。
+        repaired = _repair_double_wrapped_file(
+            conn, rec, date, name, result, dry_run,
+        )
+        if repaired is not None:
+            return repaired
 
         # ③.5 共享cid守卫：忽略已排除记录；明确由其他有效记录占用时，
         #     当前游戏持久归类为“不应提交/整理”，避免重复生成人工待办或改名互踢。
@@ -1340,7 +1432,7 @@ CREATE TABLE IF NOT EXISTS egs_organize_issues (
 # 执行模式下整理成功 → 自动关闭该游戏未解决的待办
 ORGANIZE_RESOLVED_STATUSES = {
     'already_ok', 'renamed', 'moved', 'renamed_moved',
-    'found_set_downloaded', 'wrapped_file',
+    'found_set_downloaded', 'wrapped_file', 'repaired_double_wrap',
 }
 # 需要用户关注的跳过类状态（会记录为待办）
 ORGANIZE_ATTENTION_STATUSES = {'in_offline', 'cross_year_confirm', 'month_shift_confirm'}

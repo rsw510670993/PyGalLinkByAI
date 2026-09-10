@@ -203,6 +203,62 @@ class MagnetSpeedTests(unittest.TestCase):
                 self.assertEqual(len(magnet.pending_rows(conn,2026,1)),1)
             finally:conn.close()
 
+    def test_zero_score_candidate_is_not_archived_for_ordinary_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = egs_core.open_egs_db(str(Path(tmp) / 'egs.db'))
+            try:
+                egs_core.ensure_egs_schema(conn); magnet.ensure_egs_magnet_schema(conn)
+                conn.execute("INSERT INTO egs_games(egs_id,model,egs_date,egs_name,egs_company,date,name,company,release_ts) VALUES (1,'PC','2026-01-01','Ordinary Game','Studio','2026-01','Ordinary Game','Studio','2026-01-01')")
+                conn.execute("INSERT INTO egs_nyaa_candidates(egs_id,name,nyaa_title,infohash_hex,score) VALUES (1,'Ordinary Game','Old candidate',?,12)", (HASH,))
+                conn.commit()
+                candidate = dict(nyaa_title='Completely unrelated torrent', nyaa_date='2020-01-01 00:00', magnet=LINK, infohash_hex=HASH)
+                with patch.object(magnet, 'search_candidates', return_value=[candidate]):
+                    status, result = magnet.process_game(conn, requests.Session(), conn.execute('SELECT * FROM egs_games').fetchone(), LOG)
+                self.assertEqual(status, 'no_result')
+                self.assertEqual(result['candidates'], 0)
+                self.assertEqual(conn.execute('SELECT count(*) FROM egs_nyaa_candidates').fetchone()[0], 0)
+                log = conn.execute('SELECT result_count,review_status FROM egs_nyaa_search_log').fetchone()
+                self.assertEqual((log['result_count'], log['review_status']), (0, 'none'))
+            finally: conn.close()
+
+    def test_zero_score_candidate_is_archived_for_short_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = egs_core.open_egs_db(str(Path(tmp) / 'egs.db'))
+            try:
+                egs_core.ensure_egs_schema(conn); magnet.ensure_egs_magnet_schema(conn)
+                conn.execute("INSERT INTO egs_games(egs_id,model,egs_date,egs_name,egs_company,date,name,company,release_ts) VALUES (1,'PC','2026-01-01','Re:BF','Studio','2026-01','Re:BF','Studio','2026-01-01')")
+                conn.commit()
+                candidate = dict(nyaa_title='Completely unrelated torrent', nyaa_date='2020-01-01 00:00', magnet=LINK, infohash_hex=HASH)
+                with patch.object(magnet, 'search_candidates', return_value=[candidate]):
+                    status, result = magnet.process_game(conn, requests.Session(), conn.execute('SELECT * FROM egs_games').fetchone(), LOG)
+                self.assertEqual(status, 'low_score')
+                self.assertEqual(result['candidates'], 1)
+                self.assertEqual(conn.execute('SELECT count(*) FROM egs_nyaa_candidates').fetchone()[0], 1)
+                log = conn.execute('SELECT result_count,review_status FROM egs_nyaa_search_log').fetchone()
+                self.assertEqual((log['result_count'], log['review_status']), (1, 'pending'))
+            finally: conn.close()
+
+    def test_schema_prunes_historical_zero_scores_except_short_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = egs_core.open_egs_db(str(Path(tmp) / 'egs.db'))
+            try:
+                egs_core.ensure_egs_schema(conn); magnet.ensure_egs_magnet_schema(conn)
+                for egs_id, name in ((1, 'Ordinary Game'), (2, 'Re:BF')):
+                    conn.execute("INSERT INTO egs_games(egs_id,model,egs_date,egs_name,egs_company,date,name,company,release_ts) VALUES (?,'PC','2026-01-01',?,'Studio','2026-01',?,'Studio','2026-01-01')", (egs_id, name, name))
+                    conn.execute("INSERT INTO egs_nyaa_candidates(egs_id,name,nyaa_title,infohash_hex,score) VALUES (?,?,?,?,0)", (egs_id, name, 'Unrelated', str(egs_id) * 40))
+                    conn.execute("INSERT INTO egs_nyaa_search_log(egs_id,name,result_count,best_score,review_status) VALUES (?,?,1,0,'pending')", (egs_id, name))
+                conn.commit()
+
+                magnet.ensure_egs_magnet_schema(conn)
+
+                self.assertEqual(conn.execute('SELECT count(*) FROM egs_nyaa_candidates WHERE egs_id=1').fetchone()[0], 0)
+                self.assertEqual(conn.execute('SELECT count(*) FROM egs_nyaa_candidates WHERE egs_id=2').fetchone()[0], 1)
+                ordinary = conn.execute('SELECT result_count,best_score,review_status FROM egs_nyaa_search_log WHERE egs_id=1').fetchone()
+                short = conn.execute('SELECT result_count,best_score,review_status FROM egs_nyaa_search_log WHERE egs_id=2').fetchone()
+                self.assertEqual((ordinary['result_count'], ordinary['best_score'], ordinary['review_status']), (0, None, 'none'))
+                self.assertEqual((short['result_count'], short['best_score'], short['review_status']), (1, 0.0, 'pending'))
+            finally: conn.close()
+
     def test_stop_interrupts_retry_wait(self):
         clock=Clock();session=requests.Session()
         session._egs_pacer=magnet.RequestPacer(lambda:clock.now >= .4)

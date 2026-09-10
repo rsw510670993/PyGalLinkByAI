@@ -959,7 +959,11 @@ def get_item_name(file_id):
 
 
 def get_item_info(file_id):
-    """按file_id取 {n, cid, pid, fc, pc}（fs_file；目录/文件通用）。失败返回None"""
+    """按file_id取标准化条目信息（fs_file；目录/文件通用）。
+
+    115 对目录返回 ``cid``，对文件返回 ``fid``，而文件记录里的 ``cid``
+    是父目录，不是文件本身。
+    """
     client = load_client()
     if client is None:
         return None
@@ -969,11 +973,23 @@ def get_item_info(file_id):
         data = resp.get("data")
         if isinstance(data, list) and data and isinstance(data[0], dict):
             d0 = data[0]
-            return {"n": d0.get("n") or d0.get("file_name"), "cid": str(d0.get("cid") or file_id),
-                    "pid": d0.get("pid"), "fc": d0.get("fc"), "pc": d0.get("pc")}
-        if isinstance(data, dict) and data.get("cid"):
-            return {"n": data.get("n") or data.get("file_name"), "cid": str(data["cid"]),
-                    "pid": data.get("pid"), "fc": data.get("fc"), "pc": data.get("pc")}
+        elif isinstance(data, dict) and (data.get("cid") or data.get("fid")):
+            d0 = data
+        else:
+            return None
+        fid = d0.get("fid")
+        is_dir = not fid and str(d0.get("fc", "")) != "1"
+        item_id = d0.get("cid") if is_dir else (fid or file_id)
+        pid = d0.get("pid") if is_dir else (d0.get("pid") or d0.get("cid"))
+        return {
+            "n": d0.get("n") or d0.get("file_name"),
+            "cid": str(item_id or file_id),
+            "pid": str(pid) if pid not in (None, "") else None,
+            "fc": 0 if is_dir else 1,
+            "pc": d0.get("pc"),
+            "fid": str(fid) if fid else None,
+            "is_dir": is_dir,
+        }
     except Exception:
         pass
     return None

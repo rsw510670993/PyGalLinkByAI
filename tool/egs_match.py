@@ -52,6 +52,16 @@ def _norm(s):
     return s
 
 
+def is_abnormally_short_name(name):
+    """Whether a title is too short to safely discard zero-score search hits.
+
+    Count semantic characters rather than punctuation so names such as ``Re:BF``
+    receive the same protection as other four-character titles.
+    """
+    signal = re.sub(r"[\W_]+", "", _norm(name or ""), flags=re.UNICODE)
+    return 0 < len(signal) <= SHORT_NAME_MAX
+
+
 def extract_infohash(magnet):
     if not magnet:
         return None
@@ -159,7 +169,7 @@ def score_candidate(game, cand):
         detail["publisher"] = "2D.G.F."
 
     # 极短名称强制公司名一致：无公司佐证的候选不允许自动达到阈值
-    if 0 < len(gnorm) <= SHORT_NAME_MAX and "company" not in detail:
+    if is_abnormally_short_name(game.get("name")) and "company" not in detail:
         total = min(total, THRESHOLD - 1)
         detail["short_name_requires_company"] = True
 

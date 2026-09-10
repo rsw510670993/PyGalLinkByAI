@@ -503,7 +503,7 @@ class PipelineTests(unittest.TestCase):
             result=organize.organize_single('2026-02','Game20',dry_run=True,conn=conn)
         self.assertEqual(result['status'],'in_offline')
 
-    def test_completed_offline_single_file_is_wrapped(self):
+    def test_completed_offline_single_file_auto_folder_is_renamed(self):
         conn=sqlite3.connect(self.db)
         self.addCleanup(conn.close)
         organize.ensure_folder_schema(conn)
@@ -513,19 +513,95 @@ class PipelineTests(unittest.TestCase):
         conn.commit()
         task={'info_hash':'d'*40,'url':magnet,'percentDone':100,'display_status':'finished',
               'file_id':'999','name':'RJ01557970.zip','wp_path_id':'5'}
-        info={'cid':'999','pid':'5','n':'RJ01557970.zip','fc':0,'pc':'pick'}
+        # 115 单文件离线任务返回的是自动创建的 .zip 同名目录；目录内才是 fid 文件。
+        info={'cid':'999','pid':'5','n':'RJ01557970.zip','fc':0,'pc':'pick','is_dir':True}
         with patch.object(organize,'locate_by_search',return_value=None), \
              patch.object(organize,'locate_in_year_dir',return_value=None), \
              patch.object(organize,'resolve_cid',return_value=0), \
              patch.object(organize,'read_config',return_value={}), \
              patch.object(organize,'get_item_info',return_value=info), \
              patch.object(organize,'parent_crumbs_path',return_value='/GAL/GAL-2026'), \
-             patch.object(organize,'list_dir_children',return_value=[{'cid':'999','fc':1,'n':'RJ01557970.zip'}]), \
+             patch('tool.p115_client.offline_list',return_value={'success':True,'tasks':[task]}):
+            result=organize.organize_single('2026-02','Game20',dry_run=True,conn=conn)
+        self.assertEqual(result['status'],'would_rename')
+        self.assertEqual(result['old_name'],'RJ01557970.zip')
+        self.assertEqual(result['target_path'],'/GAL/GAL-2026/[20260210][Brand]Game20')
+
+    def test_completed_offline_direct_file_is_wrapped(self):
+        conn=sqlite3.connect(self.db)
+        self.addCleanup(conn.close)
+        organize.ensure_folder_schema(conn)
+        magnet='magnet:?xt=urn:btih:' + 'd'*40 + '&dn=%5B260210%5D%20%5BBrand%5D%20Game20'
+        conn.execute("""INSERT INTO egs_games(egs_id,model,egs_date,egs_name,egs_company,date,name,company,release_ts,link)
+                        VALUES (20,'PC','2026-02-10','Game20','Brand','2026-02','Game20','Brand','2026-02-10',?)""",(magnet,))
+        conn.commit()
+        task={'info_hash':'d'*40,'url':magnet,'percentDone':100,'display_status':'finished',
+              'file_id':'888','name':'RJ01557970.zip','wp_path_id':'5'}
+        info={'cid':'888','pid':'5','n':'RJ01557970.zip','fc':1,'pc':'pick',
+              'fid':'888','is_dir':False}
+        with patch.object(organize,'resolve_cid',return_value=0), \
+             patch.object(organize,'read_config',return_value={}), \
+             patch.object(organize,'get_item_info',return_value=info), \
+             patch.object(organize,'parent_crumbs_path',return_value='/GAL/GAL-2026'), \
              patch('tool.p115_client.offline_list',return_value={'success':True,'tasks':[task]}):
             result=organize.organize_single('2026-02','Game20',dry_run=True,conn=conn)
         self.assertEqual(result['status'],'would_wrap_file')
-        self.assertEqual(result['old_name'],'RJ01557970.zip')
-        self.assertEqual(result['target_path'],'/GAL/GAL-2026/[20260210][Brand]Game20')
+        self.assertEqual(result['cid'],'888')
+
+    def test_list_dir_children_uses_fid_for_files_and_cid_for_directories(self):
+        class Client:
+            def fs_files(self, _payload):
+                return {'data': [
+                    {'cid':'dir-1','pid':'parent','n':'folder.zip','fc':0,'pc':'dir-pick'},
+                    {'fid':'file-1','cid':'parent','n':'payload.zip','fc':1,'pc':'file-pick'},
+                ]}
+        with patch.object(organize,'_load_client',return_value=Client()), \
+             patch('tool.p115_client._import_p115client',return_value=(None,lambda value:value)):
+            items=organize.list_dir_children('parent')
+        self.assertEqual(items[0]['cid'],'dir-1')
+        self.assertTrue(items[0]['is_dir'])
+        self.assertEqual(items[1]['cid'],'file-1')
+        self.assertEqual(items[1]['pid'],'parent')
+        self.assertFalse(items[1]['is_dir'])
+
+    def test_old_double_wrapped_single_file_is_safely_flattened(self):
+        conn=sqlite3.connect(self.db)
+        self.addCleanup(conn.close)
+        organize.ensure_folder_schema(conn)
+        target='[20260101][Brand]Game1'
+        conn.execute('UPDATE egs_games SET torrent_name=? WHERE egs_id=1',('payload.zip',))
+        organize.save_folder_record(
+            conn,'2026-01','Game1',cid='outer',pid='year',folder_name=target,
+            folder_path='/GAL/GAL-2026/'+target,target_name=target,status='wrapped_file',
+        )
+        outer=[{'cid':'inner','pid':'outer','n':'payload.zip','fc':0,'is_dir':True}]
+        payload=[{'cid':'file-fid','pid':'inner','n':'payload.zip','fc':1,
+                  'fid':'file-fid','is_dir':False}]
+        with patch.object(organize,'get_item_name',return_value=target), \
+             patch.object(organize,'parent_crumbs_path',return_value='/GAL/GAL-2026'), \
+             patch.object(organize,'read_config',return_value={}), \
+             patch.object(organize,'list_dir_children',side_effect=[outer,payload]), \
+             patch.object(organize,'move_item') as move, \
+             patch.object(organize,'delete_item') as delete:
+            preview=organize.organize_single('2026-01','Game1',dry_run=True,conn=conn)
+        self.assertEqual(preview['status'],'would_repair_double_wrap')
+        move.assert_not_called()
+        delete.assert_not_called()
+
+        with patch.object(organize,'get_item_name',return_value=target), \
+             patch.object(organize,'parent_crumbs_path',return_value='/GAL/GAL-2026'), \
+             patch.object(organize,'read_config',return_value={}), \
+             patch.object(organize,'list_dir_children',side_effect=[outer,payload,[]]), \
+             patch.object(organize,'move_item',return_value={'success':True}) as move, \
+             patch.object(organize,'delete_item',return_value={'success':True}) as delete:
+            result=organize.organize_single('2026-01','Game1',dry_run=False,conn=conn)
+        self.assertEqual(result['status'],'repaired_double_wrap')
+        move.assert_called_once_with('file-fid','outer')
+        delete.assert_called_once_with('inner')
+        self.assertEqual(
+            conn.execute("SELECT status FROM egs_115_folders WHERE date='2026-01' AND name='Game1'").fetchone()[0],
+            'repaired_double_wrap',
+        )
 
     def test_scope_validation(self):
         for args in [('other',2026,2026,0),('crawl',2026,2025,0),('check',2026,2026,13)]:
