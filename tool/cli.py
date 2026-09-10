@@ -451,9 +451,27 @@ def cmd_115_check(args):
 
 def cmd_115_submit(args):
     try:
+        from tool.egs_core import open_egs_db
         from tool.p115_client import offline_submit
         magnet = args.magnet
         save_path = args.dir or ""
+        conn = open_egs_db(getattr(args, "db", None))
+        try:
+            row = conn.execute(
+                "SELECT COALESCE(downloaded,0), COALESCE(link,'') FROM egs_games WHERE egs_id=?",
+                (int(args.egs_id),),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            _print({"success": False, "status": "error", "message": "EGS 游戏记录不存在"})
+            return
+        if int(row[0] or 0) == 1:
+            _print({"success": False, "status": "blocked", "message": "该游戏已下载，禁止重复提交115"})
+            return
+        if not magnet or str(row[1] or "") != magnet:
+            _print({"success": False, "status": "blocked", "message": "提交磁链与 EGS 记录不一致"})
+            return
         _print(offline_submit(magnet, save_path))
     except Exception as e:
         _print({"status": "error", "message": f"115模块加载失败: {e}"})
@@ -1427,8 +1445,10 @@ def build_parser():
     p_115_check.set_defaults(func=cmd_115_check)
 
     p_115_submit = _115_sub.add_parser("submit")
+    p_115_submit.add_argument("--egs-id", type=int, required=True, dest="egs_id")
     p_115_submit.add_argument("--magnet", type=str, required=True)
     p_115_submit.add_argument("--dir", type=str, default="")
+    p_115_submit.add_argument("--db", type=str)
     p_115_submit.set_defaults(func=cmd_115_submit)
 
     p_115_check_all = _115_sub.add_parser("check_all")

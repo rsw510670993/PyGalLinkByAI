@@ -347,9 +347,13 @@ if ($action === '115_check') {
 
 if ($action === '115_submit') {
     $body = read_json_body();
+    $egsId = as_int($body['egs_id'] ?? null, null);
+    if (!$egsId) {
+        json_response(['success' => false, 'status' => 'error', 'message' => '缺少 egs_id']);
+    }
     $magnet = $body['magnet'] ?? '';
     $dir = $body['dir'] ?? '';
-    [$code, $data] = run_cli(['115', 'submit', '--magnet', $magnet, '--dir', $dir]);
+    [$code, $data] = run_cli(['115', 'submit', '--egs-id', strval($egsId), '--magnet', $magnet, '--dir', $dir]);
     json_response($data);
 }
 

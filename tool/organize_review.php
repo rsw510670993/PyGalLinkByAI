@@ -182,7 +182,7 @@
     async function load() {
         $('refresh-btn').disabled = true;
         try {
-            const data = await api('organize_issues');
+            const data = await api('organize_issues&all=1');
             if (data.success === false) throw new Error(data.message || '读取失败');
             const counts = data.counts || {};
             $('issue-counts').textContent = `待处理 ${counts.open || 0} · 已处理 ${counts.resolved || 0}`;
