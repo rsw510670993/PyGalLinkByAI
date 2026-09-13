@@ -1,4 +1,4 @@
-"""EGS 115 整理：按磁链 dn 时间戳命名并归入年份目录；EGS 原始日期保留为身份层。"""
+"""EGS 115 整理：按种子 info.name / 磁链 dn 时间戳命名并归入年份目录；EGS 原始日期保留为身份层。"""
 
 import json
 import os
@@ -63,6 +63,7 @@ def ensure_folder_schema(conn):
     ensure_egs_schema(conn)
     conn.execute(FOLDER_SCHEMA_SQL)
     conn.execute(REJECTION_SCHEMA_SQL)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_egs_115_folders_cid ON egs_115_folders(cid)")
     conn.commit()
 
 
@@ -193,28 +194,119 @@ def adopt_downloaded_folder_by_infohash(conn, date, name, link, stored_infohash=
     return match
 
 
+def adopt_downloaded_folder_by_torrent_name(conn, date, name, link, stored_infohash,
+                                             torrent_name, company=None,
+                                             year_dir_cid=None, year_items=None,
+                                             folder_year=None):
+    """Attach an old 115 item only when its name exactly equals torrent info.name.
+
+    This is the historical fallback for offline tasks that have expired from 115's task
+    list.  It deliberately does not normalize, substring-match, or compare game titles.
+    """
+    torrent_name = str(torrent_name or "")
+    wanted = _exact_infohash(link, stored_infohash)
+    year = str(folder_year or date or "")[:4]
+    if not torrent_name or not wanted or not re.fullmatch(r"\d{4}", year):
+        return None
+    conn.execute(FOLDER_SCHEMA_SQL)
+
+    year_path = f"{GAL_ROOT}/GAL-{year}"
+    year_dir_cid = year_dir_cid or resolve_cid(year_path)
+    if not year_dir_cid:
+        return None
+    items = year_items if year_items is not None else list_dir_children(year_dir_cid)
+    if items is None:
+        return None
+    matches = [item for item in items if str(item.get("n") or "") == torrent_name]
+    if len(matches) != 1:
+        return None
+
+    item = matches[0]
+    cid = str(item.get("cid") or "")
+    if not cid:
+        return None
+    owner = conn.execute(
+        """SELECT 1 FROM egs_115_folders
+             WHERE cid=? AND NOT (date=? AND name=?) LIMIT 1""",
+        (cid, date, name),
+    ).fetchone()
+    if owner:
+        return None
+
+    pid = str(item.get("pid") or year_dir_cid)
+    pick_code = item.get("pc") or item.get("pick_code")
+    folder_path = year_path.rstrip("/") + "/" + torrent_name
+    save_folder_record(
+        conn, date, name, cid=cid, pid=pid, pick_code=pick_code,
+        folder_name=torrent_name, folder_path=folder_path, company=company,
+        status="adopted_exact_torrent_name",
+    )
+    conn.execute(
+        """UPDATE egs_games
+              SET downloaded=1, submitted_115=1, submitted_pick_code=?,
+                  infohash_hex=?, download_failed=0, download_failed_at=NULL,
+                  updated_at=?
+            WHERE date=? AND name=?""",
+        (pick_code, wanted, time.strftime("%Y-%m-%d %H:%M:%S"), date, name),
+    )
+    conn.commit()
+    return {
+        "source": "torrent_name", "infohash_hex": wanted,
+        "cid": cid, "pid": pid, "pick_code": pick_code,
+        "name": torrent_name, "folder_path": folder_path,
+        "is_dir": bool(item.get("is_dir", str(item.get("fc", "")) != "1")),
+    }
+
+
 GAL_ROOT = "/GAL"
 
 
-def resolve_dn_timestamp(link, release_ts=None):
-    """优先使用磁链 dn 时间戳；缺失/无效时回退 EGS release_ts。"""
+def _date_codes(value):
+    """Return the set of valid [YYMMDD] dates found in text."""
     from datetime import datetime
-    dn = parse_magnet_simple(link or "").get("dn") or ""
     dates = set()
-    for code in re.findall(r"\[(\d{6})\]", dn):
+    for code in re.findall(r"\[(\d{6})\]", value or ""):
         try:
             dates.add(datetime.strptime(code, "%y%m%d"))
         except ValueError:
             pass
-    if len(dates) == 1:
-        value = dates.pop()
-        return value.strftime("%Y-%m-%d"), value.strftime("%y%m%d")
+    return dates
+
+
+def _format_date(value):
+    return value.strftime("%Y-%m-%d"), value.strftime("%y%m%d")
+
+
+def resolve_dn_timestamp(link, release_ts=None, torrent_name=None):
+    """Resolve display/release date.
+
+    ``torrent info.name`` is the actual 115 directory name and can correct a
+    stale/typo'd magnet ``dn`` (e.g. girlcelly ``[240630]`` for a ``[240927]``
+    archive).  However, update/DLC torrents sometimes carry the base game's
+    date in ``info.name`` while the magnet ``dn`` contains multiple dates
+    (e.g. ``[240804][240628]``).  In that ambiguous case, prefer the EGS
+    ``release_ts`` instead of the base-game date.
+    """
+    from datetime import datetime
+    dn = parse_magnet_simple(link or "").get("dn") or ""
+    dn_dates = _date_codes(dn)
+    torrent_dates = _date_codes(torrent_name)
+
+    # info.name is trusted when both sources are unambiguous (or dn has no date).
+    # A multi-date dn means it is often an update package; don't fall through to
+    # the info.name base-game date in that case.
+    if len(torrent_dates) == 1 and len(dn_dates) <= 1:
+        return _format_date(next(iter(torrent_dates)))
+    if len(dn_dates) == 1:
+        return _format_date(next(iter(dn_dates)))
     if release_ts:
         try:
             value = datetime.strptime(str(release_ts), "%Y-%m-%d")
-            return value.strftime("%Y-%m-%d"), value.strftime("%y%m%d")
+            return _format_date(value)
         except ValueError:
             pass
+    if len(torrent_dates) == 1:
+        return _format_date(next(iter(torrent_dates)))
     return None, None
 
 
@@ -897,7 +989,8 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
       not_downloaded          未下载（无磁链提交记录，正常）
       wrapped_file / would_wrap_file（单文件种子包文件夹）
       conflict / ambiguous / no_dn_date / no_link / error
-      duplicate_magnet / not_submittable（自动排除，不进入人工待办）
+      duplicate_magnet / not_submittable（已明确归类，不进入人工待办）
+      shared_cid             目录映射冲突，保留为人工待办，不改变提交资格
     """
     result = {
         "date": date, "name": name, "status": None,
@@ -914,10 +1007,10 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
 
     try:
         row = conn.execute(
-            "SELECT company,link,infohash_hex,COALESCE(downloaded,0),COALESCE(submitted_115,0),release_ts,"
+            "SELECT egs_id,company,link,infohash_hex,COALESCE(downloaded,0),COALESCE(submitted_115,0),release_ts,"
             " egs_date,actual_release_ts,torrent_name,COALESCE(download_failed,0),"
             " COALESCE(magnet_duplicate,0),duplicate_of_egs_id,"
-            " COALESCE(submission_excluded,0),submission_excluded_reason"
+            " COALESCE(submission_excluded,0),submission_excluded_reason,COALESCE(resource_kind,'')"
             " FROM egs_games WHERE date=? AND name=?",
             (date, name),
         ).fetchone()
@@ -925,9 +1018,11 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
             result["status"] = "error"
             result["message"] = "游戏记录不存在"
             return result
-        (company, link, infohash_hex, downloaded, submitted, release_ts, egs_date, actual_release_ts,
+        (egs_id, company, link, infohash_hex, downloaded, submitted, release_ts, egs_date, actual_release_ts,
          torrent_name, download_failed, magnet_duplicate, duplicate_of_egs_id,
-         submission_excluded, submission_excluded_reason) = row
+         submission_excluded, submission_excluded_reason, resource_kind) = row
+        result["egs_id"] = int(egs_id) if egs_id is not None else None
+        result["resource_kind"] = resource_kind
         if download_failed:
             result["status"] = "not_downloaded"
             result["message"] = "115离线任务下载失败，等待重新寻找磁链"
@@ -945,8 +1040,8 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
             result["status"] = "duplicate_magnet"
             result["duplicate_of_egs_id"] = duplicate_of_egs_id
             result["message"] = (
-                f"与《{owner[0]}》共用磁链，已归类为不应提交/整理"
-                if owner else "共用磁链的重复记录，已归类为不应提交/整理"
+                f"与《{owner[0]}》属于重复磁链，跳过提交/整理"
+                if owner else "重复磁链记录，跳过提交/整理"
             )
             return result
         if torrent_name:
@@ -960,7 +1055,7 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
             result["message"] = "无磁链"
             return result
 
-        dn_date, date_code = resolve_dn_timestamp(link, release_ts)
+        dn_date, date_code = resolve_dn_timestamp(link, release_ts, torrent_name=torrent_name)
         result["dn_date"] = dn_date
         if not dn_date:
             result["status"] = "no_dn_date"
@@ -1118,31 +1213,41 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
         if repaired is not None:
             return repaired
 
-        # ③.5 共享cid守卫：忽略已排除记录；明确由其他有效记录占用时，
-        #     当前游戏持久归类为“不应提交/整理”，避免重复生成人工待办或改名互踢。
+        # ③.5 共享 CID 守卫：只阻止本次整理并生成人工待办。
+        # 目录定位冲突不能证明磁链重复，更不能永久改变提交资格。
+        # 使用 INNER JOIN 排除已不存在 EGS 行的孤儿目录映射；同一 egs_id 的
+        # 新旧目录映射（搬月遗留）不算“被其他游戏记录引用”。
         others = conn.execute(
-            """SELECT f.date,f.name,f.target_name
+            """SELECT g.egs_id,f.date,f.name,f.target_name,g.infohash_hex,
+                      f.folder_name,f.folder_path
                  FROM egs_115_folders f
-                 LEFT JOIN egs_games g ON g.date=f.date AND g.name=f.name
+                 JOIN egs_games g ON g.date=f.date AND g.name=f.name
                 WHERE f.cid=? AND NOT (f.date=? AND f.name=?)
+                  AND g.egs_id!=?
                   AND COALESCE(g.magnet_duplicate,0)=0
                   AND COALESCE(g.submission_excluded,0)=0""",
-            (cid, date, name),
+            (cid, date, name, egs_id),
         ).fetchall()
         if others:
             my_record_holds = (located_by == "db_record" and old_name == target
-                               and not any(o[2] == old_name for o in others))
+                               and not any(o[3] == old_name for o in others))
             if not my_record_holds:
-                result["status"] = "not_submittable"
+                result["status"] = "shared_cid"
                 result["message"] = ("115目录已由其他游戏记录引用(" + "; ".join(
-                    f"{d}/{n[:20]}" for d, n, _t in others) + ")，已归类为不应提交/整理")
-                conn.execute(
-                    """UPDATE egs_games
-                          SET submission_excluded=1,submission_excluded_reason='shared_cid',updated_at=?
-                        WHERE date=? AND name=?""",
-                    (time.strftime("%Y-%m-%d %H:%M:%S"), date, name),
-                )
-                conn.commit()
+                    f"{d}/{n[:20]}(egs_id={eid})" for eid, d, n, _target, _hash, _fname, _fpath in others)
+                    + ")，跳过并等待人工核查")
+                result["shared_with"] = [
+                    {
+                        "egs_id": int(eid),
+                        "date": d,
+                        "name": n,
+                        "target_name": target_name,
+                        "infohash_hex": other_hash,
+                        "folder_name": folder_name,
+                        "folder_path": folder_path,
+                    }
+                    for eid, d, n, target_name, other_hash, folder_name, folder_path in others
+                ]
                 return result
 
         # ④ 动作判定: 改名 + 移动
@@ -1152,7 +1257,8 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
 
         # 搬月护栏：磁链 dn 日期与 EGS 当前展示月份不同，必须人工批准后才改展示月份。
         approved_month = str(actual_release_ts or release_ts or egs_date or "")[:7]
-        if str(dn_date)[:7] != approved_month and not confirmed_month_shift:
+        if (resource_kind != "collection_dlc" and str(dn_date)[:7] != approved_month
+                and not confirmed_month_shift):
             rejected = conn.execute(
                 "SELECT 1 FROM egs_organize_rejections"
                 " WHERE date=? AND name=? AND kind='month_shift' AND value=? LIMIT 1",
@@ -1177,10 +1283,11 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
             return result
 
         # 跨年移动护栏：旧作/复刻目录可能因名称包含而误定位。
-        # 这种移动影响老数据，必须人工确认后才能执行。
+        # 这种移动影响老数据，必须人工确认；已人工标注的合集/DLC除外。
         source_year = _source_year(parent_path, old_name)
         target_year = int(dn_date[:4])
-        if need_move and source_year and source_year != target_year and not confirmed_cross_year:
+        if (resource_kind != "collection_dlc" and need_move and source_year
+                and source_year != target_year and not confirmed_cross_year):
             rejected = conn.execute(
                 "SELECT 1 FROM egs_organize_rejections"
                 " WHERE date=? AND name=? AND kind='cross_year' AND value=? LIMIT 1",
@@ -1231,7 +1338,7 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
                     result["message"] = "文件夹名与位置均已符合规范"
             if not dry_run:
                 record_date, shift_error = date, None
-                if confirmed_month_shift:
+                if confirmed_month_shift and resource_kind != "collection_dlc":
                     record_date, shift_error = _apply_month_shift(conn, date, name, dn_date)
                     if shift_error:
                         result.update(shift_error)
@@ -1329,7 +1436,7 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
         new_path = f"{year_dir_path}/{target}"
 
         record_date, shift_error = date, None
-        if confirmed_month_shift:
+        if confirmed_month_shift and resource_kind != "collection_dlc":
             record_date, shift_error = _apply_month_shift(conn, date, name, dn_date)
             if shift_error:
                 result.update(shift_error)
@@ -1623,7 +1730,8 @@ def list_organize_issues(conn, include_resolved=True, resolved_limit=100):
     """返回待处理与已解决（近 resolved_limit 条）待办，detail 反序列化为对象。"""
     ensure_issue_schema(conn)
 
-    # 共链重复项不是人工整理对象；若主记录的冲突来源也全是重复项，同样关闭旧待办。
+    # 已明确的重复磁链不是人工整理对象。读取列表必须保持只读；shared_cid
+    # 仍是待人工判断的定位冲突，不能在这里转成永久排除。
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     open_rows = conn.execute(
         "SELECT id,egs_id,date,name,status,detail FROM egs_organize_issues WHERE resolved=0"
@@ -1638,20 +1746,16 @@ def list_organize_issues(conn, include_resolved=True, resolved_limit=100):
         if duplicate and duplicate[0]:
             obsolete_ids.append((now, issue_id))
             continue
-        if status == "shared_cid":
-            conn.execute(
-                """UPDATE egs_games
-                      SET submission_excluded=1,submission_excluded_reason='shared_cid',updated_at=?
-                    WHERE egs_id=? OR (egs_id IS NULL AND date=? AND name=?)""",
-                (now, egs_id, date, name),
-            )
-            obsolete_ids.append((now, issue_id))
     if obsolete_ids:
         conn.executemany(
             "UPDATE egs_organize_issues SET resolved=1,resolved_at=? WHERE id=? AND resolved=0",
             obsolete_ids,
         )
         conn.commit()
+
+    has_folder_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='egs_115_folders'"
+    ).fetchone() is not None
 
     def _rows(where, params, limit=None):
         sql = ("SELECT id, egs_id, date, name, status, outcome, message, detail,"
@@ -1669,6 +1773,25 @@ def list_organize_issues(conn, include_resolved=True, resolved_limit=100):
                 item["detail"] = json.loads(item["detail"]) if item["detail"] else {}
             except (TypeError, ValueError):
                 item["detail"] = {}
+            # Backfill old shared_cid details (created before folder_path was
+            # recorded) so the review UI can show exactly which 115 folder
+            # conflicts.  This is a read-only lookup.
+            if has_folder_table and item.get("status") == "shared_cid":
+                shared = item["detail"].get("shared_with")
+                if isinstance(shared, list):
+                    for shared_item in shared:
+                        if not isinstance(shared_item, dict):
+                            continue
+                        if shared_item.get("folder_path") or shared_item.get("folder_name"):
+                            continue
+                        folder = conn.execute(
+                            "SELECT folder_name,folder_path FROM egs_115_folders"
+                            " WHERE date=? AND name=?"
+                            " ORDER BY updated_at DESC LIMIT 1",
+                            (shared_item.get("date"), shared_item.get("name")),
+                        ).fetchone()
+                        if folder:
+                            shared_item["folder_name"], shared_item["folder_path"] = folder[0], folder[1]
             items.append(item)
         return items
 

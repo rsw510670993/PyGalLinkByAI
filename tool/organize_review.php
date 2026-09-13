@@ -84,6 +84,7 @@
     </div>
 </div>
 
+<script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.1/js/bootstrap.bundle.min.js"></script>
 <script>
 (() => {
     const $ = id => document.getElementById(id);
@@ -119,12 +120,32 @@
     function detailHtml(issue) {
         const d = issue.detail || {};
         const lines = [];
-        if (d.old_path && d.target_path) {
-            lines.push(`<div class="path-arrow">${escape(d.old_path)}<br>→ ${escape(d.target_path)}</div>`);
-        } else if (d.target_path) {
+        if (d.old_path) {
+            lines.push(`<div class="path-arrow">当前：${escape(d.old_path)}</div>`);
+        } else if (d.old_name) {
+            lines.push(`<div>当前：${escape(d.old_name)}</div>`);
+        }
+        if (d.target_path && d.target_path !== d.old_path) {
             lines.push(`<div class="path-arrow">目标：${escape(d.target_path)}</div>`);
-        } else if (d.old_path) {
-            lines.push(`<div class="path-arrow">当前位置：${escape(d.old_path)}</div>`);
+        } else if (d.target_name && d.target_name !== d.old_name) {
+            lines.push(`<div>目标：${escape(d.target_name)}</div>`);
+        }
+        const shared = Array.isArray(d.shared_with) ? d.shared_with : [];
+        if (shared.length) {
+            const items = shared.map(s => {
+                const sameEgs = Number(s.egs_id) === Number(issue.egs_id);
+                const path = s.folder_path || s.folder_name || '';
+                return `<div class="mt-1">`
+                    + `<div>${sameEgs
+                        ? '<span class="badge text-bg-secondary me-1">同一 EGS 记录</span>'
+                        : '<span class="badge text-bg-danger me-1">冲突引用</span>'}`
+                    + `${escape(s.date || '')}/${escape(s.name || '')}`
+                    + (s.egs_id ? ` <span class="text-muted">egs_id=${escape(s.egs_id)}</span>` : '')
+                    + `</div>`
+                    + (path ? `<div class="path-arrow text-muted">${escape(path)}</div>` : '')
+                    + `</div>`;
+            }).join('');
+            lines.push(`<div class="mt-1"><span class="fw-semibold text-danger">关联的 115 目录记录：</span>${items}</div>`);
         }
         return lines.join('');
     }
@@ -144,7 +165,7 @@
             const actionBtn = meta.action
                 ? `<button class="btn btn-outline-primary btn-sm issue-retry" data-date="${escape(issue.date)}" data-name="${escape(issue.name)}" data-kind="${escape(issue.status)}">${meta.action}</button>`
                 : '<span class="text-muted small">等待下载完成，稍后重跑整理</span>';
-            const rejectBtn = `<button class="btn btn-outline-danger btn-sm issue-reject" data-id="${issue.id}" data-kind="${escape(issue.status)}">拒绝</button>`;
+            const rejectBtn = `<button class="btn btn-outline-danger btn-sm issue-reject" data-id="${issue.id}" data-kind="${escape(issue.status)}">驳回</button>`;
             return `
             <tr>
                 <td>${issueBadge(issue.status)}${issue.outcome === 'failed' ? '<div class="small text-danger mt-1">失败</div>' : ''}</td>
@@ -201,12 +222,12 @@
         const reject = event.target.closest('.issue-reject');
         if (reject) {
             const persistent = ['month_shift_confirm', 'cross_year_confirm'].includes(reject.dataset.kind);
-            const prompt = persistent ? '确认拒绝该候选？后续整理不会再次提示同一个候选。' : '确认拒绝并关闭这条待办？';
+            const prompt = persistent ? '确认驳回该候选？后续整理不会再次提示同一个候选。' : '确认驳回并关闭这条待办？';
             if (!confirm(prompt)) return;
             reject.disabled = true;
             try {
                 const result = await api('organize_issue_reject', {id: Number(reject.dataset.id)});
-                if (result.success === false) throw new Error(result.message || '拒绝失败');
+                if (result.success === false) throw new Error(result.message || '驳回失败');
                 await load();
             } catch (error) {
                 reject.disabled = false;

@@ -102,11 +102,11 @@ def cmd_calendar(args):
                            AND COALESCE(submitted_115,0)=1
                      THEN 1 ELSE 0 END) as magnet_submitted
         FROM egs_games
-        WHERE CAST(substr(date, 1, 4) AS INTEGER) BETWEEN ? AND ?
+        WHERE date >= ? AND date < ?
         GROUP BY year, month
         ORDER BY year DESC, month DESC
         """,
-        (int(start_year), int(end_year)),
+        (f"{int(start_year):04d}-01", f"{int(end_year) + 1:04d}-01"),
     )
     rows = cursor.fetchall()
     conn.close()
@@ -1030,10 +1030,11 @@ def cmd_egs_status(args):
 
 
 def cmd_egs_games(args):
-    from tool.egs_core import open_egs_db, ensure_review_blacklist_schema
+    from tool.egs_core import ensure_egs_schema, open_egs_db, ensure_review_blacklist_schema
     conn = open_egs_db(args.db)
     try:
         cur = conn.cursor()
+        ensure_egs_schema(conn)
         ensure_review_blacklist_schema(conn)
         cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='egs_games'")
         if cur.fetchone() is None:
@@ -1043,10 +1044,14 @@ def cmd_egs_games(args):
 
         conditions = []
         params = []
-        if args.year is not None:
-            conditions.append("substr(date,1,4) = ?")
-            params.append(f"{int(args.year):04d}")
-        if args.month is not None:
+        if args.year is not None and args.month is not None:
+            conditions.append("date = ?")
+            params.append(f"{int(args.year):04d}-{int(args.month):02d}")
+        elif args.year is not None:
+            year = int(args.year)
+            conditions.append("date >= ? AND date < ?")
+            params.extend([f"{year:04d}-01", f"{year + 1:04d}-01"])
+        elif args.month is not None:
             conditions.append("substr(date,6,2) = ?")
             params.append(f"{int(args.month):02d}")
         if args.brand_kind:
@@ -1114,10 +1119,14 @@ def cmd_egs_games(args):
                    link, nyaa_name, downloaded, submitted_115, submitted_pick_code,
                    download_failed, download_failed_at,
                    COALESCE(magnet_duplicate,0) AS magnet_duplicate, duplicate_of_egs_id,
+                   duplicate_reason,
                    COALESCE(submission_excluded,0) AS submission_excluded,
                    submission_excluded_reason,
+                   COALESCE(resource_kind,'') AS resource_kind,
                    (SELECT owner.name FROM egs_games owner
-                     WHERE owner.egs_id=egs_games.duplicate_of_egs_id) AS duplicate_of_name
+                     WHERE owner.egs_id=egs_games.duplicate_of_egs_id) AS duplicate_of_name,
+                   (SELECT owner.date FROM egs_games owner
+                     WHERE owner.egs_id=egs_games.duplicate_of_egs_id) AS duplicate_of_date
                   {review_select}
               FROM egs_games{where}
              ORDER BY date, release_ts, egs_id
@@ -1163,6 +1172,7 @@ def cmd_egs_update(args):
         new_downloaded=args.new_downloaded,
         new_submitted_115=args.new_submitted_115,
         new_submitted_pick_code=args.new_submitted_pick_code,
+        new_resource_kind=args.new_resource_kind,
         db_path=args.db,
     ))
 
@@ -1338,6 +1348,7 @@ def cmd_egs_review_decide(args):
         candidate_id=args.candidate_id,
         manual_magnet=args.manual_magnet,
         manual_nyaa_name=args.manual_nyaa_name,
+        resource_kind=args.resource_kind,
         note=args.note,
         db_path=args.db,
     ))
@@ -1538,6 +1549,7 @@ def build_parser():
                               choices=[0, 1], dest="new_submitted_115")
     p_egs_update.add_argument("--new-submitted-pick-code", type=str,
                               dest="new_submitted_pick_code")
+    p_egs_update.add_argument("--new-resource-kind", type=str, dest="new_resource_kind")
     p_egs_update.add_argument("--db", type=str)
     p_egs_update.set_defaults(func=cmd_egs_update)
 
@@ -1597,6 +1609,8 @@ def build_parser():
     p_egs_review_decide.add_argument("--candidate-id", type=int, dest="candidate_id")
     p_egs_review_decide.add_argument("--manual-magnet", type=str, dest="manual_magnet")
     p_egs_review_decide.add_argument("--manual-nyaa-name", type=str, dest="manual_nyaa_name")
+    p_egs_review_decide.add_argument("--resource-kind", type=str, dest="resource_kind",
+                                     choices=["", "collection_dlc"])
     p_egs_review_decide.add_argument("--note", type=str)
     p_egs_review_decide.add_argument("--db", type=str)
     p_egs_review_decide.set_defaults(func=cmd_egs_review_decide)

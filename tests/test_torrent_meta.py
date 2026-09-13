@@ -117,6 +117,30 @@ class ShortNameCompanyTests(unittest.TestCase):
         s, d = score_candidate(game, cand)
         self.assertNotIn("short_name_requires_company", d)
 
+    def test_trailing_number_mismatch_blocks_wrong_sequel(self):
+        from tool.egs_match import THRESHOLD, score_candidate
+
+        game = {
+            "name": "光翼戦姫エクスティアコンチェルト4",
+            "company": "Lusterise",
+            "date": "2024-08",
+            "release_date": "2024-08-30",
+        }
+        wrong = {
+            "nyaa_title": "│2D.G.F.│[240726][next_0414][Lusterise] 光翼戦姫エクスティアコンチェルト3 DL版 + FANZA特典 [1319MB]",
+            "nyaa_date": "2024-08-07 02:52",
+        }
+        right = {
+            "nyaa_title": "[240830] [Lusterise] 光翼戦姫エクスティアコンチェルト4 + Voice Drama",
+            "nyaa_date": "2024-08-30",
+        }
+        s_wrong, d_wrong = score_candidate(game, wrong)
+        self.assertLess(s_wrong, THRESHOLD)
+        self.assertTrue(d_wrong.get("edition_mismatch"))
+        s_right, d_right = score_candidate(game, right)
+        self.assertGreaterEqual(s_right, THRESHOLD)
+        self.assertNotIn("edition_mismatch", d_right)
+
 
 class DownloadFailedDetectionTests(unittest.TestCase):
     def test_offline_list_reads_every_page(self):

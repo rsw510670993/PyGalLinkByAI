@@ -187,6 +187,12 @@
                     <label class="form-label mb-0 small" for="review-manual-magnet">手动磁链（候选都不合适时使用）</label>
                     <textarea id="review-manual-magnet" class="form-control" rows="2" placeholder="magnet:?xt=urn:btih:..."></textarea>
                 </div>
+                <div class="form-check mb-2">
+                    <input id="review-resource-collection" class="form-check-input" type="checkbox">
+                    <label class="form-check-label small" for="review-resource-collection">
+                        这是后发合集/DLC替代资源（保留原作年月，按资源日期整理）
+                    </label>
+                </div>
                 <div class="mb-2">
                     <label class="form-label mb-0 small" for="review-manual-nyaa-name">手动磁链显示名（可选）</label>
                     <input id="review-manual-nyaa-name" class="form-control">
@@ -269,6 +275,12 @@
                     <label class="form-label mb-0 small">磁力链接</label>
                     <textarea id="edit-link" class="form-control" rows="2"></textarea>
                 </div>
+                <div class="form-check">
+                    <input id="edit-resource-collection" class="form-check-input" type="checkbox">
+                    <label class="form-check-label small" for="edit-resource-collection">
+                        后发合集/DLC替代资源
+                    </label>
+                </div>
             </div>
             <div class="modal-footer d-flex justify-content-between">
                 <button type="button" class="btn btn-outline-danger btn-sm" id="edit-delete-btn">删除记录</button>
@@ -332,7 +344,9 @@
                 const downloadFailed = parseInt(row.download_failed || 0, 10) === 1;
                 const duplicate = parseInt(row.magnet_duplicate || 0, 10) === 1;
                 const duplicateOf = row.duplicate_of_name || '';
+                const duplicateOfDate = row.duplicate_of_date || '';
                 const submissionExcluded = parseInt(row.submission_excluded || 0, 10) === 1;
+                const collectionDlc = row.resource_kind === 'collection_dlc';
                 const notSubmittable = duplicate || submissionExcluded;
                 const candidateCount = parseInt(row.candidate_count || 0, 10);
                 const reviewStatus = row.review_status || '';
@@ -343,14 +357,23 @@
                     : (!magnet || downloadFailed ? '' : downloaded ? 'row-downloaded' : 'row-magnet');
                 const canCheckMagnet = !!magnet && !notSubmittable;
                 const canSubmit115 = canCheckMagnet && !downloaded;
+                const duplicateParams = new URLSearchParams();
+                if (duplicateOfDate) {
+                    duplicateParams.set('year', duplicateOfDate.slice(0, 4));
+                    duplicateParams.set('month', String(parseInt(duplicateOfDate.slice(5, 7), 10)));
+                }
+                if (duplicateOf) duplicateParams.set('q', duplicateOf);
+                const duplicateHref = `egs.php?${duplicateParams.toString()}`;
                 const duplicateBadge = duplicate
-                    ? `<span class="badge text-bg-secondary ms-1" title="继续参与搜链，找到不同磁链后自动恢复">重复磁链${duplicateOf ? `：${esc(duplicateOf)}` : ''}</span>`
+                    ? `<a class="duplicate-link badge text-bg-secondary ms-1 text-decoration-none" href="${esc(duplicateHref)}" title="打开共链主记录">重复磁链${duplicateOf ? `：${esc(duplicateOf)}` : ''}</a>`
                     : submissionExcluded
                         ? '<span class="badge text-bg-secondary ms-1">不应提交</span>'
                         : '';
                 const reviewBadge = pendingReview
                     ? '<span class="badge text-bg-warning ms-1">待审核</span>'
                     : '';
+                const resourceBadge = collectionDlc
+                    ? '<span class="badge text-bg-primary ms-1">合集/DLC资源</span>' : '';
                 const reviewBtn = showReview
                     ? '<button type="button" class="btn btn-outline-warning btn-sm review-btn">审核</button>'
                     : '';
@@ -372,13 +395,14 @@
                         data-submitted-pick-code="${esc(row.submitted_pick_code || '')}"
                         data-review-status="${esc(reviewStatus)}"
                         data-magnet-duplicate="${duplicate ? '1' : '0'}"
+                        data-resource-kind="${esc(row.resource_kind || '')}"
                         data-submission-excluded="${submissionExcluded ? '1' : '0'}"
                         data-candidate-count="${esc(candidateCount)}">
                         <td class="check-col text-center">
                             <input type="checkbox" class="game-checkbox form-check-input" ${(notSubmittable || downloaded) ? `disabled title="${downloaded ? '已下载，禁止重复提交' : '该记录不参与下载'}"` : ''}>
                         </td>
                         <td class="ym-col">${esc(ymText)}${shiftBadge}</td>
-                        <td class="game-name-cell editable-cell">${esc(row.name)}${reviewBadge}${duplicateBadge}${downloadFailed ? '<span class="badge text-bg-danger ms-1">下载失败</span>' : ''}${nyaaName ? `<div class="text-muted small"${magnet ? ' style="display:none;"' : ''}>${esc(nyaaName)}</div>` : ''}</td>
+                        <td class="game-name-cell editable-cell">${esc(row.name)}${reviewBadge}${resourceBadge}${duplicateBadge}${downloadFailed ? '<span class="badge text-bg-danger ms-1">下载失败</span>' : ''}${nyaaName ? `<div class="text-muted small"${magnet ? ' style="display:none;"' : ''}>${esc(nyaaName)}</div>` : ''}</td>
                         <td class="company-col">${esc(row.company || '')}</td>
                         <td class="kind-col">${esc(brandKindText)}</td>
                         <td class="actions-col">
@@ -504,6 +528,8 @@
             renderReviewHistory(data.cross_year_suspect, data.history || []);
             document.getElementById('review-manual-magnet').value = data.game.link || '';
             document.getElementById('review-manual-nyaa-name').value = data.game.nyaa_name || '';
+            document.getElementById('review-resource-collection').checked =
+                data.game.resource_kind === 'collection_dlc';
             resultEl.textContent = '';
             bootstrap.Modal.getOrCreateInstance(document.getElementById('reviewModal')).show();
         } catch (err) {
@@ -626,7 +652,8 @@
         decideReview({
             egs_id: parseInt(document.getElementById('review-modal-egs-id').value, 10),
             decision: 'approve',
-            candidate_id: parseInt(btn.dataset.candidateId, 10)
+            candidate_id: parseInt(btn.dataset.candidateId, 10),
+            resource_kind: document.getElementById('review-resource-collection').checked ? 'collection_dlc' : ''
         });
     });
 
@@ -635,7 +662,8 @@
             egs_id: parseInt(document.getElementById('review-modal-egs-id').value, 10),
             decision: 'approve',
             manual_magnet: document.getElementById('review-manual-magnet').value.trim(),
-            manual_nyaa_name: document.getElementById('review-manual-nyaa-name').value.trim()
+            manual_nyaa_name: document.getElementById('review-manual-nyaa-name').value.trim(),
+            resource_kind: document.getElementById('review-resource-collection').checked ? 'collection_dlc' : ''
         });
     });
 
@@ -724,6 +752,7 @@
     });
 
     document.getElementById('games-body').addEventListener('click', e => {
+        if (e.target.closest('.duplicate-link')) return;
         const submitBtn = e.target.closest('.btn-115-submit');
         const checkBtn = e.target.closest('.magnet-check-btn');
         const reviewBtn = e.target.closest('.review-btn');
@@ -792,6 +821,7 @@
             document.getElementById('edit-company').value = tr.dataset.company || '';
             document.getElementById('edit-nyaa-name').value = tr.dataset.nyaaName || '';
             document.getElementById('edit-link').value = tr.dataset.magnet || '';
+            document.getElementById('edit-resource-collection').checked = tr.dataset.resourceKind === 'collection_dlc';
             new bootstrap.Modal(document.getElementById('editModal')).show();
         }
     });
@@ -925,6 +955,7 @@
         const newCompany = document.getElementById('edit-company').value.trim();
         const newNyaaName = document.getElementById('edit-nyaa-name').value.trim();
         const newLink = document.getElementById('edit-link').value.trim();
+        const resourceKind = document.getElementById('edit-resource-collection').checked ? 'collection_dlc' : '';
 
         const body = { egs_id: egsId };
         if (year && month) body.new_date = `${year}-${String(parseInt(month, 10)).padStart(2, '0')}`;
@@ -932,6 +963,7 @@
         if (newCompany) body.new_company = newCompany;
         body.new_nyaa_name = newNyaaName;
         body.new_link = newLink;
+        body.new_resource_kind = resourceKind;
 
         btn.disabled = true;
         btn.textContent = '保存中...';

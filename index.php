@@ -17,6 +17,14 @@
         .task-result-group > summary:hover { background: rgba(0, 0, 0, .035); }
         .task-result-group[open] > summary { border-bottom: 1px solid var(--bs-border-color); }
         .scope-form .form-control, .scope-form .form-select { min-width: 0; }
+        @media (max-width: 575.98px) {
+            .scope-actions { width: 100%; }
+            .scope-actions .btn-group { width: 100%; }
+            .scope-actions .btn-group > .btn { flex: 1 1 auto; }
+        }
+        .pending-move-info { min-width: 0; }
+        .pending-move-info .path-arrow { font-family: monospace; word-break: break-all; }
+        .pending-move-actions { width: 120px; }
     </style>
 </head>
 <body class="bg-light">
@@ -27,36 +35,37 @@
         <div class="card-body">
             <form id="scope-form" class="scope-form">
                 <div class="row g-3 align-items-end">
-                    <div class="col-6 col-md-3">
-                        <label for="start-year" class="form-label">起始年份</label>
-                        <input id="start-year" type="number" class="form-control" min="1980" max="3000" required>
+                    <div class="col-12 col-xl-5">
+                        <div class="form-label mb-1">任务范围</div>
+                        <div class="input-group">
+                            <span class="input-group-text">起始</span>
+                            <input id="start-year" type="number" class="form-control" min="1980" max="3000" required aria-label="起始年份">
+                            <span class="input-group-text">至</span>
+                            <input id="end-year" type="number" class="form-control" min="1980" max="3000" required aria-label="结束年份">
+                            <select id="task-month" class="form-select" aria-label="月份" style="max-width:110px">
+                                <option value="0">全年</option>
+                                <?php for ($m = 1; $m <= 12; $m++): ?><option value="<?= $m ?>"><?= $m ?>月</option><?php endfor; ?>
+                            </select>
+                        </div>
                     </div>
-                    <div class="col-6 col-md-3">
-                        <label for="end-year" class="form-label">结束年份</label>
-                        <input id="end-year" type="number" class="form-control" min="1980" max="3000" required>
-                    </div>
-                    <div class="col-6 col-md-3">
-                        <label for="task-month" class="form-label">月份</label>
-                        <select id="task-month" class="form-select">
-                            <option value="0">全年</option>
-                            <?php for ($m = 1; $m <= 12; $m++): ?><option value="<?= $m ?>"><?= $m ?>月</option><?php endfor; ?>
-                        </select>
-                    </div>
-                    <div class="col-6 col-md-3">
-                        <div class="form-check mb-2">
-                            <input id="organize-preview" class="form-check-input" type="checkbox" checked>
-                            <label for="organize-preview" class="form-check-label">整理115仅预览</label>
+                    <div class="col-12 col-xl-7">
+                        <div class="form-label mb-1">任务操作</div>
+                        <div class="scope-actions d-flex flex-wrap gap-2">
+                            <div class="btn-group" role="group" aria-label="数据准备">
+                                <button type="button" data-action="crawl" class="btn btn-primary" title="从 EGS 获取所选范围内的游戏清单">获取清单</button>
+                                <button type="button" data-action="magnet" class="btn btn-outline-primary" title="为缺失磁链的游戏获取下载链接">获取磁链</button>
+                            </div>
+                            <div class="btn-group" role="group" aria-label="115 操作">
+                                <button type="button" data-action="check" class="btn btn-outline-info" title="检查尚未确认下载的作品">校对115</button>
+                                <button type="button" data-action="submit" class="btn btn-outline-success" title="提交尚未提交且未下载的作品到 115">提交115</button>
+                                <button type="button" data-action="organize" class="btn btn-outline-danger" title="实际移动/重命名 115 目录并归入年份目录">整理115</button>
+                            </div>
                         </div>
                     </div>
                 </div>
-                <div class="d-flex flex-wrap gap-2 mt-3">
-                    <button type="button" data-action="crawl" class="btn btn-primary">获取游戏清单</button>
-                    <button type="button" data-action="magnet" class="btn btn-outline-primary">获取下载用磁链</button>
-                    <button type="button" data-action="check" class="btn btn-outline-info">校对115</button>
-                    <button type="button" data-action="submit" class="btn btn-outline-success">提交115</button>
-                    <button type="button" data-action="organize" class="btn btn-outline-secondary">整理115</button>
+                <div class="small text-muted mt-3">
+                    以上操作均使用所选年月范围。清单来自 EGS；磁链仅补充未匹配项目；校对检查尚未确认下载的作品；提交会跳过已提交或已下载作品；整理会实际移动/重命名 115 目录，请确认范围后再执行。
                 </div>
-                <div class="small text-muted mt-3">五项操作均使用上方年月范围。清单来自 EGS；磁链仅补充未匹配项目；校对检查尚未确认下载的作品；提交跳过已提交或已下载作品。整理按发售日和公司命名，归入 /GAL/GAL-年份，取消“仅预览”后执行。</div>
             </form>
             <div id="control-message" class="mt-2" role="status"></div>
         </div>
@@ -100,17 +109,27 @@
                 </div>
                 <div class="modal-body">
                     <div class="alert alert-warning py-2 small">
-                        以下磁链日期与 EGS 展示月份不同，或来源目录年份不同。确认后将以磁链 dn 时间戳为准，写入实际发售月并更新展示月份。
+                        以下日期与 EGS 展示月份不同，或来源目录年份不同。确认后将以种子 info.name（缺失时回退磁链 dn）时间戳为准，写入实际发售月并更新展示月份；驳回则保留原目录，后续整理不再提示该候选。
                     </div>
                     <div class="table-responsive">
                         <table class="table table-sm align-middle">
-                            <thead><tr><th style="min-width:280px">当前目录</th><th style="min-width:280px">目标</th><th class="text-end">操作</th></tr></thead>
+                            <thead><tr>
+                                <th class="text-center" style="width:42px">
+                                    <input id="cross-year-select-all" class="form-check-input" type="checkbox" checked aria-label="全选待确认项">
+                                </th>
+                                <th>待确认项</th>
+                                <th class="text-end" style="width:120px">操作</th>
+                            </tr></thead>
                             <tbody id="cross-year-body"></tbody>
                         </table>
                     </div>
                 </div>
                 <div class="modal-footer">
+                    <span id="cross-year-batch-status" class="small text-muted me-auto"></span>
                     <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">暂不处理</button>
+                    <button type="button" id="confirm-all-cross-year" class="btn btn-warning btn-sm">
+                        批量同意已选
+                    </button>
                 </div>
             </div>
         </div>

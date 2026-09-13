@@ -174,6 +174,10 @@ if ($action === 'egs_update') {
         $args[] = '--new-submitted-pick-code';
         $args[] = strval($body['new_submitted_pick_code']);
     }
+    if (array_key_exists('new_resource_kind', $body) && $body['new_resource_kind'] !== null) {
+        $args[] = '--new-resource-kind';
+        $args[] = strval($body['new_resource_kind']);
+    }
 
     [$code, $data] = run_cli($args);
     json_response($data);
@@ -217,6 +221,10 @@ if ($action === 'egs_review_decide') {
     if (array_key_exists('manual_nyaa_name', $body) && $body['manual_nyaa_name'] !== null && $body['manual_nyaa_name'] !== '') {
         $args[] = '--manual-nyaa-name';
         $args[] = strval($body['manual_nyaa_name']);
+    }
+    if (array_key_exists('resource_kind', $body) && $body['resource_kind'] !== null) {
+        $args[] = '--resource-kind';
+        $args[] = strval($body['resource_kind']);
     }
     if (array_key_exists('note', $body) && $body['note'] !== null && $body['note'] !== '') {
         $args[] = '--note';

@@ -21,6 +21,8 @@
     let calendarRequest = 0;
     let lastRefresh = 0;
     let crossYearRows = [];
+    let crossYearBatchRunning = false;
+    const crossYearExcludedIds = new Set();
     let confirmationLoadedJob = '';
     let resultGroupJob = '';
     const resultGroupOpen = new Map();
@@ -39,25 +41,67 @@
         if (result.status === 'error') throw new Error(result.message || '操作失败');
         return result;
     }
+    const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const isPendingMoveError = error => {
+        const message = String(error?.message || error || '');
+        return message.includes('990009') || message.includes('尚未执行完成');
+    };
+    async function confirmCrossYearRow(row) {
+        const d = row.detail || {};
+        const date = row.date || d.date || '';
+        const name = row.name || '';
+        if (!date || !name) throw new Error('待办缺少日期或游戏名');
+        try {
+            return await api('egs_organize_confirm', {date, name});
+        } catch (error) {
+            if (!isPendingMoveError(error)) throw error;
+            await wait(2000);
+            return await api('egs_organize_confirm', {date, name});
+        }
+    }
     function buttons() {
         document.querySelectorAll('[data-action]').forEach(button => {button.disabled = !ready || launching || !!currentTask?.running;});
     }
     function renderCrossYearRows() {
         $('cross-year-body').innerHTML = crossYearRows.map((row, idx) => {
             const d = row.detail || {};
+            const checked = !crossYearExcludedIds.has(Number(row.id));
+            const actualDate = d.proposed_actual_release_ts || d.dn_date || '';
             const kindText = d.confirmation_kind === 'month_shift'
-                ? `EGS ${escape((d.egs_date || d.release_ts || '').slice(0, 7) || '-')} → 实际 ${escape(d.proposed_actual_release_month || (d.dn_date || '').slice(0, 7) || '-')}`
+                ? `EGS ${escape((d.egs_date || d.release_ts || '').slice(0, 7) || '-')} → 实际 ${escape(actualDate || '-')}`
                 : `${escape(d.source_year || '')} → ${escape(d.target_year || '')}`;
             return `
             <tr data-cross-idx="${idx}">
-                <td class="small">${escape(kindText)}<div class="text-muted">${escape(d.old_path || d.old_name || '')}</div></td>
-                <td class="small">${escape(d.dn_date || '')}<div class="text-muted">${escape(d.target_path || d.target_name || '')}</div></td>
-                <td class="text-end">
-                    <button type="button" class="btn btn-outline-warning btn-sm confirm-cross-year-btn" data-hidden-date="${escape(row.date || d.date || '')}" data-hidden-name="${escape(row.name || '')}">
-                        ${row.status === 'month_shift_confirm' ? '批准搬月' : '批准跨年移动'}</button>
+                <td class="text-center align-middle">
+                    <input class="form-check-input cross-year-select" type="checkbox" data-id="${escape(row.id)}" ${checked ? 'checked' : ''} ${crossYearBatchRunning ? 'disabled' : ''} aria-label="选择 ${escape(row.name || '待确认项')}">
+                </td>
+                <td class="small pending-move-info">
+                    <div class="fw-semibold">${escape(kindText)}</div>
+                    <div class="text-muted path-arrow">${escape(d.old_path || d.old_name || '')}</div>
+                    <div class="text-muted path-arrow">${escape(d.target_path || d.target_name || '')}</div>
+                    ${row.batchError ? `<div class="text-danger mt-1">批量处理失败：${escape(row.batchError)}</div>` : ''}
+                </td>
+                <td class="text-end align-middle pending-move-actions">
+                    <div class="d-grid gap-1">
+                        <button type="button" class="btn btn-outline-warning btn-sm confirm-cross-year-btn" ${crossYearBatchRunning ? 'disabled' : ''} data-id="${escape(row.id)}" data-hidden-date="${escape(row.date || d.date || '')}" data-hidden-name="${escape(row.name || '')}" data-label="${row.status === 'month_shift_confirm' ? '批准搬月' : '批准跨年移动'}">
+                            ${row.status === 'month_shift_confirm' ? '批准搬月' : '批准跨年移动'}</button>
+                        <button type="button" class="btn btn-outline-danger btn-sm reject-cross-year-btn" ${crossYearBatchRunning ? 'disabled' : ''} data-id="${escape(row.id)}" data-kind="${escape(row.status || '')}">驳回</button>
+                    </div>
                 </td>
             </tr>`;
         }).join('') || '<tr><td colspan="3" class="text-center text-muted py-3">暂无待确认项</td></tr>';
+        const selectedCount = crossYearRows.filter(row => !crossYearExcludedIds.has(Number(row.id))).length;
+        const selectAll = $('cross-year-select-all');
+        if (selectAll) {
+            selectAll.disabled = crossYearBatchRunning || !crossYearRows.length;
+            selectAll.checked = !!crossYearRows.length && selectedCount === crossYearRows.length;
+            selectAll.indeterminate = selectedCount > 0 && selectedCount < crossYearRows.length;
+        }
+        const allButton = $('confirm-all-cross-year');
+        if (allButton) {
+            allButton.disabled = crossYearBatchRunning || selectedCount === 0;
+            allButton.textContent = crossYearBatchRunning ? '批量处理中...' : `批量同意已选（${selectedCount}）`;
+        }
     }
 
     function renderTaskResults(results, jobId) {
@@ -83,7 +127,16 @@
                 const detail = row.detail;
                 const target = detail?.target_path
                     ? `<div class="text-muted">${escape(detail.old_path || '待定位')} → ${escape(detail.target_path)}</div>` : '';
-                return `<div class="border-bottom py-2"><strong>${escape(row.name)}</strong>：${escape(row.message)}${target}</div>`;
+                const shared = Array.isArray(detail?.shared_with) ? detail.shared_with : [];
+                const sharedHtml = shared.length
+                    ? `<div class="small text-danger mt-1">关联的 115 目录记录：${shared.map(s => {
+                        const label = `${escape(s.date || '')}/${escape(s.name || '')}`;
+                        const path = s.folder_path || s.folder_name || '';
+                        const sameEgs = Number(s.egs_id) === Number(detail.egs_id);
+                        return `${sameEgs ? '[同一 EGS 记录] ' : ''}${label}${path ? `（${escape(path)}）` : ''}`;
+                    }).join('；')}</div>`
+                    : '';
+                return `<div class="border-bottom py-2"><strong>${escape(row.name)}</strong>：${escape(row.message)}${target}${sharedHtml}</div>`;
             }).join('');
             const isOpen = resultGroupOpen.has(group.type)
                 ? resultGroupOpen.get(group.type) : group.outcome === 'failed';
@@ -99,7 +152,7 @@
         buttons();
         $('task-card').hidden = !task.job_id;
         if (!task.job_id) return;
-        $('task-title').textContent = `${labels[task.action] || task.label} · ${task.start_year}–${task.end_year} · ${task.month ? task.month+'月' : '全年'}${task.action === 'organize' ? (task.execute ? ' · 执行' : ' · 预览') : ''}`;
+        $('task-title').textContent = `${labels[task.action] || task.label} · ${task.start_year}–${task.end_year} · ${task.month ? task.month+'月' : '全年'}${task.action === 'organize' && task.execute ? ' · 执行' : ''}`;
         $('task-message').textContent = task.running ? (task.current || '准备中…') : task.message;
         $('stop-task').hidden = !task.running;
         const percent = task.total ? Math.round(task.done / task.total * 100) : 0;
@@ -123,6 +176,7 @@
             const data = await api('organize_issues');
             const startYear = Number(task.start_year || 0), endYear = Number(task.end_year || 0);
             const taskMonth = Number(task.month || 0);
+            crossYearExcludedIds.clear();
             crossYearRows = (data.open || []).filter(row => {
                 if (!['month_shift_confirm', 'cross_year_confirm'].includes(row.status)) return false;
                 const [rowYear, rowMonth] = String(row.date || '').split('-').map(Number);
@@ -159,6 +213,11 @@
         const startYear = Number($('start-year').value), endYear = Number($('end-year').value);
         const month = Number($('task-month').value);
         if (endYear < startYear) { $('control-message').textContent = '结束年份不能小于起始年份'; return; }
+        if (action === 'organize') {
+            const scopeLabel = month ? `${startYear}年${month}月`
+                : (startYear === endYear ? `${startYear}年` : `${startYear}–${endYear}年`);
+            if (!confirm(`整理将实际移动/重命名 115 目录，范围：${scopeLabel}。确认执行？`)) return;
+        }
         launching = true;
         buttons();
         try {
@@ -182,7 +241,7 @@
                 }
             }
             const response = await api('pipeline_start', {action, start_year:startYear, end_year:endYear,
-                month:month, execute:action === 'organize' && !$('organize-preview').checked});
+                month:month, execute:action === 'organize'});
             $('control-message').textContent = response.message;
             $('stop-task').disabled = false;
             await poll();
@@ -226,26 +285,118 @@
     $('calendar-year').addEventListener('change', loadCalendar);
     $('refresh-calendar').addEventListener('click', loadCalendar);
 
+    $('cross-year-select-all').addEventListener('change', event => {
+        const checked = event.target.checked;
+        for (const row of crossYearRows) {
+            if (checked) crossYearExcludedIds.delete(Number(row.id));
+            else crossYearExcludedIds.add(Number(row.id));
+        }
+        renderCrossYearRows();
+    });
+
+    $('cross-year-body').addEventListener('change', event => {
+        const checkbox = event.target.closest('.cross-year-select');
+        if (!checkbox) return;
+        const id = Number(checkbox.dataset.id);
+        if (checkbox.checked) crossYearExcludedIds.delete(id); else crossYearExcludedIds.add(id);
+        renderCrossYearRows();
+    });
+
     $('cross-year-body').addEventListener('click', async event => {
-        const button = event.target.closest('.confirm-cross-year-btn');
-        if (!button) return;
-        const date = button.dataset.hiddenDate;
-        const name = button.dataset.hiddenName;
+        const rejectButton = event.target.closest('.reject-cross-year-btn');
+        const confirmButton = event.target.closest('.confirm-cross-year-btn');
+        if (!rejectButton && !confirmButton) return;
+
+        if (rejectButton) {
+            const id = Number(rejectButton.dataset.id);
+            if (!id) return;
+            if (!confirm('确认驳回该候选？后续整理不会再次提示同一个候选。')) return;
+            rejectButton.disabled = true;
+            rejectButton.textContent = '驳回中...';
+            try {
+                const result = await api('organize_issue_reject', {id});
+                if (result.success === false) throw new Error(result.message || '驳回失败');
+                crossYearExcludedIds.delete(id);
+                crossYearRows = crossYearRows.filter(row => Number(row.id) !== id);
+                renderCrossYearRows();
+                if (!crossYearRows.length) {
+                    bootstrap.Modal.getOrCreateInstance($('crossYearModal')).hide();
+                }
+                await loadCalendar();
+            } catch (error) {
+                rejectButton.disabled = false;
+                rejectButton.textContent = '驳回';
+                alert(error.message);
+            }
+            return;
+        }
+
+        const date = confirmButton.dataset.hiddenDate;
+        const name = confirmButton.dataset.hiddenName;
+        const id = Number(confirmButton.dataset.id);
+        const originalLabel = confirmButton.dataset.label || '确认移动';
         if (!date || !name) return;
-        button.disabled = true;
-        button.textContent = '确认中...';
+        confirmButton.disabled = true;
+        confirmButton.textContent = '确认中...';
         try {
-            const result = await api('egs_organize_confirm', {date, name});
+            const row = crossYearRows.find(item => Number(item.id) === id)
+                || {id, date, name, detail: {date}};
+            const result = await confirmCrossYearRow(row);
             if (result.success === false || result.status === 'error') throw new Error(result.message || '确认失败');
-            const idx = crossYearRows.findIndex(row => row.detail?.date === date && row.name === name);
-            if (idx >= 0) crossYearRows.splice(idx, 1);
+            crossYearExcludedIds.delete(id);
+            crossYearRows = crossYearRows.filter(row => id
+                ? Number(row.id) !== id
+                : !(row.detail?.date === date && row.name === name));
             renderCrossYearRows();
-            button.textContent = '已确认';
+            if (!crossYearRows.length) {
+                bootstrap.Modal.getOrCreateInstance($('crossYearModal')).hide();
+            }
             await loadCalendar();
         } catch (error) {
-            button.disabled = false;
-            button.textContent = '确认移动';
+            confirmButton.disabled = false;
+            confirmButton.textContent = originalLabel;
             alert(error.message);
+        }
+    });
+
+    $('confirm-all-cross-year').addEventListener('click', async () => {
+        const pending = crossYearRows.filter(row => !crossYearExcludedIds.has(Number(row.id)));
+        if (crossYearBatchRunning || !pending.length) return;
+        const total = pending.length;
+        const excluded = crossYearRows.length - total;
+        if (!confirm(`确认依次批准已选的 ${total} 条搬月/跨年移动？未选项目不会处理，失败项会保留。`)) return;
+        crossYearBatchRunning = true;
+        let succeeded = 0;
+        let failed = 0;
+        renderCrossYearRows();
+        try {
+            for (let index = 0; index < pending.length; index += 1) {
+                const row = pending[index];
+                $('cross-year-batch-status').textContent = `正在处理 ${index + 1}/${total}：${row.name || ''}`;
+                try {
+                    const result = await confirmCrossYearRow(row);
+                    if (result.success === false || result.status === 'error') {
+                        throw new Error(result.message || '确认失败');
+                    }
+                    succeeded += 1;
+                    crossYearExcludedIds.delete(Number(row.id));
+                    crossYearRows = crossYearRows.filter(item => Number(item.id) !== Number(row.id));
+                } catch (error) {
+                    failed += 1;
+                    const current = crossYearRows.find(item => Number(item.id) === Number(row.id));
+                    if (current) current.batchError = error.message || String(error);
+                }
+                renderCrossYearRows();
+                if (index + 1 < pending.length) await wait(750);
+            }
+            $('cross-year-batch-status').textContent = `批量处理完成：成功 ${succeeded}，失败 ${failed}，未选 ${excluded}`;
+            await loadCalendar();
+            if (!crossYearRows.length) {
+                setTimeout(() => bootstrap.Modal.getOrCreateInstance($('crossYearModal')).hide(), 600);
+            }
+        } finally {
+            crossYearBatchRunning = false;
+            renderCrossYearRows();
         }
     });
 

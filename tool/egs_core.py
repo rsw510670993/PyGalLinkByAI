@@ -106,8 +106,11 @@ def ensure_egs_schema(conn: sqlite3.Connection) -> None:
             -- 多条游戏共用同一 infohash 时，仅最短标题作为主记录
             magnet_duplicate INTEGER NOT NULL DEFAULT 0,
             duplicate_of_egs_id INTEGER,
+            duplicate_reason TEXT,
             submission_excluded INTEGER NOT NULL DEFAULT 0,
             submission_excluded_reason TEXT,
+            -- 人工选择后发合集/DLC作为本篇替代资源；不改变原作发售年月
+            resource_kind   TEXT    NOT NULL DEFAULT '',
             fetched_at      TEXT,
             updated_at      TEXT
         )
@@ -118,6 +121,14 @@ def ensure_egs_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_egs_games_release_ts ON egs_games(release_ts)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_egs_games_date_release_id "
+        "ON egs_games(date, release_ts, egs_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_egs_games_month_date "
+        "ON egs_games(substr(date,6,2), date, release_ts, egs_id)"
     )
     # 旧库迁移：实际发售日由搬月确认后写入，不参与 EGS 抓取 upsert 覆盖。
     cols = {r[1] for r in conn.execute("PRAGMA table_info(egs_games)")}
@@ -131,12 +142,24 @@ def ensure_egs_schema(conn: sqlite3.Connection) -> None:
         ("download_failed_at", "TEXT"),
         ("magnet_duplicate", "INTEGER NOT NULL DEFAULT 0"),
         ("duplicate_of_egs_id", "INTEGER"),
+        ("duplicate_reason", "TEXT"),
         ("submission_excluded", "INTEGER NOT NULL DEFAULT 0"),
         ("submission_excluded_reason", "TEXT"),
+        ("resource_kind", "TEXT NOT NULL DEFAULT ''"),
     ):
         if column not in cols:
             conn.execute(f"ALTER TABLE egs_games ADD COLUMN {column} {decl}")
-    refresh_magnet_duplicates(conn)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_egs_games_infohash_norm "
+        "ON egs_games(lower(trim(COALESCE(infohash_hex,'')))) "
+        "WHERE trim(COALESCE(infohash_hex,'')) != ''"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_egs_games_pending_download "
+        "ON egs_games(date, egs_id) "
+        "WHERE link IS NOT NULL AND link != '' "
+        "AND magnet_duplicate=0 AND submission_excluded=0 AND downloaded=0"
+    )
     conn.commit()
 
 
@@ -168,6 +191,14 @@ def _duplicate_owner(members):
 
 def refresh_magnet_duplicates(conn: sqlite3.Connection, infohashes=None) -> None:
     """按 infohash 重建共链关系；更晚的 DLC/合集优先，否则以最短标题为主记录。"""
+    # 非 infohash 原因的重复项由人工确认（例如两个不同种子实际落到同一份
+    # 115 内容），重建自动共链关系时必须保留。
+    manual_duplicates = conn.execute(
+        """SELECT egs_id,duplicate_of_egs_id,duplicate_reason
+             FROM egs_games
+            WHERE COALESCE(magnet_duplicate,0)=1
+              AND COALESCE(duplicate_reason,'') NOT IN ('','infohash')"""
+    ).fetchall()
     hashes = {
         str(value or "").strip().lower()
         for value in (infohashes or []) if str(value or "").strip()
@@ -177,18 +208,20 @@ def refresh_magnet_duplicates(conn: sqlite3.Connection, infohashes=None) -> None
         values = tuple(sorted(hashes))
         rows = conn.execute(
             f"SELECT egs_id,date,release_ts,name,lower(trim(infohash_hex)) AS hash FROM egs_games "
-            f"WHERE lower(trim(COALESCE(infohash_hex,''))) IN ({marks})", values
+            f"WHERE trim(COALESCE(infohash_hex,'')) != '' "
+            f"AND lower(trim(COALESCE(infohash_hex,''))) IN ({marks})", values
         ).fetchall()
         conn.execute(
-            f"UPDATE egs_games SET magnet_duplicate=0,duplicate_of_egs_id=NULL "
-            f"WHERE lower(trim(COALESCE(infohash_hex,''))) IN ({marks})", values
+            f"UPDATE egs_games SET magnet_duplicate=0,duplicate_of_egs_id=NULL,duplicate_reason=NULL "
+            f"WHERE trim(COALESCE(infohash_hex,'')) != '' "
+            f"AND lower(trim(COALESCE(infohash_hex,''))) IN ({marks})", values
         )
     else:
         rows = conn.execute(
             "SELECT egs_id,date,release_ts,name,lower(trim(infohash_hex)) AS hash FROM egs_games "
             "WHERE trim(COALESCE(infohash_hex,'')) != ''"
         ).fetchall()
-        conn.execute("UPDATE egs_games SET magnet_duplicate=0,duplicate_of_egs_id=NULL")
+        conn.execute("UPDATE egs_games SET magnet_duplicate=0,duplicate_of_egs_id=NULL,duplicate_reason=NULL")
     groups = {}
     for row in rows:
         groups.setdefault(row["hash"], []).append(row)
@@ -197,9 +230,13 @@ def refresh_magnet_duplicates(conn: sqlite3.Connection, infohashes=None) -> None
             continue
         owner = _duplicate_owner(members)
         conn.executemany(
-            "UPDATE egs_games SET magnet_duplicate=1,duplicate_of_egs_id=? WHERE egs_id=?",
+            "UPDATE egs_games SET magnet_duplicate=1,duplicate_of_egs_id=?,duplicate_reason='infohash' WHERE egs_id=?",
             ((int(owner["egs_id"]), int(row["egs_id"])) for row in members if row["egs_id"] != owner["egs_id"]),
         )
+    conn.executemany(
+        "UPDATE egs_games SET magnet_duplicate=1,duplicate_of_egs_id=?,duplicate_reason=? WHERE egs_id=?",
+        ((row[1], row[2], row[0]) for row in manual_duplicates),
+    )
 
 
 def ensure_review_blacklist_schema(conn: sqlite3.Connection) -> None:
@@ -485,6 +522,7 @@ def update_egs_game_record(egs_id: int, new_date: str | None = None,
                            new_downloaded: int | None = None,
                            new_submitted_115: int | None = None,
                            new_submitted_pick_code: str | None = None,
+                           new_resource_kind: str | None = None,
                            db_path: str | None = None) -> dict:
     """按 egs_id 修改展示层字段；原始 EGS 身份层保持不变。"""
     if not egs_id:
@@ -510,6 +548,9 @@ def update_egs_game_record(egs_id: int, new_date: str | None = None,
         updates["link"] = str(new_link).strip()
         from tool.egs_match import extract_infohash
         updates["infohash_hex"] = extract_infohash(updates["link"])
+        updates["magnet_duplicate"] = 0
+        updates["duplicate_of_egs_id"] = None
+        updates["duplicate_reason"] = None
     if new_nyaa_name is not None:
         updates["nyaa_name"] = str(new_nyaa_name).strip()
     if new_downloaded is not None:
@@ -522,6 +563,11 @@ def update_egs_game_record(egs_id: int, new_date: str | None = None,
         updates["submitted_115"] = 1 if int(new_submitted_115) else 0
     if new_submitted_pick_code is not None:
         updates["submitted_pick_code"] = str(new_submitted_pick_code).strip()
+    if new_resource_kind is not None:
+        resource_kind = str(new_resource_kind).strip()
+        if resource_kind not in ("", "collection_dlc"):
+            return {"success": False, "message": "未知的资源类型"}
+        updates["resource_kind"] = resource_kind
 
     if not updates:
         return {"success": True, "message": "无变更", "egs_id": egs_id}

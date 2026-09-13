@@ -9,6 +9,9 @@
 - 时间接近:   nyaa发布日距EGS发售日 ≤7天+15 / ≤30天+10 / ≤60天+5；
               无发布日时退化为标题[YYMMDD]月份匹配 +10
 - 发布者:     girlcelly +10 / 2D.G.F. +8
+
+护栏：名字高度相似但最后一个数字不同（如「コンチェルト4」→「コンチェルト3」）
+      视为不同版本，禁止仅靠公司/日期/发布者分数达到阈值。
 """
 import re
 from datetime import datetime
@@ -111,6 +114,26 @@ def _company_in_title(company, nt):
     return False
 
 
+def _trailing_number_mismatch(gnorm, nt, match=None):
+    """Whether near-identical titles end with different edition numbers.
+
+    Example: ``光翼戦姫エクスティアコンチェルト4`` must not be matched to a
+    torrent titled ``...コンチェルト3``.  The longest common block covers all
+    but the final digit, so detect that the next character in the candidate is
+    a different digit.
+    """
+    if len(gnorm) < 2 or not gnorm[-1].isdigit():
+        return False
+    if match is None:
+        match = SequenceMatcher(None, gnorm, nt).find_longest_match(
+            0, len(gnorm), 0, len(nt)
+        )
+    if match.a != 0 or match.size < len(gnorm) - 1:
+        return False
+    next_char = nt[match.b + match.size:match.b + match.size + 1]
+    return bool(next_char) and next_char.isdigit() and next_char != gnorm[-1]
+
+
 def score_candidate(game, cand):
     """game: {name, company, date, release_date}; cand: {nyaa_title, nyaa_date, ...}
 
@@ -132,8 +155,11 @@ def score_candidate(game, cand):
             )
             frac = m.size / len(gnorm)
             if frac >= 0.85:
-                total += 25
-                detail["name_partial"] = round(frac, 2)
+                if _trailing_number_mismatch(gnorm, nt, m):
+                    detail["edition_mismatch"] = True
+                else:
+                    total += 25
+                    detail["name_partial"] = round(frac, 2)
             else:
                 # 主标题拆分匹配：getchu名常为「主标题 -副标题-」，
                 # nyaa标题可能只含主标题+版次名（副标题与版次名不同属正常）
@@ -179,6 +205,10 @@ def score_candidate(game, cand):
     elif "2d.g.f." in tl or "2dgf" in nt:
         total += 8
         detail["publisher"] = "2D.G.F."
+
+    # 尾号不同（如 4 误配到 3）不能靠公司/日期/发布者分数凑到阈值。
+    if detail.get("edition_mismatch"):
+        total = min(total, THRESHOLD - 1)
 
     # 极短名称强制公司名一致：无公司佐证的候选不允许自动达到阈值
     if is_abnormally_short_name(game.get("name")) and "company" not in detail:

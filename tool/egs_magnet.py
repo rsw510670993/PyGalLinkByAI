@@ -28,7 +28,7 @@ from bs4 import BeautifulSoup
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-from tool.egs_core import open_egs_db, refresh_magnet_duplicates
+from tool.egs_core import ensure_egs_schema, open_egs_db, refresh_magnet_duplicates
 from tool.egs_match import (
     MAX_SCORE,
     THRESHOLD,
@@ -162,12 +162,12 @@ def ensure_egs_magnet_schema(conn: sqlite3.Connection) -> None:
             ("download_failed_at", "TEXT"),
             ("magnet_duplicate", "INTEGER NOT NULL DEFAULT 0"),
             ("duplicate_of_egs_id", "INTEGER"),
+            ("duplicate_reason", "TEXT"),
             ("submission_excluded", "INTEGER NOT NULL DEFAULT 0"),
             ("submission_excluded_reason", "TEXT"),
         ):
             if column not in cols:
                 conn.execute(f"ALTER TABLE egs_games ADD COLUMN {column} {decl}")
-        refresh_magnet_duplicates(conn)
     except sqlite3.OperationalError:
         # egs_games 尚未建立（如仅跑磁链模块的独立库）时跳过，由 ensure_egs_schema 负责
         pass
@@ -694,6 +694,7 @@ def process_game(conn: sqlite3.Connection, session: requests.Session, row,
                 UPDATE egs_games
                    SET link=NULL, nyaa_name=NULL, infohash_hex=NULL,
                        torrent_name=NULL, torrent_files=NULL, torrent_size=NULL,
+                       resource_kind='',
                        download_failed=1, download_failed_at=?,
                        updated_at=?
                  WHERE egs_id=?
@@ -719,7 +720,8 @@ def process_game(conn: sqlite3.Connection, session: requests.Session, row,
             # 共链项找到不同种子后恢复为独立记录，不能继承原种子的 115 状态。
             conn.execute(
                 """UPDATE egs_games
-                      SET downloaded=0,submitted_115=0,submitted_pick_code=NULL
+                      SET downloaded=0,submitted_115=0,submitted_pick_code=NULL,
+                          magnet_duplicate=0,duplicate_of_egs_id=NULL,duplicate_reason=NULL
                     WHERE egs_id=?""",
                 (egs_id,),
             )
@@ -779,6 +781,7 @@ def process_game(conn: sqlite3.Connection, session: requests.Session, row,
             """UPDATE egs_games
                    SET link=NULL, nyaa_name=NULL, infohash_hex=NULL,
                        torrent_name=NULL, torrent_files=NULL, torrent_size=NULL,
+                       resource_kind='',
                        download_failed=1, download_failed_at=?
                  WHERE egs_id=?""",
             (tried_at, egs_id),
@@ -794,19 +797,21 @@ def process_game(conn: sqlite3.Connection, session: requests.Session, row,
 def pending_rows(conn: sqlite3.Connection, year: int, month: int | None = None,
                  force: bool = False, limit: int = 0) -> list[sqlite3.Row]:
     """取待搜索的 EGS 行，默认跳过搜索历史。"""
-    sql = """
+    if month:
+        date_filter = "date = ?"
+        params: list = [f"{int(year):04d}-{int(month):02d}"]
+    else:
+        date_filter = "date >= ? AND date < ?"
+        params = [f"{int(year):04d}-01", f"{int(year) + 1:04d}-01"]
+    sql = f"""
         SELECT egs_id, date, name, company, release_ts, link, infohash_hex,
-               COALESCE(download_failed,0) AS download_failed
+               download_failed
           FROM egs_games
-         WHERE substr(date,1,4)=?
-           AND ((link IS NULL OR link='') OR COALESCE(download_failed,0)=1
-                OR COALESCE(magnet_duplicate,0)=1)
+         WHERE {date_filter}
+           AND ((link IS NULL OR link='') OR download_failed=1
+                OR magnet_duplicate=1)
            AND (release_ts IS NULL OR release_ts <= date('now','localtime'))
     """
-    params: list = [str(year)]
-    if month:
-        sql += " AND CAST(substr(date,6) AS INTEGER)=?"
-        params.append(int(month))
     if not force:
         # 下载失败与共链项每次都重查；共链项只有找到不同 infohash 才退出队列。
         sql += """
@@ -848,11 +853,13 @@ def run_magnet(year: int, month: int | None = None, force: bool = False,
             conn.rollback()
         ensure_egs_magnet_schema(conn)
         rows = pending_rows(conn, year, month=month, force=force, limit=limit)
-        scope_sql = "SELECT COUNT(*) AS total, SUM(link IS NOT NULL AND link != '') AS linked, SUM((link IS NULL OR link = '') AND release_ts > date('now','localtime')) AS unreleased, SUM((link IS NULL OR link = '') AND (release_ts IS NULL OR release_ts <= date('now','localtime')) AND EXISTS(SELECT 1 FROM egs_nyaa_search_log l WHERE l.egs_id=g.egs_id)) AS cached FROM egs_games g WHERE substr(date,1,4)=?"
-        scope_params = [str(year)]
+        scope_sql = "SELECT COUNT(*) AS total, SUM(link IS NOT NULL AND link != '') AS linked, SUM((link IS NULL OR link = '') AND release_ts > date('now','localtime')) AS unreleased, SUM((link IS NULL OR link = '') AND (release_ts IS NULL OR release_ts <= date('now','localtime')) AND EXISTS(SELECT 1 FROM egs_nyaa_search_log l WHERE l.egs_id=g.egs_id)) AS cached FROM egs_games g WHERE "
         if month:
-            scope_sql += " AND CAST(substr(date,6,2) AS INTEGER)=?"
-            scope_params.append(int(month))
+            scope_sql += "date = ?"
+            scope_params = [f"{int(year):04d}-{int(month):02d}"]
+        else:
+            scope_sql += "date >= ? AND date < ?"
+            scope_params = [f"{int(year):04d}-01", f"{int(year) + 1:04d}-01"]
         scope = conn.execute(scope_sql, scope_params).fetchone()
         status = {
             "year": year, "month": month, "force": force, "limit": limit,
@@ -924,11 +931,12 @@ def review_detail(egs_id: int, db_path: str | None = None) -> dict:
     conn = open_egs_db(db_path)
     conn.row_factory = sqlite3.Row
     try:
+        ensure_egs_schema(conn)
         ensure_egs_magnet_schema(conn)
         game = conn.execute(
             """
             SELECT g.egs_id, g.date, g.name, g.company, g.release_ts,
-                   g.link, g.nyaa_name, l.review_status, l.best_score
+                   g.link, g.nyaa_name, g.resource_kind, l.review_status, l.best_score
               FROM egs_games g
               LEFT JOIN egs_nyaa_search_log l ON l.egs_id = g.egs_id
              WHERE g.egs_id=?
@@ -997,6 +1005,7 @@ def review_detail(egs_id: int, db_path: str | None = None) -> dict:
 
 def decide_review(egs_id: int, decision: str, candidate_id: int | None = None,
                   manual_magnet: str | None = None, manual_nyaa_name: str | None = None,
+                  resource_kind: str | None = None,
                   note: str | None = None, db_path: str | None = None) -> dict:
     """审核低分候选：通过后回填磁链，拒绝后标记不可下载。"""
     from tool.egs_core import open_egs_db
@@ -1005,10 +1014,14 @@ def decide_review(egs_id: int, decision: str, candidate_id: int | None = None,
     decision = str(decision).lower()
     if decision not in ("approve", "reject", "reopen"):
         return {"success": False, "message": "decision 须为 approve/reject/reopen"}
+    resource_kind = str(resource_kind or "").strip()
+    if resource_kind not in ("", "collection_dlc"):
+        return {"success": False, "message": "未知的资源类型"}
 
     conn = open_egs_db(db_path)
     conn.row_factory = sqlite3.Row
     try:
+        ensure_egs_schema(conn)
         ensure_egs_magnet_schema(conn)
         game = conn.execute(
             "SELECT egs_id,name,infohash_hex,COALESCE(magnet_duplicate,0) AS magnet_duplicate "
@@ -1064,14 +1077,17 @@ def decide_review(egs_id: int, decision: str, candidate_id: int | None = None,
             conn.execute(
                 """
                 UPDATE egs_games
-                   SET link=?, nyaa_name=?, size=?, infohash_hex=?, updated_at=?
+                   SET link=?, nyaa_name=?, size=?, infohash_hex=?, resource_kind=?, updated_at=?
                  WHERE egs_id=?
                 """,
-                (magnet, nyaa_name or None, size, infohash, now_str, egs_id),
+                (magnet, nyaa_name or None, size, infohash, resource_kind, now_str, egs_id),
             )
             if game["magnet_duplicate"] and str(game["infohash_hex"] or "").lower() != infohash.lower():
                 conn.execute(
-                    "UPDATE egs_games SET downloaded=0,submitted_115=0,submitted_pick_code=NULL WHERE egs_id=?",
+                    """UPDATE egs_games
+                          SET downloaded=0,submitted_115=0,submitted_pick_code=NULL,
+                              magnet_duplicate=0,duplicate_of_egs_id=NULL,duplicate_reason=NULL
+                        WHERE egs_id=?""",
                     (egs_id,),
                 )
             refresh_magnet_duplicates(conn, (game["infohash_hex"], infohash))

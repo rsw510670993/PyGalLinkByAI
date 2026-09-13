@@ -3,6 +3,7 @@ import argparse
 import fcntl
 import json
 import os
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -141,6 +142,18 @@ def stop(job_id):
     if not state.get('running') or state.get('job_id') != job_id:
         return {'status': 'error', 'message': '任务已结束或已切换，请刷新状态'}
     write_json_atomic(str(paths()[2]), {'job_id': job_id})
+    # Most requests return promptly and are stopped cooperatively between items.
+    # A p115client call can, however, remain inside its automatic relogin loop
+    # indefinitely. Only terminate the exact current worker after its persisted
+    # progress has been stale for three minutes; reruns are idempotent.
+    updated_at = int(state.get('updated_at') or 0)
+    pid = int(state.get('pid') or 0)
+    if updated_at and now_ts() - updated_at >= 180 and pid and pid_is_running(pid):
+        try:
+            os.kill(pid, signal.SIGTERM)
+            return {'status': 'success', 'message': '任务已超过3分钟无进度，已终止卡住的请求'}
+        except ProcessLookupError:
+            pass
     return {'status': 'success', 'message': '已请求停止，当前请求结束后停止'}
 
 
@@ -222,12 +235,25 @@ def execute_job(state, save, should_stop):
             raise RuntimeError('115 未登录，请到 EGS 数据页登录后重试')
         ensure_egs_magnet_schema(conn)
         ensure_review_blacklist_schema(conn)
-        sql = """
+        if state['month']:
+            scope_dates = [
+                f"{year:04d}-{int(state['month']):02d}"
+                for year in range(int(state['start_year']), int(state['end_year']) + 1)
+            ]
+            date_filter = "date IN (" + ",".join("?" for _ in scope_dates) + ")"
+            params = scope_dates
+        else:
+            date_filter = "date >= ? AND date < ?"
+            params = [
+                f"{int(state['start_year']):04d}-01",
+                f"{int(state['end_year']) + 1:04d}-01",
+            ]
+        sql = f"""
             SELECT * FROM egs_games
-             WHERE CAST(substr(date,1,4) AS INTEGER) BETWEEN ? AND ?
+             WHERE {date_filter}
                AND link IS NOT NULL AND link != ''
-               AND COALESCE(magnet_duplicate,0) = 0
-               AND COALESCE(submission_excluded,0) = 0
+               AND magnet_duplicate = 0
+               AND submission_excluded = 0
                AND NOT EXISTS (
                    SELECT 1 FROM egs_review_company_blacklist b
                     WHERE b.company IN (egs_games.company, egs_games.egs_company)
@@ -240,18 +266,15 @@ def execute_job(state, save, should_stop):
                       AND COALESCE(l.review_status, 'pending') = 'pending'
                )
         """
-        params = [state['start_year'], state['end_year']]
-        if state['month']:
-            sql += ' AND CAST(substr(date,6,2) AS INTEGER) = ?'
-            params.append(state['month'])
         if action in ('check', 'submit'):
-            sql += ' AND COALESCE(downloaded,0) = 0'
+            sql += ' AND downloaded = 0'
         if action == 'submit':
-            sql += ' AND COALESCE(submitted_115,0) = 0'
+            sql += ' AND submitted_115 = 0'
         rows = conn.execute(sql + ' ORDER BY date, egs_id', params).fetchall()
         state['total'] = len(rows)
         save()
         year_dirs = {}
+        check_year_items = {}
         submitted_tasks = {}  # info_hash -> {'egs_id','name','pick_code'}，本轮内同磁链只提交一次
         check_offline_tasks = None
         if action == 'check' and rows:
@@ -271,8 +294,43 @@ def execute_job(state, save, should_stop):
             save()
             try:
                 if action == 'check':
-                    from .egs_organize import adopt_downloaded_folder_by_infohash
+                    from .egs_organize import (
+                        adopt_downloaded_folder_by_infohash,
+                        adopt_downloaded_folder_by_torrent_name,
+                        list_dir_children, resolve_cid, resolve_dn_timestamp,
+                    )
                     from .cli import _check_magnet_exists_with_timeout
+                    lookup_years = [str(row['date'])[:4]]
+                    if row['resource_kind'] == 'collection_dlc':
+                        resource_date, _ = resolve_dn_timestamp(
+                            row['link'], row['release_ts'],
+                            torrent_name=row['torrent_name'],
+                        )
+                        resource_year = str(resource_date or '')[:4]
+                        if resource_year and resource_year not in lookup_years:
+                            lookup_years.append(resource_year)
+                    reused = None
+                    for lookup_year in lookup_years:
+                        year_path = f"/GAL/GAL-{lookup_year}"
+                        if year_path not in year_dirs:
+                            year_dirs[year_path] = resolve_cid(year_path)
+                        if year_path not in check_year_items:
+                            year_cid = year_dirs[year_path]
+                            check_year_items[year_path] = (
+                                list_dir_children(year_cid) if year_cid else []
+                            )
+                        reused = adopt_downloaded_folder_by_torrent_name(
+                            conn, row['date'], name, row['link'], row['infohash_hex'],
+                            row['torrent_name'], company=row['company'],
+                            year_dir_cid=year_dirs[year_path],
+                            year_items=check_year_items[year_path],
+                            folder_year=lookup_year,
+                        )
+                        if reused:
+                            break
+                    if reused:
+                        report(name, 'success', '按种子 info.name 精确匹配历史下载目录')
+                        continue
                     reused = adopt_downloaded_folder_by_infohash(
                         conn, row['date'], name, row['link'], row['infohash_hex'],
                     )
@@ -295,7 +353,7 @@ def execute_job(state, save, should_stop):
                                    SET download_failed=1, download_failed_at=?,
                                        downloaded=0, submitted_115=0, submitted_pick_code=NULL,
                                        link=NULL, nyaa_name=NULL, infohash_hex=NULL,
-                                       torrent_name=NULL, torrent_files=NULL, torrent_size=NULL,
+                                       torrent_name=NULL, torrent_files=NULL, torrent_size=NULL, resource_kind='',
                                        updated_at=?
                                  WHERE egs_id=? AND link=?""",
                             (time.strftime('%Y-%m-%d %H:%M:%S'), now_ts(), row['egs_id'], row['link']),

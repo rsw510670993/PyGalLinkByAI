@@ -6,12 +6,29 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tool import egs_core, egs_organize as organize, pipeline
+from tool import egs_core, egs_magnet, egs_organize as organize, pipeline
 
 MAGNET = 'magnet:?xt=urn:btih:' + 'a' * 40 + '&dn=[260101]Game'
 
 
 class PipelineTests(unittest.TestCase):
+    def test_schema_ensure_does_not_rebuild_all_magnet_duplicates(self):
+        db = str(Path(self.temp.name) / 'schema-only.db') if hasattr(self, 'temp') else ':memory:'
+        conn = sqlite3.connect(db)
+        self.addCleanup(conn.close)
+        with patch.object(egs_core, 'refresh_magnet_duplicates') as refresh:
+            egs_core.ensure_egs_schema(conn)
+        refresh.assert_not_called()
+        indexes = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index'"
+        )}
+        self.assertTrue({
+            'idx_egs_games_date_release_id',
+            'idx_egs_games_month_date',
+            'idx_egs_games_infohash_norm',
+            'idx_egs_games_pending_download',
+        }.issubset(indexes))
+
     def test_compute_target_name_normalizes_legacy_iso_date_template(self):
         self.assertEqual(
             organize.compute_target_name(
@@ -36,7 +53,7 @@ class PipelineTests(unittest.TestCase):
         original = egs_core.open_egs_db
         self.stack = contextlib.ExitStack()
         self.addCleanup(self.stack.close)
-        self.stack.enter_context(patch.object(egs_core, 'open_egs_db', side_effect=lambda: original(self.db)))
+        self.stack.enter_context(patch.object(egs_core, 'open_egs_db', side_effect=lambda *args, **kwargs: original(args[0] if args and args[0] else self.db)))
         self.stack.enter_context(patch('tool.p115_client.get_login_status', return_value={'logged_in':True}))
         self.stack.enter_context(patch('tool.p115_client.offline_list', return_value={'success':True,'tasks':[]}))
         self.stack.enter_context(patch('time.sleep'))
@@ -79,6 +96,59 @@ class PipelineTests(unittest.TestCase):
         with patch.object(organize,'resolve_cid',return_value=0), patch.object(organize,'mkdir_year_dir',return_value=None), patch('tool.p115_client.offline_submit') as submit:
             self.assertEqual(self.run_job('submit')['failed'],1)
             submit.assert_not_called()
+
+    def test_exact_torrent_name_adopts_historical_folder(self):
+        torrent_name = '[260101] [Brand] Game1'
+        with sqlite3.connect(self.db) as conn:
+            conn.execute('UPDATE egs_games SET torrent_name=? WHERE egs_id=1', (torrent_name,))
+            conn.commit()
+            items = [{
+                'cid': 'folder-1', 'pid': 'year-1', 'n': torrent_name,
+                'fc': 0, 'pc': 'pick-1', 'is_dir': True,
+            }]
+            result = organize.adopt_downloaded_folder_by_torrent_name(
+                conn, '2026-01', 'Game1', MAGNET, 'a' * 40, torrent_name,
+                company='Brand', year_dir_cid='year-1', year_items=items,
+            )
+            self.assertEqual(result['source'], 'torrent_name')
+            self.assertEqual(
+                conn.execute('SELECT downloaded,submitted_115 FROM egs_games WHERE egs_id=1').fetchone(),
+                (1, 1),
+            )
+            folder = conn.execute(
+                'SELECT cid,status FROM egs_115_folders WHERE date=? AND name=?',
+                ('2026-01', 'Game1'),
+            ).fetchone()
+            self.assertEqual(folder, ('folder-1', 'adopted_exact_torrent_name'))
+
+    def test_torrent_name_fallback_rejects_normalized_only_match(self):
+        torrent_name = '[260101] [Brand] Game1'
+        with sqlite3.connect(self.db) as conn:
+            result = organize.adopt_downloaded_folder_by_torrent_name(
+                conn, '2026-01', 'Game1', MAGNET, 'a' * 40, torrent_name,
+                company='Brand', year_dir_cid='year-1',
+                year_items=[{'cid': 'folder-1', 'pid': 'year-1',
+                             'n': '[260101][Brand]Game1', 'fc': 0}],
+            )
+            self.assertIsNone(result)
+            self.assertEqual(conn.execute(
+                'SELECT downloaded FROM egs_games WHERE egs_id=1'
+            ).fetchone()[0], 0)
+
+    def test_check_prefers_exact_torrent_name_before_infohash_lookup(self):
+        by_name = {'source': 'torrent_name', 'cid': 'folder-1'}
+        with patch.object(organize, 'resolve_cid', return_value='year-1'), \
+             patch.object(organize, 'list_dir_children', return_value=[]), \
+             patch.object(organize, 'adopt_downloaded_folder_by_torrent_name',
+                          side_effect=lambda _c, _d, name, *_a, **_k: by_name if name == 'Game1' else None), \
+             patch.object(organize, 'adopt_downloaded_folder_by_infohash', return_value=None) as by_hash, \
+             patch('tool.cli._check_magnet_exists_with_timeout',
+                   return_value=({'exists': False}, None)) as check:
+            state = self.run_job('check')
+        self.assertEqual((state['success'], state['skipped']), (1, 1))
+        self.assertEqual(state['results'][0]['message'], '按种子 info.name 精确匹配历史下载目录')
+        self.assertEqual(by_hash.call_count, 1)
+        self.assertEqual(check.call_count, 1)
 
     def test_check_scope_and_idempotency(self):
         with patch('tool.cli._check_magnet_exists_with_timeout',return_value=({'exists':True,'infohash_hex':'a'*40},None)) as check:
@@ -309,7 +379,7 @@ class PipelineTests(unittest.TestCase):
         with patch.object(organize, 'locate_by_search') as locate:
             result = organize.organize_single('2026-01', 'Game1', dry_run=True, conn=conn)
         self.assertEqual(result['status'], 'duplicate_magnet')
-        self.assertIn('不应提交', result['message'])
+        self.assertIn('重复磁链', result['message'])
         locate.assert_not_called()
 
         organize.ensure_issue_schema(conn)
@@ -325,11 +395,78 @@ class PipelineTests(unittest.TestCase):
         )
         conn.commit()
         listed = organize.list_organize_issues(conn, include_resolved=False)
-        self.assertEqual(listed['counts']['open'], 0)
+        self.assertEqual(listed['counts']['open'], 1)
         excluded = conn.execute(
             'SELECT submission_excluded,submission_excluded_reason FROM egs_games WHERE egs_id=4'
         ).fetchone()
-        self.assertEqual(excluded, (1, 'shared_cid'))
+        self.assertEqual(excluded, (0, None))
+        self.assertEqual(conn.execute(
+            'SELECT resolved FROM egs_organize_issues WHERE egs_id=4'
+        ).fetchone()[0], 0)
+
+    def test_shared_cid_is_review_issue_without_excluding_submission(self):
+        conn = sqlite3.connect(self.db)
+        self.addCleanup(conn.close)
+        organize.ensure_folder_schema(conn)
+        organize.save_folder_record(
+            conn, '2026-01', 'Game2', cid='shared-folder', pid='year-2026',
+            folder_name='[20260101][Brand]Game2',
+            folder_path='/GAL/GAL-2026/[20260101][Brand]Game2',
+            target_name='[20260101][Brand]Game2', status='already_ok',
+        )
+        location = dict(
+            cid='shared-folder', pid='year-2026', name='[20260101][Brand]Game2',
+            parent_path='/GAL/GAL-2026', is_dir=True,
+        )
+        with self.exact_location(location), patch.object(organize, 'read_config', return_value={}):
+            result = organize.organize_single('2026-01', 'Game1', dry_run=True, conn=conn)
+        self.assertEqual(result['status'], 'shared_cid')
+        self.assertEqual(result['shared_with'][0]['egs_id'], 2)
+        self.assertEqual(result['shared_with'][0]['folder_name'], '[20260101][Brand]Game2')
+        self.assertEqual(
+            result['shared_with'][0]['folder_path'],
+            '/GAL/GAL-2026/[20260101][Brand]Game2',
+        )
+        self.assertEqual(conn.execute(
+            'SELECT submission_excluded FROM egs_games WHERE egs_id=1'
+        ).fetchone()[0], 0)
+
+    def test_orphan_folder_mapping_does_not_trigger_shared_cid(self):
+        conn = sqlite3.connect(self.db)
+        self.addCleanup(conn.close)
+        organize.ensure_folder_schema(conn)
+        organize.save_folder_record(
+            conn, '2024-01', 'Deleted Game', cid='shared-folder', pid='old-year',
+            folder_name='[20260101][Brand]Game1',
+            folder_path='/GAL/GAL-2026/[20260101][Brand]Game1',
+            target_name='[20260101][Brand]Game1', status='already_ok',
+        )
+        location = dict(
+            cid='shared-folder', pid='year-2026', name='[20260101][Brand]Game1',
+            parent_path='/GAL/GAL-2026', is_dir=True,
+        )
+        with self.exact_location(location), patch.object(organize, 'read_config', return_value={}):
+            result = organize.organize_single('2026-01', 'Game1', dry_run=True, conn=conn)
+        self.assertEqual(result['status'], 'would_set_downloaded')
+        self.assertEqual(conn.execute(
+            'SELECT submission_excluded FROM egs_games WHERE egs_id=1'
+        ).fetchone()[0], 0)
+
+    def test_manual_duplicate_survives_infohash_refresh(self):
+        conn = sqlite3.connect(self.db)
+        conn.row_factory = sqlite3.Row
+        self.addCleanup(conn.close)
+        conn.execute(
+            "UPDATE egs_games SET infohash_hex=?,magnet_duplicate=1,"
+            "duplicate_of_egs_id=2,duplicate_reason='shared_cid_manual' WHERE egs_id=1",
+            ('b' * 40,),
+        )
+        conn.commit()
+        egs_core.refresh_magnet_duplicates(conn)
+        self.assertEqual(tuple(conn.execute(
+            'SELECT magnet_duplicate,duplicate_of_egs_id,duplicate_reason '
+            'FROM egs_games WHERE egs_id=1'
+        ).fetchone()), (1, 2, 'shared_cid_manual'))
 
     def test_names_match_rejects_unbounded_predecessor(self):
         from tool.p115_client import _names_match, _normalize_for_comparison
@@ -379,6 +516,26 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(result['proposed_actual_release_month'],'2026-02')
         self.assertIsNone(conn.execute('SELECT actual_release_ts FROM egs_games WHERE egs_id=10').fetchone()[0])
 
+    def test_month_shift_uses_torrent_info_name_when_magnet_dn_is_stale(self):
+        conn=sqlite3.connect(self.db)
+        self.addCleanup(conn.close)
+        organize.ensure_folder_schema(conn)
+        link=('magnet:?xt=urn:btih:' + 'b'*40
+              + '&dn=%5B240630%5D%20%5BCLOCKUP%5D%20Game10%20%5BCrack%20Updated%5D')
+        torrent_name='[240927] [CLOCKUP] Game10'
+        conn.execute("""INSERT INTO egs_games(egs_id,model,egs_date,egs_name,egs_company,date,name,company,release_ts,link,torrent_name)
+                        VALUES (10,'PC','2024-08-30','Game10','Brand','2024-08','Game10','Brand','2024-08-30',?,?)""",
+                     (link,torrent_name))
+        conn.commit()
+        location=dict(cid='123',pid='5',name=torrent_name,parent_path='/GAL/GAL-2024',is_dir=True)
+        with self.exact_location(location), \
+             patch.object(organize,'read_config',return_value={}):
+            result=organize.organize_single('2024-08','Game10',dry_run=True,conn=conn)
+        self.assertEqual(result['status'],'month_shift_confirm')
+        self.assertEqual(result['dn_date'],'2024-09-27')
+        self.assertEqual(result['target_name'],'[20240927][Brand]Game10')
+        self.assertEqual(result['proposed_actual_release_month'],'2024-09')
+
     def test_month_shift_rejection_is_persistent(self):
         conn=sqlite3.connect(self.db)
         self.addCleanup(conn.close)
@@ -426,6 +583,82 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(row,('2026-02','2026-02-27','2026-02-27'))
         self.assertIsNotNone(conn.execute('SELECT 1 FROM egs_115_folders WHERE date=? AND name=?',('2026-02','Game10')).fetchone())
 
+    def test_manual_review_saves_collection_dlc_resource_kind(self):
+        conn = sqlite3.connect(self.db)
+        egs_magnet.ensure_egs_magnet_schema(conn)
+        conn.close()
+        result = egs_magnet.decide_review(
+            1, 'approve', manual_magnet=MAGNET,
+            manual_nyaa_name='Later Complete Edition',
+            resource_kind='collection_dlc', db_path=self.db,
+        )
+        self.assertTrue(result['success'])
+        with sqlite3.connect(self.db) as conn:
+            self.assertEqual(conn.execute(
+                'SELECT resource_kind FROM egs_games WHERE egs_id=1'
+            ).fetchone()[0], 'collection_dlc')
+
+    def test_collection_dlc_check_searches_original_and_resource_years(self):
+        future = 'magnet:?xt=urn:btih:' + 'a' * 40 + '&dn=[280101]Complete'
+        with sqlite3.connect(self.db) as conn:
+            conn.execute(
+                "UPDATE egs_games SET link=?,torrent_name='Complete',resource_kind='collection_dlc' WHERE egs_id=1",
+                (future,),
+            )
+            conn.execute('UPDATE egs_games SET downloaded=1 WHERE egs_id=2')
+            conn.commit()
+        years = []
+        def adopt(_conn, _date, _name, _link, _hash, _torrent, **kwargs):
+            years.append(kwargs.get('folder_year'))
+            return {'source': 'torrent_name'} if kwargs.get('folder_year') == '2028' else None
+        with patch.object(organize, 'resolve_cid', side_effect=lambda path: path), \
+             patch.object(organize, 'list_dir_children', return_value=[]), \
+             patch.object(organize, 'adopt_downloaded_folder_by_torrent_name', side_effect=adopt), \
+             patch.object(organize, 'adopt_downloaded_folder_by_infohash') as by_hash, \
+             patch('tool.cli._check_magnet_exists_with_timeout') as remote:
+            state = self.run_job('check')
+        self.assertEqual(state['success'], 1)
+        self.assertEqual(years, ['2026', '2028'])
+        by_hash.assert_not_called()
+        remote.assert_not_called()
+
+    def test_collection_dlc_organizes_by_resource_year_without_moving_egs_date(self):
+        future = 'magnet:?xt=urn:btih:' + 'a' * 40 + '&dn=[280101]Complete'
+        target = '[20280101][Brand]Game1'
+        with sqlite3.connect(self.db) as conn:
+            organize.ensure_folder_schema(conn)
+            conn.execute(
+                "UPDATE egs_games SET link=?,downloaded=1,submitted_115=1,resource_kind='collection_dlc' WHERE egs_id=1",
+                (future,),
+            )
+            conn.commit()
+            original_location = dict(
+                cid='123', pid='5', name='Complete',
+                parent_path='/GAL/GAL-2026', is_dir=True,
+            )
+            with self.exact_location(original_location), \
+                 patch.object(organize, 'read_config', return_value={}), \
+                 patch.object(organize, 'resolve_cid', return_value='2028'), \
+                 patch.object(organize, 'list_dir_children_names', return_value=[]):
+                preview = organize.organize_single('2026-01', 'Game1', dry_run=True, conn=conn)
+            self.assertEqual(preview['status'], 'would_rename_moved', preview)
+            self.assertEqual(preview['target_path'], '/GAL/GAL-2028/' + target)
+
+            final_location = dict(
+                cid='123', pid='2028', name=target,
+                parent_path='/GAL/GAL-2028', is_dir=True,
+            )
+            with self.exact_location(final_location), patch.object(organize, 'read_config', return_value={}):
+                result = organize.organize_single(
+                    '2026-01', 'Game1', dry_run=False, conn=conn,
+                    confirmed_cross_year=True, confirmed_month_shift=True,
+                )
+            self.assertEqual(result['status'], 'already_ok')
+            row = conn.execute(
+                'SELECT date,release_ts,actual_release_ts,resource_kind FROM egs_games WHERE egs_id=1'
+            ).fetchone()
+            self.assertEqual(row, ('2026-01', '2026-01-01', None, 'collection_dlc'))
+
     def test_job_lock_and_stale_stop_isolation(self):
         root=Path(self.temp.name)
         task_paths=(root/'job.json',root/'job.lock',root/'job.stop')
@@ -437,6 +670,21 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(pipeline.stop('stale')['status'],'error')
             self.assertFalse(task_paths[2].exists())
             self.assertEqual(pipeline.stop('current')['status'],'success')
+
+    def test_stop_terminates_only_current_worker_after_stale_request(self):
+        root=Path(self.temp.name)
+        task_paths=(root/'job.json',root/'job.lock',root/'job.stop')
+        from tool.runtime import write_json_atomic
+        write_json_atomic(str(task_paths[0]),dict(
+            running=True,pid=4321,job_id='current',updated_at=100,
+        ))
+        with patch.object(pipeline,'paths',return_value=task_paths), \
+             patch.object(pipeline,'now_ts',return_value=281), \
+             patch.object(pipeline,'pid_is_running',return_value=True), \
+             patch.object(pipeline.os,'kill') as terminate:
+            result=pipeline.stop('current')
+        terminate.assert_called_once_with(4321,pipeline.signal.SIGTERM)
+        self.assertIn('已终止',result['message'])
 
     def test_success_backup_cleanup_only_deletes_pipeline_backup(self):
         root = Path(self.temp.name)
@@ -610,6 +858,36 @@ class PipelineTests(unittest.TestCase):
     def test_date_priority_and_invalid_date(self):
         self.assertEqual(organize.resolve_dn_timestamp(MAGNET,'2026-02-03')[0],'2026-01-01')
         self.assertEqual(organize.resolve_dn_timestamp('magnet:?xt=urn:btih:' + 'c'*40,'2026-02-03')[0],'2026-02-03')
+
+    def test_date_priority_prefers_torrent_info_name_over_magnet_dn(self):
+        link = ('magnet:?xt=urn:btih:' + 'b' * 40
+                + '&dn=%5B240630%5D%20%5BCLOCKUP%5D%20Game')
+        self.assertEqual(
+            organize.resolve_dn_timestamp(
+                link, '2024-08-30',
+                torrent_name='[240927] [CLOCKUP] Game',
+            ),
+            ('2024-09-27', '240927'),
+        )
+        # torrent info.name 缺日期时仍回退磁链 dn。
+        self.assertEqual(
+            organize.resolve_dn_timestamp(
+                link, '2024-08-30',
+                torrent_name='[CLOCKUP] Game',
+            ),
+            ('2024-06-30', '240630'),
+        )
+
+    def test_date_priority_ignores_base_game_date_for_update_patch(self):
+        link = ('magnet:?xt=urn:btih:' + 'd' * 40
+                + '&dn=%5B240804%5D%5B240628%5D%20%5BDESSERT%20Soft%5D%20Game%20Patch')
+        self.assertEqual(
+            organize.resolve_dn_timestamp(
+                link, '2024-08-01',
+                torrent_name='[240628] [DESSERT Soft] Game Patch',
+            ),
+            ('2024-08-01', '240801'),
+        )
 
 
 if __name__ == '__main__':
