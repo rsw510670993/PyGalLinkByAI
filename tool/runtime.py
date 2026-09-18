@@ -13,6 +13,23 @@ def repo_root():
     return os.path.abspath(os.path.join(_tool_dir(), os.pardir))
 
 
+def share_sqlite_wal_files(db_path):
+    """尽力让 SQLite WAL 的 -wal/-shm 可被不同 unix 用户写入。
+
+    pyGal 的 web(www-data) 与 CLI(开发账号) 会轮流写同一个库。WAL sidecar
+    默认只对属主可写，另一个用户写库时会报
+    "attempt to write a readonly database"。调用方应先触发一次读/写让 sidecar
+    落盘，本函数再把它们放开到组/其他可写；chmod 失败（非属主）则忽略。
+    """
+    if not db_path or db_path == ":memory:":
+        return
+    for suffix in ("-wal", "-shm"):
+        try:
+            os.chmod(db_path + suffix, 0o666)
+        except OSError:
+            pass
+
+
 def ensure_home_env(home_dir=None):
     home_dir = home_dir or repo_root()
     if not os.environ.get("HOME"):

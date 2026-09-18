@@ -24,6 +24,11 @@ def _base_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def _in_gal_path(path):
+    value = "/" + str(path or "").strip("/")
+    return value == "/GAL" or value.startswith("/GAL/")
+
+
 def _spider_status_default():
     return {
         "running": False,
@@ -443,7 +448,12 @@ def cmd_115_check(args):
     try:
         from tool.p115_client import check_magnet_exists
         magnet = args.magnet
-        save_path = args.dir or ""
+        # 当前方针下校对范围只允许 /GAL；未显式给目录时按 /GAL 处理，
+        # 不再回退到旧的 /我的下载/Getchu。
+        save_path = args.dir or "/GAL"
+        if not _in_gal_path(save_path):
+            _print({"success": False, "status": "blocked", "message": "校验范围仅限 /GAL"})
+            return
         _print(check_magnet_exists(magnet, save_path, debug=bool(getattr(args, "debug", False))))
     except Exception as e:
         _print({"status": "error", "message": f"115模块加载失败: {e}"})
@@ -454,11 +464,10 @@ def cmd_115_submit(args):
         from tool.egs_core import open_egs_db
         from tool.p115_client import offline_submit
         magnet = args.magnet
-        save_path = args.dir or ""
         conn = open_egs_db(getattr(args, "db", None))
         try:
             row = conn.execute(
-                "SELECT COALESCE(downloaded,0), COALESCE(link,'') FROM egs_games WHERE egs_id=?",
+                "SELECT COALESCE(downloaded,0), COALESCE(link,''), COALESCE(date,'') FROM egs_games WHERE egs_id=?",
                 (int(args.egs_id),),
             ).fetchone()
         finally:
@@ -471,6 +480,15 @@ def cmd_115_submit(args):
             return
         if not magnet or str(row[1] or "") != magnet:
             _print({"success": False, "status": "blocked", "message": "提交磁链与 EGS 记录不一致"})
+            return
+        date = str(row[2] or "")
+        expected_dir = f"/GAL/GAL-{date[:4]}" if len(date) >= 4 else "/GAL"
+        save_path = (args.dir or expected_dir).strip()
+        if ("/" + save_path.strip("/")) != ("/" + expected_dir.strip("/")):
+            _print({
+                "success": False, "status": "blocked",
+                "message": f"提交目录仅限 {expected_dir}",
+            })
             return
         _print(offline_submit(magnet, save_path))
     except Exception as e:
@@ -494,12 +512,14 @@ def _check_all_status_default():
     }
 
 
-def _check_magnet_exists_child(link, q, strict_infohash=False, offline_tasks=None):
+def _check_magnet_exists_child(link, q, strict_infohash=False, offline_tasks=None,
+                               allowed_save_paths=None):
     try:
         from tool.p115_client import check_magnet_exists
 
         res = check_magnet_exists(
             link, "", strict_infohash=strict_infohash, offline_tasks=offline_tasks,
+            allowed_save_paths=allowed_save_paths,
         )
         q.put({"ok": True, "res": res})
     except Exception as e:
@@ -507,7 +527,7 @@ def _check_magnet_exists_child(link, q, strict_infohash=False, offline_tasks=Non
 
 
 def _check_magnet_exists_with_timeout(link, timeout_s=60, strict_infohash=False,
-                                      offline_tasks=None):
+                                      offline_tasks=None, allowed_save_paths=None):
     if os.name != "nt":
         try:
             ctx = mp.get_context("fork")
@@ -517,7 +537,7 @@ def _check_magnet_exists_with_timeout(link, timeout_s=60, strict_infohash=False,
         q = ctx.Queue(maxsize=1)
         p = ctx.Process(
             target=_check_magnet_exists_child,
-            args=(link, q, strict_infohash, offline_tasks),
+            args=(link, q, strict_infohash, offline_tasks, allowed_save_paths),
         )
         p.daemon = True
         p.start()
@@ -544,6 +564,7 @@ def _check_magnet_exists_with_timeout(link, timeout_s=60, strict_infohash=False,
 
         return check_magnet_exists(
             link, "", strict_infohash=strict_infohash, offline_tasks=offline_tasks,
+            allowed_save_paths=allowed_save_paths,
         )
 
     ex = cf.ThreadPoolExecutor(max_workers=1)
@@ -727,7 +748,10 @@ def cmd_115_check_all_worker(args):
             status["checked"] += 1
             status["updated_at"] = now_ts()
             write_json_atomic(status_path, status)
-            result, err = _check_magnet_exists_with_timeout(link, 60, strict_infohash=is_egs)
+            allowed_paths = [f"/GAL/GAL-{str(date)[:4]}"]
+            result, err = _check_magnet_exists_with_timeout(
+                link, 60, strict_infohash=is_egs, allowed_save_paths=allowed_paths,
+            )
             if err:
                 status["errors"].append(f"{date}/{name}: {err}")
             elif isinstance(result, dict) and result.get("exists"):
@@ -826,7 +850,9 @@ def _check_year_downloaded(year):
     for date, name, link in rows:
         checked += 1
         try:
-            result, err = _check_magnet_exists_with_timeout(link, 60)
+            result, err = _check_magnet_exists_with_timeout(
+                link, 60, allowed_save_paths=[f"/GAL/GAL-{str(year)}"],
+            )
             if err:
                 errors.append(f"{date}/{name}: {err}")
                 continue
@@ -1116,7 +1142,7 @@ def cmd_egs_games(args):
         rows = cur.execute(
             f"""
             SELECT egs_id, date, name, company, release_ts, egs_date, actual_release_ts, brand_kind,
-                   link, nyaa_name, downloaded, submitted_115, submitted_pick_code,
+                   link, nyaa_name, comment, downloaded, submitted_115, submitted_pick_code,
                    download_failed, download_failed_at,
                    COALESCE(magnet_duplicate,0) AS magnet_duplicate, duplicate_of_egs_id,
                    duplicate_reason,

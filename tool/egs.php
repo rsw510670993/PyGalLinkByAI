@@ -6,6 +6,25 @@
     <title>EGS 数据 · pyGal</title>
     <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.1/css/bootstrap.min.css" rel="stylesheet">
     <style>
+        .egs-filter-card .card-body { padding: .75rem; }
+        .egs-filter-scroll { overflow-x: auto; }
+        .egs-filter-toolbar {
+            display: grid;
+            grid-template-columns: 120px 110px minmax(260px, 1fr) 120px 135px auto;
+            align-items: end;
+            gap: .5rem;
+            min-width: 940px;
+        }
+        .egs-filter-toolbar .form-label {
+            color: #6c757d;
+            font-size: .75rem;
+            line-height: 1;
+        }
+        .egs-filter-toolbar .filter-actions { white-space: nowrap; }
+        @media (min-width: 1200px) {
+            .egs-filter-scroll { overflow-x: visible; }
+            .egs-filter-toolbar { min-width: 0; }
+        }
         #gamesTable { table-layout: fixed; }
         .check-col { width: 64px; max-width: 64px; }
         .ym-col { width: 96px; max-width: 96px; white-space: nowrap; }
@@ -53,50 +72,51 @@
 <?php require dirname(__DIR__) . '/includes/header.php'; ?>
 
 <div class="container mt-4">
-    <div class="card mb-3">
+    <div class="card mb-3 egs-filter-card">
         <div class="card-body">
-            <form id="filter-form" class="row g-2 align-items-end">
-                <div class="col-6 col-md-2">
+            <div class="egs-filter-scroll">
+            <form id="filter-form" class="egs-filter-toolbar">
+                <div>
                     <label class="form-label mb-1" for="year">年份</label>
-                    <select id="year" class="form-select">
+                    <select id="year" class="form-select form-select-sm">
                         <option value="">全部</option>
                         <option value="2026" selected>2026</option>
                     </select>
                 </div>
-                <div class="col-6 col-md-2">
+                <div>
                     <label class="form-label mb-1" for="month">月份</label>
-                    <select id="month" class="form-select">
+                    <select id="month" class="form-select form-select-sm">
                         <option value="">全部</option>
                         <?php for ($m = 1; $m <= 12; $m++): ?>
                             <option value="<?= $m ?>"><?= sprintf('%02d', $m) ?></option>
                         <?php endfor; ?>
                     </select>
                 </div>
-                <div class="col-12 col-md-4">
+                <div>
                     <label class="form-label mb-1" for="q">搜索</label>
-                    <input id="q" class="form-control" type="search" placeholder="游戏名 / 公司 / 假名">
+                    <input id="q" class="form-control form-control-sm" type="search" placeholder="游戏名 / 公司 / 假名">
                 </div>
-                <div class="col-6 col-md-2">
+                <div>
                     <label class="form-label mb-1" for="review">审核</label>
-                    <select id="review" class="form-select">
+                    <select id="review" class="form-select form-select-sm">
                         <option value="">全部</option>
                         <option value="pending">待审核</option>
                     </select>
                 </div>
-                <div class="col-6 col-md-2">
+                <div>
                     <label class="form-label mb-1" for="brand-kind">公司/社团</label>
-                    <select id="brand-kind" class="form-select">
+                    <select id="brand-kind" class="form-select form-select-sm">
                         <option value="">全部</option>
                         <option value="CORPORATION">企业</option>
                         <option value="CIRCLE">社团</option>
                     </select>
                 </div>
-                <!-- 上行放不下的操作按钮固定拆到第二行：筛选条件一行 + 操作按钮一行 -->
-                <div class="col-12 d-flex gap-2">
-                    <button class="btn btn-primary" type="submit">筛选</button>
-                    <button id="review-blacklist-btn" class="btn btn-outline-secondary ms-auto" type="button">审核黑名单</button>
+                <div class="filter-actions d-flex gap-2">
+                    <button class="btn btn-primary btn-sm" type="submit">筛选</button>
+                    <button id="review-blacklist-btn" class="btn btn-outline-secondary btn-sm" type="button">审核黑名单</button>
                 </div>
             </form>
+            </div>
         </div>
     </div>
 
@@ -293,6 +313,24 @@
     </div>
 </div>
 
+<div class="modal fade" id="commentModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">手动下载备注</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div id="comment-game-name" class="fw-semibold mb-2"></div>
+                <div id="comment-text" class="text-break" style="white-space:pre-wrap;"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">关闭</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.1/js/bootstrap.bundle.min.js"></script>
 <script>
 (function () {
@@ -339,6 +377,8 @@
                     ? `<span class="badge text-bg-info ms-1">实际</span>` : '';
                 const magnet = row.link || '';
                 const nyaaName = row.nyaa_name || '';
+                const comment = row.comment || '';
+                const manualDownload = comment.includes('手动下载');
                 const downloaded = parseInt(row.downloaded || 0, 10) === 1;
                 const submitted = parseInt(row.submitted_115 || 0, 10) === 1;
                 const downloadFailed = parseInt(row.download_failed || 0, 10) === 1;
@@ -374,6 +414,9 @@
                     : '';
                 const resourceBadge = collectionDlc
                     ? '<span class="badge text-bg-primary ms-1">合集/DLC资源</span>' : '';
+                const manualDownloadBadge = manualDownload
+                    ? '<button type="button" class="manual-download-badge badge text-bg-success border-0 ms-1" title="点击查看备注">手动下载</button>'
+                    : '';
                 const reviewBtn = showReview
                     ? '<button type="button" class="btn btn-outline-warning btn-sm review-btn">审核</button>'
                     : '';
@@ -388,6 +431,7 @@
                         data-actual-release-ts="${esc(row.actual_release_ts || '')}"
                         data-name="${esc(row.name)}"
                         data-company="${esc(row.company || '')}"
+                        data-comment="${esc(comment)}"
                         data-nyaa-name="${esc(nyaaName)}"
                         data-magnet="${esc(magnet)}"
                         data-downloaded="${esc(row.downloaded || 0)}"
@@ -402,7 +446,7 @@
                             <input type="checkbox" class="game-checkbox form-check-input" ${(notSubmittable || downloaded) ? `disabled title="${downloaded ? '已下载，禁止重复提交' : '该记录不参与下载'}"` : ''}>
                         </td>
                         <td class="ym-col">${esc(ymText)}${shiftBadge}</td>
-                        <td class="game-name-cell editable-cell">${esc(row.name)}${reviewBadge}${resourceBadge}${duplicateBadge}${downloadFailed ? '<span class="badge text-bg-danger ms-1">下载失败</span>' : ''}${nyaaName ? `<div class="text-muted small"${magnet ? ' style="display:none;"' : ''}>${esc(nyaaName)}</div>` : ''}</td>
+                        <td class="game-name-cell editable-cell">${esc(row.name)}${manualDownloadBadge}${reviewBadge}${resourceBadge}${duplicateBadge}${downloadFailed ? '<span class="badge text-bg-danger ms-1">下载失败</span>' : ''}${nyaaName ? `<div class="text-muted small"${magnet ? ' style="display:none;"' : ''}>${esc(nyaaName)}</div>` : ''}</td>
                         <td class="company-col">${esc(row.company || '')}</td>
                         <td class="kind-col">${esc(brandKindText)}</td>
                         <td class="actions-col">
@@ -700,7 +744,10 @@
         }
     }
 
-    document.getElementById('review-blacklist-btn').addEventListener('click', loadBlacklist);
+    document.getElementById('review-blacklist-btn').addEventListener('click', async () => {
+        bootstrap.Modal.getOrCreateInstance(document.getElementById('blacklistModal')).show();
+        await loadBlacklist();
+    });
 
     document.getElementById('blacklist-add-btn').addEventListener('click', async function () {
         const btn = this;
@@ -757,7 +804,16 @@
         const checkBtn = e.target.closest('.magnet-check-btn');
         const reviewBtn = e.target.closest('.review-btn');
         const retryBtn = e.target.closest('.magnet-retry-btn');
+        const manualDownloadBadge = e.target.closest('.manual-download-badge');
         const nameCell = e.target.closest('.editable-cell');
+
+        if (manualDownloadBadge) {
+            const tr = manualDownloadBadge.closest('tr');
+            document.getElementById('comment-game-name').textContent = tr.dataset.name || '-';
+            document.getElementById('comment-text').textContent = tr.dataset.comment || '无备注';
+            bootstrap.Modal.getOrCreateInstance(document.getElementById('commentModal')).show();
+            return;
+        }
 
         if (submitBtn) {
             const tr = submitBtn.closest('tr');

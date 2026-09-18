@@ -9,7 +9,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from .models import GetchuGame, NyaaData
-from .runtime import read_config, runtime_paths
+from .runtime import read_config, runtime_paths, share_sqlite_wal_files
 
 
 logger = logging.getLogger(__name__)
@@ -103,9 +103,15 @@ def get_db_path(default=None):
 
 
 def open_db(db_path=None, timeout_s=30):
-    conn = sqlite3.connect(db_path or get_db_path(), timeout=timeout_s)
+    path = db_path or get_db_path()
+    conn = sqlite3.connect(path, timeout=timeout_s)
     conn.execute("PRAGMA busy_timeout = 30000")
     conn.execute("PRAGMA journal_mode = WAL")
+    try:
+        conn.execute("SELECT count(*) FROM sqlite_master").fetchall()
+    except sqlite3.Error:
+        pass
+    share_sqlite_wal_files(path)
     return conn
 
 

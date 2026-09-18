@@ -2,6 +2,7 @@
 import contextlib
 import sqlite3
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -28,6 +29,16 @@ class PipelineTests(unittest.TestCase):
             'idx_egs_games_infohash_norm',
             'idx_egs_games_pending_download',
         }.issubset(indexes))
+
+    def test_open_egs_db_shares_wal_sidecars_between_users(self):
+        path = str(Path(self.temp.name) / 'wal-share.db')
+        conn = egs_core.open_egs_db(path)
+        self.addCleanup(conn.close)
+        for suffix in ('-wal', '-shm'):
+            target = Path(path + suffix)
+            self.assertTrue(target.exists(), str(target))
+            self.assertTrue(target.stat().st_mode & 0o006,
+                            f'{target} 未开放跨用户写权限')
 
     def test_compute_target_name_normalizes_legacy_iso_date_template(self):
         self.assertEqual(
@@ -157,6 +168,8 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(self.run_job('check')['total'],0)
             self.assertTrue(all(c.kwargs.get('strict_infohash') for c in check.call_args_list))
             self.assertTrue(all(c.kwargs.get('offline_tasks') == [] for c in check.call_args_list))
+            self.assertTrue(all(c.kwargs.get('allowed_save_paths') == ['/GAL/GAL-2026']
+                                for c in check.call_args_list))
         with sqlite3.connect(self.db) as conn:
             self.assertEqual(conn.execute('SELECT downloaded FROM egs_games WHERE egs_id=4').fetchone()[0],0)
             self.assertEqual(
@@ -164,6 +177,72 @@ class PipelineTests(unittest.TestCase):
                     'SELECT downloaded,submitted_115 FROM egs_games WHERE egs_id=1'
                 ).fetchone(), (1, 1),
             )
+
+    def test_submit_records_submission_time(self):
+        with patch.object(organize, 'resolve_cid', return_value='year-1'), \
+             patch.object(organize, 'adopt_downloaded_folder_by_infohash', return_value=None), \
+             patch('tool.p115_client.offline_submit', return_value={'success': True, 'pick_code': 'pc'}):
+            state = self.run_job('submit')
+        self.assertGreater(state['success'], 0)
+        with sqlite3.connect(self.db) as conn:
+            submitted, submitted_at = conn.execute(
+                'SELECT submitted_115,submitted_at FROM egs_games WHERE egs_id=1'
+            ).fetchone()
+        self.assertEqual(submitted, 1)
+        self.assertIsNotNone(submitted_at)
+
+    def test_pending_download_over_72_hours_marks_hash_failed(self):
+        old_hash = 'a' * 40
+        with sqlite3.connect(self.db) as conn:
+            conn.execute(
+                "UPDATE egs_games SET submitted_115=1,submitted_at='2026-01-01 00:00:00',infohash_hex=? WHERE egs_id=1",
+                (old_hash,),
+            )
+            conn.commit()
+        pending = {
+            'exists': False, 'in_offline_tasks': True, 'offline_finished': False,
+            'offline_task_add_time': None, 'infohash_hex': old_hash,
+            'message': '等待下载完成',
+        }
+        now_epoch = time.mktime(time.strptime('2026-01-04 00:00:01', '%Y-%m-%d %H:%M:%S'))
+        with patch('tool.cli._check_magnet_exists_with_timeout', return_value=(pending, None)), \
+             patch.object(pipeline.time, 'time', return_value=now_epoch):
+            state = self.run_job('check')
+        self.assertEqual(state['failed'], 1)
+        with sqlite3.connect(self.db) as conn:
+            row = conn.execute(
+                'SELECT link,infohash_hex,download_failed,submitted_115 FROM egs_games WHERE egs_id=1'
+            ).fetchone()
+        self.assertEqual(row, (None, old_hash, 1, 0))
+
+    def test_pending_download_under_72_hours_keeps_waiting(self):
+        old_hash = 'a' * 40
+        with sqlite3.connect(self.db) as conn:
+            conn.execute(
+                "UPDATE egs_games SET submitted_115=1,submitted_at=NULL,infohash_hex=? WHERE egs_id=1",
+                (old_hash,),
+            )
+            conn.commit()
+        submitted_epoch = time.mktime(
+            time.strptime('2026-01-01 00:00:00', '%Y-%m-%d %H:%M:%S')
+        )
+        pending = {
+            'exists': False, 'in_offline_tasks': True, 'offline_finished': False,
+            'offline_task_add_time': submitted_epoch, 'infohash_hex': old_hash,
+            'message': '等待下载完成',
+        }
+        now_epoch = submitted_epoch + pipeline.SUBMISSION_TIMEOUT_SECONDS - 1
+        with patch('tool.cli._check_magnet_exists_with_timeout', return_value=(pending, None)), \
+             patch.object(pipeline.time, 'time', return_value=now_epoch):
+            state = self.run_job('check')
+        self.assertEqual(state['failed'], 0)
+        with sqlite3.connect(self.db) as conn:
+            row = conn.execute(
+                'SELECT link,infohash_hex,download_failed,submitted_115,submitted_at '
+                'FROM egs_games WHERE egs_id=1'
+            ).fetchone()
+        self.assertEqual(row[:4], (MAGNET, old_hash, 0, 1))
+        self.assertEqual(row[4], '2026-01-01 00:00:00')
 
     def test_calendar_excludes_duplicate_and_submission_excluded_from_magnet_total(self):
         from tool import cli
@@ -221,6 +300,100 @@ class PipelineTests(unittest.TestCase):
             conn, different, stored_infohash='a' * 40, getchu_db_path=legacy_db,
         ))
 
+    def test_scoped_infohash_adoption_rejects_folder_moved_outside_gal(self):
+        conn = sqlite3.connect(self.db)
+        self.addCleanup(conn.close)
+        location = dict(cid='old-cid', pid='old-pid', name='Old Folder',
+                        parent_path='/GAL.old/GAL-2025')
+        with self.exact_location(location):
+            match = organize.adopt_downloaded_folder_by_infohash(
+                conn, '2026-01', 'Game1', MAGNET,
+                allowed_parent_paths=['/GAL/GAL-2026'],
+            )
+        self.assertIsNone(match)
+        self.assertEqual(conn.execute(
+            'SELECT downloaded FROM egs_games WHERE egs_id=1'
+        ).fetchone()[0], 0)
+
+    def test_submit_does_not_reuse_folder_outside_gal(self):
+        location = dict(cid='old-cid', pid='old-pid', name='Old Folder',
+                        parent_path='/GAL.old/GAL-2026')
+        with self.exact_location(location), \
+             patch.object(organize, 'resolve_cid', return_value=12), \
+             patch('tool.p115_client.offline_submit',
+                   return_value={'success': True, 'pick_code': 'pick'}) as submit:
+            state = self.run_job('submit')
+        self.assertEqual(state['success'], 1)
+        submit.assert_called_once_with(MAGNET, '/GAL/GAL-2026')
+        with sqlite3.connect(self.db) as conn:
+            self.assertEqual(conn.execute(
+                'SELECT downloaded,submitted_115 FROM egs_games WHERE egs_id=1'
+            ).fetchone(), (0, 1))
+
+    def test_organize_rejects_folder_outside_gal(self):
+        conn = sqlite3.connect(self.db)
+        self.addCleanup(conn.close)
+        organize.ensure_folder_schema(conn)
+        location = dict(cid='old-cid', pid='old-pid',
+                        name='[20260101][Brand]Game1',
+                        parent_path='/GAL.old/GAL-2026', is_dir=True)
+        with self.exact_location(location), \
+             patch.object(organize, 'read_config', return_value={}), \
+             patch.object(organize, 'rename_item') as rename, \
+             patch.object(organize, 'move_item') as move:
+            result = organize.organize_single('2026-01', 'Game1', dry_run=False, conn=conn)
+        self.assertEqual(result['status'], 'outside_scope')
+        rename.assert_not_called()
+        move.assert_not_called()
+
+    def test_organize_prefers_in_scope_offline_product_over_gal_old_record(self):
+        conn = sqlite3.connect(self.db)
+        self.addCleanup(conn.close)
+        organize.ensure_folder_schema(conn)
+        target = '[20260101][Brand]Game1'
+        old_match = {
+            'source': 'getchu', 'infohash_hex': 'a' * 40,
+            'cid': 'old-cid', 'pid': 'old-pid', 'pick_code': 'old-pick',
+            'name': 'OldFolder',
+            'folder_path': '/GAL.old/GAL-2026/OldFolder',
+        }
+        product = {
+            'n': '1332343', 'cid': 'product-cid', 'pid': 'year-pid',
+            'fc': 0, 'pc': 'product-pick', 'fid': None, 'is_dir': True,
+        }
+        task = {
+            'info_hash': 'a' * 40, 'url': MAGNET, 'percentDone': 100,
+            'display_status': 'finished', 'file_id': 'product-cid',
+            'name': '1332343', 'wp_path_id': 'year-pid', 'status': 2,
+        }
+
+        def item_name(cid):
+            return 'OldFolder' if cid == 'old-cid' else target
+
+        def crumbs(pid):
+            return '/GAL.old/GAL-2026' if pid == 'old-pid' else '/GAL/GAL-2026'
+
+        with patch.object(organize, 'find_downloaded_folder_by_infohash', return_value=old_match), \
+             patch.object(organize, 'get_item_name', side_effect=item_name), \
+             patch.object(organize, 'parent_crumbs_path', side_effect=crumbs), \
+             patch.object(organize, 'get_item_info', return_value=product), \
+             patch.object(organize, 'read_config', return_value={}), \
+             patch.object(organize, 'list_dir_children_names', return_value=[]), \
+             patch.object(organize, 'rename_item', return_value={'success': True}) as rename, \
+             patch.object(organize, 'move_item') as move, \
+             patch('tool.p115_client.offline_list',
+                   return_value={'success': True, 'tasks': [task]}):
+            result = organize.organize_single('2026-01', 'Game1', dry_run=False, conn=conn)
+        self.assertEqual(result['status'], 'renamed')
+        self.assertEqual(result['old_path'], '/GAL/GAL-2026/1332343')
+        self.assertEqual(result['located_by'], 'offline_task')
+        rename.assert_called_once_with('product-cid', target)
+        move.assert_not_called()
+        self.assertEqual(conn.execute(
+            'SELECT cid,status FROM egs_115_folders WHERE date=? AND name=?',
+            ('2026-01', 'Game1'),
+        ).fetchone(), ('product-cid', 'renamed'))
+
     def test_stop_before_cloud_calls(self):
         with patch('tool.cli._check_magnet_exists_with_timeout') as check:
             self.assertEqual(self.run_job('check',stop=lambda:True)['done'],0)
@@ -269,7 +442,7 @@ class PipelineTests(unittest.TestCase):
         self.addCleanup(conn.close)
         organize.ensure_folder_schema(conn)
         target='[20260101][Brand]Game1'
-        location=dict(cid='123',pid='5',name=target,parent_path='/Old',is_dir=True)
+        location=dict(cid='123',pid='5',name='OldName',parent_path='/GAL/GAL-2026',is_dir=True)
         for children,expected in [([target],'conflict'),(None,'error')]:
             with self.exact_location(location), patch.object(organize,'read_config',return_value={}), patch.object(organize,'resolve_cid',return_value='12'), patch.object(organize,'list_dir_children_names',return_value=children), patch.object(organize,'move_item') as move:
                 result=organize.organize_single('2026-01','Game1',dry_run=False,conn=conn)
@@ -282,14 +455,14 @@ class PipelineTests(unittest.TestCase):
         self.addCleanup(conn.close)
         organize.ensure_folder_schema(conn)
         target='[20260101][Brand]Game1'
-        location=dict(cid='123',pid='5',name='OldName',parent_path='/Old',is_dir=True)
-        with self.exact_location(location), patch.object(organize,'read_config',return_value={}), patch.object(organize,'resolve_cid',return_value='12'), patch.object(organize,'list_dir_children_names',return_value=[]), patch.object(organize,'rename_item',return_value={'success':True}) as rename, patch.object(organize,'get_item_name',side_effect=['OldName',target]), patch.object(organize,'move_item',return_value={'success':True}) as move, patch.object(organize,'parent_crumbs_path',side_effect=['/Old','/GAL/GAL-2026']):
-            result=organize.organize_single('2026-01','Game1',dry_run=False,conn=conn)
+        location=dict(cid='123',pid='5',name='OldName',parent_path='/GAL/GAL-2025',is_dir=True)
+        with self.exact_location(location), patch.object(organize,'read_config',return_value={}), patch.object(organize,'resolve_cid',return_value='12'), patch.object(organize,'list_dir_children_names',return_value=[]), patch.object(organize,'rename_item',return_value={'success':True}) as rename, patch.object(organize,'get_item_name',side_effect=['OldName',target]), patch.object(organize,'move_item',return_value={'success':True}) as move, patch.object(organize,'parent_crumbs_path',side_effect=['/GAL/GAL-2025','/GAL/GAL-2026']):
+            result=organize.organize_single('2026-01','Game1',dry_run=False,conn=conn,confirmed_cross_year=True)
         self.assertEqual(result['status'],'renamed_moved')
         rename.assert_called_once_with('123',target)
         move.assert_called_once_with('123','12')
         self.assertEqual(conn.execute('SELECT downloaded,submitted_115 FROM egs_games WHERE egs_id=1').fetchone(),(1,1))
-        self.assertIn('/Old/OldName',conn.execute('SELECT payload FROM egs_115_operations').fetchone()[0])
+        self.assertIn('/GAL/GAL-2025/OldName',conn.execute('SELECT payload FROM egs_115_operations').fetchone()[0])
 
     def test_organizer_cross_year_move_requires_confirmation(self):
         conn=sqlite3.connect(self.db)
@@ -795,6 +968,27 @@ class PipelineTests(unittest.TestCase):
             result=organize.organize_single('2026-02','Game20',dry_run=True,conn=conn)
         self.assertEqual(result['status'],'would_wrap_file')
         self.assertEqual(result['cid'],'888')
+
+    def test_completed_offline_direct_file_outside_gal_is_not_wrapped(self):
+        conn=sqlite3.connect(self.db)
+        self.addCleanup(conn.close)
+        organize.ensure_folder_schema(conn)
+        magnet='magnet:?xt=urn:btih:' + 'd'*40 + '&dn=%5B260210%5D%20%5BBrand%5D%20Game20'
+        conn.execute("""INSERT INTO egs_games(egs_id,model,egs_date,egs_name,egs_company,date,name,company,release_ts,link)
+                        VALUES (20,'PC','2026-02-10','Game20','Brand','2026-02','Game20','Brand','2026-02-10',?)""",(magnet,))
+        conn.commit()
+        task={'info_hash':'d'*40,'url':magnet,'percentDone':100,'display_status':'finished',
+              'file_id':'888','name':'RJ01557970.zip','wp_path_id':'5'}
+        info={'cid':'888','pid':'5','n':'RJ01557970.zip','fc':1,'pc':'pick',
+              'fid':'888','is_dir':False}
+        with patch.object(organize,'read_config',return_value={}), \
+             patch.object(organize,'get_item_info',return_value=info), \
+             patch.object(organize,'parent_crumbs_path',return_value='/GAL.old/GAL-2026'), \
+             patch.object(organize,'move_item') as move, \
+             patch('tool.p115_client.offline_list',return_value={'success':True,'tasks':[task]}):
+            result=organize.organize_single('2026-02','Game20',dry_run=False,conn=conn)
+        self.assertEqual(result['status'],'outside_scope')
+        move.assert_not_called()
 
     def test_list_dir_children_uses_fid_for_files_and_cid_for_directories(self):
         class Client:

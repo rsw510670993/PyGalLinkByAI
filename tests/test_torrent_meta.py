@@ -86,6 +86,12 @@ class ShortNameCompanyTests(unittest.TestCase):
             "作品名 English版", "Translated title [English]"))
         self.assertTrue(allows_english_candidate(
             "作品名 英語版", "Translated title [English]"))
+        self.assertTrue(allows_english_candidate(
+            "作品名", "作品名 多国語版 Chinese-English"))
+        self.assertTrue(allows_english_candidate(
+            "作品名", "作品名 [English, Japanese, Chinese]"))
+        self.assertTrue(allows_english_candidate(
+            "作品名", "作品名 [EN/JP/CHT]"))
         self.assertTrue(allows_english_candidate("作品名", "作品名 [Japanese]"))
 
     def test_short_name_length_ignores_punctuation(self):
@@ -140,6 +146,31 @@ class ShortNameCompanyTests(unittest.TestCase):
         s_right, d_right = score_candidate(game, right)
         self.assertGreaterEqual(s_right, THRESHOLD)
         self.assertNotIn("edition_mismatch", d_right)
+
+    def test_unnumbered_base_does_not_match_numbered_sequel(self):
+        from tool.egs_match import THRESHOLD, score_candidate
+
+        candidate = {
+            "nyaa_title": "[260416][エロフラ部] 睡眠姦シミュレーション9 [RJ01605313].zip",
+            "nyaa_date": "2026-04-16",
+        }
+        base_score, base_detail = score_candidate({
+            "name": "睡眠姦シミュレーション",
+            "company": "エロフラ部",
+            "date": "2023-01",
+            "release_date": "2023-01-09",
+        }, candidate)
+        sequel_score, sequel_detail = score_candidate({
+            "name": "睡眠姦シミュレーション9",
+            "company": "エロフラ部",
+            "date": "2026-04",
+            "release_date": "2026-04-16",
+        }, candidate)
+
+        self.assertLess(base_score, THRESHOLD)
+        self.assertTrue(base_detail.get("edition_mismatch"))
+        self.assertGreaterEqual(sequel_score, THRESHOLD)
+        self.assertNotIn("edition_mismatch", sequel_detail)
 
 
 class DownloadFailedDetectionTests(unittest.TestCase):
@@ -197,6 +228,99 @@ class DownloadFailedDetectionTests(unittest.TestCase):
         self.assertTrue(out['exists'])
         self.assertTrue(strict['in_offline_tasks'])
         self.assertFalse(strict['exists'])
+
+    def test_check_magnet_exists_exposes_pending_task_submission_time(self):
+        from unittest.mock import patch
+        from tool.p115_client import check_magnet_exists
+        h = 'ef' * 20
+        magnet = f'magnet:?xt=urn:btih:{h}'
+        with patch('tool.p115_client.offline_list', return_value={
+            'success': True,
+            'tasks': [{
+                'info_hash': h, 'url': magnet, 'display_status': 'downloading',
+                'status': 1, 'add_time': 123456, 'percentDone': 90.5,
+            }],
+        }):
+            out = check_magnet_exists(magnet, '', strict_infohash=True)
+        self.assertEqual(out['offline_task_add_time'], 123456)
+        self.assertEqual(out['offline_percent'], 90.5)
+
+    def test_scoped_file_search_does_not_fallback_to_global_root(self):
+        from unittest.mock import patch
+        from tool.p115_client import check_magnet_exists
+        h = '12' * 20
+        magnet = (f'magnet:?xt=urn:btih:{h}'
+                  '&dn=%5B260101%5D%5BBrand%5DGame')
+        with (
+            patch('tool.p115_client.offline_list',
+                  return_value={'success': True, 'tasks': []}),
+            patch('tool.p115_client._resolve_path_to_cid', return_value=0),
+            patch('tool.p115_client.search_files') as search,
+        ):
+            out = check_magnet_exists(
+                magnet, '', strict_infohash=False,
+                allowed_save_paths=['/GAL/GAL-2026'],
+            )
+        self.assertFalse(out['exists'])
+        search.assert_not_called()
+
+    def test_scoped_check_rejects_finished_product_outside_target_directory(self):
+        from unittest.mock import patch
+        from tool.p115_client import check_magnet_exists
+        h = 'ef' * 20
+        magnet = f'magnet:?xt=urn:btih:{h}'
+        task = {
+            'info_hash': h, 'url': magnet, 'display_status': 'finished',
+            'status': 2, 'file_id': 'product',
+        }
+        with (
+            patch('tool.p115_client._resolve_path_to_cid', return_value=2026),
+            patch('tool.p115_client.get_item_info',
+                  return_value={'pid': 'old-parent'}),
+            patch('tool.p115_client.parent_crumbs_path',
+                  return_value='/GAL.old/GAL-2025'),
+        ):
+            outside = check_magnet_exists(
+                magnet, '', strict_infohash=True, offline_tasks=[task],
+                allowed_save_paths=['/GAL/GAL-2026'],
+            )
+        self.assertFalse(outside['exists'])
+        self.assertFalse(outside['in_offline_tasks'])
+
+        with (
+            patch('tool.p115_client._resolve_path_to_cid', return_value=2026),
+            patch('tool.p115_client.get_item_info',
+                  return_value={'pid': 'current-parent'}),
+            patch('tool.p115_client.parent_crumbs_path',
+                  return_value='/GAL/GAL-2026'),
+        ):
+            inside = check_magnet_exists(
+                magnet, '', strict_infohash=True, offline_tasks=[task],
+                allowed_save_paths=['/GAL/GAL-2026'],
+            )
+        self.assertTrue(inside['exists'])
+        self.assertTrue(inside['in_offline_tasks'])
+
+    def test_scoped_search_rejects_hit_leaked_from_gal_old(self):
+        from unittest.mock import patch
+        from tool.p115_client import check_magnet_exists
+        h = '12' * 20
+        magnet = f'magnet:?xt=urn:btih:{h}&dn=[260227]Game'
+        leaked = {
+            'cid': 'old-folder', 'pid': 'old-year', 'fc': 0,
+            'n': '[260227]Game', 'pc': 'old-pick',
+        }
+        with (
+            patch('tool.p115_client._resolve_path_to_cid', return_value='new-year'),
+            patch('tool.p115_client.search_files', return_value=[leaked]),
+            patch('tool.p115_client.parent_crumbs_path',
+                  return_value='/GAL.old/GAL-2026'),
+        ):
+            result = check_magnet_exists(
+                magnet, '/GAL/GAL-2026', offline_tasks=[],
+            )
+        self.assertFalse(result['exists'])
+        self.assertEqual(result['matched_files'], [])
 
 
 class PendingRowsDownloadFailedTests(unittest.TestCase):

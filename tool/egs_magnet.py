@@ -160,6 +160,7 @@ def ensure_egs_magnet_schema(conn: sqlite3.Connection) -> None:
             ("torrent_size", "INTEGER"),
             ("download_failed", "INTEGER NOT NULL DEFAULT 0"),
             ("download_failed_at", "TEXT"),
+            ("submitted_at", "TEXT"),
             ("magnet_duplicate", "INTEGER NOT NULL DEFAULT 0"),
             ("duplicate_of_egs_id", "INTEGER"),
             ("duplicate_reason", "TEXT"),
@@ -240,8 +241,9 @@ def ensure_egs_magnet_schema(conn: sqlite3.Connection) -> None:
         )
     except sqlite3.OperationalError:
         pass
-    # English 版候选与分数无关，默认不参与匹配和审核；只有 EGS 游戏名明确
-    # 包含 English/英語 时例外。已选中或仍被游戏引用的旧记录留待单独审计。
+    # 纯 English 版候选与分数无关，默认不参与匹配和审核；明确同时包含
+    # 中文/日文的多语言版，或 EGS 游戏名本身要求 English/英語时例外。
+    # 已选中或仍被游戏引用的旧记录留待单独审计。
     try:
         english_rows = conn.execute(
             """
@@ -643,6 +645,17 @@ def process_game(conn: sqlite3.Connection, session: requests.Session, row,
     # Defensive filtering for injected/custom search providers as well as the
     # normal search_candidates path.
     cands = [c for c in cands if allows_english_candidate(name, c.get("nyaa_title"))]
+    if old_failed and old_infohash:
+        # infohash_hex is retained when a 115 task fails. Do not select that
+        # known-unavailable torrent again; only a different hash can recover.
+        cands = [
+            c for c in cands
+            if str(c.get("infohash_hex") or "").strip().lower() != old_infohash
+        ]
+        conn.execute(
+            "UPDATE egs_nyaa_candidates SET selected=0 WHERE egs_id=? AND lower(infohash_hex)=?",
+            (egs_id, old_infohash),
+        )
     best, best_score, best_detail = select_best(game, cands, THRESHOLD)
     best_key = best.get("infohash_hex") if best else None
     _save_candidates(conn, egs_id, date, name, cands, best_key)
@@ -692,14 +705,14 @@ def process_game(conn: sqlite3.Connection, session: requests.Session, row,
             conn.execute(
                 """
                 UPDATE egs_games
-                   SET link=NULL, nyaa_name=NULL, infohash_hex=NULL,
+                   SET link=NULL, nyaa_name=NULL, infohash_hex=?,
                        torrent_name=NULL, torrent_files=NULL, torrent_size=NULL,
                        resource_kind='',
                        download_failed=1, download_failed_at=?,
                        updated_at=?
                  WHERE egs_id=?
                 """,
-                (tried_at, tried_at, egs_id),
+                (old_infohash or None, tried_at, tried_at, egs_id),
             )
         else:
             conn.execute(
@@ -779,12 +792,12 @@ def process_game(conn: sqlite3.Connection, session: requests.Session, row,
         # 仍无更优磁链：回滚到无磁链状态并保持失败标记，供下轮继续查询
         conn.execute(
             """UPDATE egs_games
-                   SET link=NULL, nyaa_name=NULL, infohash_hex=NULL,
+                   SET link=NULL, nyaa_name=NULL, infohash_hex=?,
                        torrent_name=NULL, torrent_files=NULL, torrent_size=NULL,
                        resource_kind='',
                        download_failed=1, download_failed_at=?
                  WHERE egs_id=?""",
-            (tried_at, egs_id),
+            (old_infohash or None, tried_at, egs_id),
         )
         conn.commit()
     result["download_failed"] = 1 if old_failed else 0

@@ -681,8 +681,65 @@ def _extra_keywords_from_dn(dn):
     return uniq
 
 
+def _offline_task_in_save_paths(task, save_paths):
+    """Return whether an offline task/product is currently inside an allowed path."""
+    paths = {str(path or "").rstrip("/") for path in (save_paths or []) if path}
+    if not paths:
+        return True
+    target_cids = {str(_resolve_path_to_cid(path)) for path in paths}
+    target_cids.discard("0")
+    target_cids.discard("None")
+
+    file_id = str(task.get("file_id") or task.get("delete_file_id") or "")
+    if file_id:
+        info = get_item_info(file_id)
+        if not info:
+            return False
+        pid = info.get("pid")
+        parent_path = parent_crumbs_path(pid) if pid else None
+        parent_path = str(parent_path or "").rstrip("/")
+        return any(parent_path == path or parent_path.startswith(path + "/") for path in paths)
+
+    # Pending tasks do not necessarily have a product yet; their explicit save CID is
+    # the only reliable scope. Completed tasks without an accessible product are not
+    # accepted as downloaded during scoped calibration.
+    display = str(task.get("display_status") or "").strip().lower()
+    finished = display == "finished"
+    try:
+        finished = finished or int(task.get("status")) == 2
+    except (TypeError, ValueError):
+        pass
+    try:
+        finished = finished or float(
+            task.get("percentDone") or task.get("percent_done") or 0
+        ) >= 100
+    except (TypeError, ValueError):
+        pass
+    if finished:
+        return False
+    wp_path_id = str(task.get("wp_path_id") or "")
+    return bool(wp_path_id and wp_path_id in target_cids)
+
+
+def _search_item_in_save_paths(item, save_paths, target_cids=None):
+    """Verify a search hit's real parent because 115 may ignore fs_search's CID."""
+    paths = {str(path or "").rstrip("/") for path in (save_paths or []) if path}
+    if not paths:
+        return True
+    target_cids = {str(cid) for cid in (target_cids or []) if cid}
+    fid = item.get("fid")
+    is_dir = not fid and str(item.get("fc", "")) != "1"
+    pid = item.get("pid") if is_dir else (item.get("pid") or item.get("cid"))
+    if not pid:
+        return False
+    if str(pid) in target_cids:
+        return True
+    parent_path = str(parent_crumbs_path(pid) or "").rstrip("/")
+    return any(parent_path == path or parent_path.startswith(path + "/") for path in paths)
+
+
 def check_magnet_exists(magnet, save_path, debug=False, strict_infohash=False,
-                        offline_tasks=None):
+                        offline_tasks=None, allowed_save_paths=None):
     parsed = parse_magnet_simple(magnet)
     if not parsed.get("ok"):
         out = {
@@ -704,6 +761,7 @@ def check_magnet_exists(magnet, save_path, debug=False, strict_infohash=False,
     in_offline = False
     offline_finished = False
     download_failed = False
+    matched_offline_task = None
     confidence = "none"
     cid = None
 
@@ -717,6 +775,25 @@ def check_magnet_exists(magnet, save_path, debug=False, strict_infohash=False,
             "steps": [],
         }
 
+    scoped_paths = list(allowed_save_paths or [])
+    if save_path and save_path not in scoped_paths:
+        scoped_paths.append(save_path)
+    scoped_cids = {
+        str(_resolve_path_to_cid(path)) for path in scoped_paths if path
+    }
+    scoped_cids.discard("0")
+    scoped_cids.discard("None")
+
+    def scoped_search(keyword, search_cid):
+        items = search_files(keyword, search_cid)
+        if not scoped_paths:
+            return items
+        return [
+            item for item in items
+            if isinstance(item, dict)
+            and _search_item_in_save_paths(item, scoped_paths, scoped_cids)
+        ]
+
     ol = ({"success": True, "tasks": offline_tasks}
           if offline_tasks is not None else offline_list())
     if ol.get("success"):
@@ -729,12 +806,20 @@ def check_magnet_exists(magnet, save_path, debug=False, strict_infohash=False,
             task_url = (task.get("url") or "").lower()
             if not (magnet.lower() in task_url or (infohash_hex and infohash_hex in task_url)):
                 continue
+            if scoped_paths and not _offline_task_in_save_paths(task, scoped_paths):
+                if dbg is not None:
+                    dbg["steps"].append({
+                        "stage": "offline_scope", "accepted": False,
+                        "allowed_save_paths": scoped_paths,
+                    })
+                continue
             # 失败任务不算“离线等待/已下载”，单独标记
             display = str(task.get("display_status") or "").strip().lower()
             if display in ("failed", "error"):
                 download_failed = True
                 continue
             in_offline = True
+            matched_offline_task = task
             if display == "finished":
                 offline_finished = True
             try:
@@ -757,8 +842,17 @@ def check_magnet_exists(magnet, save_path, debug=False, strict_infohash=False,
     # EGS 的复用身份必须是 infohash。严格模式只接受离线任务中的精确 hash，
     # 不再用标题/目录名推断“已经下载”；同标题的另一条磁链属于新内容。
     if dn and not strict_infohash:
-        actual_save_path = save_path or _get_default_save_path()
-        cid = _resolve_path_to_cid(actual_save_path) if actual_save_path else 0
+        # 文件搜索也必须遵守调用方给出的范围：显式目录优先，其次 allowed_save_paths，
+        # 最后才回退到配置的默认目录。目录无法定位时不再退化成 cid=0 的全盘搜索。
+        if save_path:
+            search_paths = [str(save_path).strip()]
+        elif allowed_save_paths:
+            search_paths = [str(path).strip() for path in allowed_save_paths if str(path or "").strip()]
+        else:
+            default_save_path = _get_default_save_path()
+            search_paths = [default_save_path] if default_save_path else []
+        actual_save_path = search_paths[0] if search_paths else ""
+        cid = _resolve_path_to_cid(actual_save_path) if actual_save_path else None
         keyword = _search_keyword_from_dn(dn)
         keywords = []
         if keyword:
@@ -781,10 +875,10 @@ def check_magnet_exists(magnet, save_path, debug=False, strict_infohash=False,
             dbg["keyword_primary"] = keyword
             dbg["keywords"] = keywords
 
-        if cid is not None:
+        if cid:
             files = []
             for kw in keywords:
-                files = search_files(kw, cid)
+                files = scoped_search(kw, cid)
                 if dbg is not None:
                     dbg["steps"].append({"stage": "search_files", "mode": "keyword", "query": kw, "cid": cid, "result_len": len(files)})
                 for f in files:
@@ -816,7 +910,7 @@ def check_magnet_exists(magnet, save_path, debug=False, strict_infohash=False,
                 date_code = brackets[0] if brackets else ""
                 if date_code:
                     for kw in (date_code, f"[{date_code}]"):
-                        files = search_files(kw, cid or 0)
+                        files = scoped_search(kw, cid or 0)
                         if dbg is not None:
                             dbg["steps"].append({"stage": "search_files", "mode": "date_code", "query": kw, "cid": cid or 0, "result_len": len(files)})
                         for f in files:
@@ -850,7 +944,7 @@ def check_magnet_exists(magnet, save_path, debug=False, strict_infohash=False,
                     name_no_bracket = name_no_bracket[first_bracket:]
                 name_no_bracket = re.sub(r'\[[^\]]+\]', '', name_no_bracket).strip()
                 if len(name_no_bracket) >= 3:
-                    files = search_files(name_no_bracket[:20], cid or 0)
+                    files = scoped_search(name_no_bracket[:20], cid or 0)
                     if dbg is not None:
                         dbg["steps"].append({"stage": "search_files", "mode": "plain_name", "query": name_no_bracket[:20], "cid": cid or 0, "result_len": len(files)})
                     for f in files:
@@ -875,9 +969,9 @@ def check_magnet_exists(magnet, save_path, debug=False, strict_infohash=False,
                             ],
                         })
 
-        if not matched_files and not in_offline and infohash_hex:
+        if cid and not matched_files and not in_offline and infohash_hex:
             try:
-                broad = search_files(infohash_hex[:12], cid or 0)
+                broad = scoped_search(infohash_hex[:12], cid)
                 if dbg is not None:
                     dbg["steps"].append({"stage": "search_files", "mode": "infohash_prefix", "query": infohash_hex[:12], "cid": cid or 0, "result_len": len(broad)})
                 for f in broad:
@@ -900,9 +994,9 @@ def check_magnet_exists(magnet, save_path, debug=False, strict_infohash=False,
         keyword = _search_keyword_from_dn(dn)
         broad_kw = keyword[:max(8, len(keyword)//3)] if keyword else ""
         broad_kw2 = broad_kw.replace("] [", "][") if broad_kw else ""
-        broad = search_files(broad_kw, cid) if broad_kw else []
+        broad = scoped_search(broad_kw, cid) if broad_kw else []
         if not broad and broad_kw2 and broad_kw2 != broad_kw:
-            broad = search_files(broad_kw2, cid)
+            broad = scoped_search(broad_kw2, cid)
         if broad:
             confidence = "low"
 
@@ -914,6 +1008,12 @@ def check_magnet_exists(magnet, save_path, debug=False, strict_infohash=False,
         "in_offline_tasks": in_offline,
         "offline_finished": offline_finished,
         "download_failed": download_failed,
+        "offline_task_add_time": (
+            matched_offline_task.get("add_time") if matched_offline_task else None
+        ),
+        "offline_percent": (
+            matched_offline_task.get("percentDone") if matched_offline_task else None
+        ),
         "dn": dn,
         "strict_infohash": bool(strict_infohash),
     }

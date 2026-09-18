@@ -16,6 +16,59 @@ from .runtime import daily_log_path, now_ts, pid_is_running, read_json, repo_roo
 
 ACTIONS = ('crawl', 'magnet', 'check', 'submit', 'organize')
 LABELS = dict(zip(ACTIONS, ('获取游戏清单', '获取下载用磁链', '校对115', '提交115', '整理115')))
+SUBMISSION_TIMEOUT_SECONDS = 72 * 60 * 60
+
+
+def _parse_local_timestamp(value):
+    if not value:
+        return None
+    try:
+        return time.mktime(time.strptime(str(value), '%Y-%m-%d %H:%M:%S'))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _submission_started_at(row, check_result, now_epoch=None):
+    """Return the persisted submission start, falling back to 115 task time."""
+    persisted = _parse_local_timestamp(row['submitted_at'])
+    if persisted is not None:
+        return persisted
+    try:
+        task_time = float(check_result.get('offline_task_add_time') or 0)
+    except (TypeError, ValueError):
+        task_time = 0
+    return task_time if task_time > 0 else (now_epoch if now_epoch is not None else time.time())
+
+
+def _mark_download_failed(conn, row, failed_at, reason):
+    """Reuse download_failed while retaining the bad hash as its exclusion key."""
+    infohash = str(row['infohash_hex'] or '').strip().lower() or None
+    conn.execute(
+        """UPDATE egs_games
+              SET download_failed=1, download_failed_at=?,
+                  downloaded=0, submitted_115=0, submitted_pick_code=NULL,
+                  link=NULL, nyaa_name=NULL, infohash_hex=?,
+                  torrent_name=NULL, torrent_files=NULL, torrent_size=NULL, resource_kind='',
+                  updated_at=?
+            WHERE egs_id=?""",
+        (failed_at, infohash, now_ts(), row['egs_id']),
+    )
+    if infohash:
+        conn.execute(
+            "UPDATE egs_nyaa_candidates SET selected=0 WHERE egs_id=? AND lower(infohash_hex)=?",
+            (row['egs_id'], infohash),
+        )
+    conn.execute(
+        """UPDATE egs_nyaa_search_log
+              SET selected_infohash=NULL, review_status='none',
+                  reviewed_at=?, review_note=?
+            WHERE egs_id=?""",
+        (failed_at, reason, row['egs_id']),
+    )
+    if infohash:
+        from .egs_core import refresh_magnet_duplicates
+        refresh_magnet_duplicates(conn, (infohash,))
+    conn.commit()
 
 
 def paths():
@@ -333,6 +386,7 @@ def execute_job(state, save, should_stop):
                         continue
                     reused = adopt_downloaded_folder_by_infohash(
                         conn, row['date'], name, row['link'], row['infohash_hex'],
+                        allowed_parent_paths=[f"/GAL/GAL-{year}" for year in lookup_years],
                     )
                     if reused:
                         report(
@@ -343,23 +397,34 @@ def execute_job(state, save, should_stop):
                     result, error = _check_magnet_exists_with_timeout(
                         row['link'], 60, strict_infohash=True,
                         offline_tasks=check_offline_tasks,
+                        allowed_save_paths=[f"/GAL/GAL-{year}" for year in lookup_years],
                     )
                     if error:
                         raise RuntimeError(error)
                     if result.get('download_failed'):
                         # 115 离线任务明确失败：回滚到无磁链状态，供后续重新爬取其他磁链
-                        conn.execute(
-                            """UPDATE egs_games
-                                   SET download_failed=1, download_failed_at=?,
-                                       downloaded=0, submitted_115=0, submitted_pick_code=NULL,
-                                       link=NULL, nyaa_name=NULL, infohash_hex=NULL,
-                                       torrent_name=NULL, torrent_files=NULL, torrent_size=NULL, resource_kind='',
-                                       updated_at=?
-                                 WHERE egs_id=? AND link=?""",
-                            (time.strftime('%Y-%m-%d %H:%M:%S'), now_ts(), row['egs_id'], row['link']),
-                        )
-                        conn.commit()
+                        failed_at = time.strftime('%Y-%m-%d %H:%M:%S')
+                        _mark_download_failed(conn, row, failed_at, '115离线任务明确失败')
                         report(name, 'failed', '115下载任务失败，已回滚为无磁链；可重新爬取其他磁链')
+                    elif result.get('in_offline_tasks') and not result.get('offline_finished'):
+                        now_epoch = time.time()
+                        started = _submission_started_at(row, result, now_epoch)
+                        if not row['submitted_at']:
+                            submitted_at = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(started))
+                            conn.execute(
+                                'UPDATE egs_games SET submitted_at=? WHERE egs_id=?',
+                                (submitted_at, row['egs_id']),
+                            )
+                            conn.commit()
+                        if now_epoch - started >= SUBMISSION_TIMEOUT_SECONDS:
+                            failed_at = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now_epoch))
+                            _mark_download_failed(
+                                conn, row, failed_at,
+                                '115离线任务提交超过72小时仍未完成，磁链已标记不可下载',
+                            )
+                            report(name, 'failed', '115下载超过72小时未完成，已标记磁链不可用并回滚')
+                        else:
+                            report(name, 'skipped', result.get('message') or '磁链在115离线任务中，等待下载完成')
                     elif result.get('exists'):
                         conn.execute(
                             '''UPDATE egs_games
@@ -377,8 +442,13 @@ def execute_job(state, save, should_stop):
                         adopt_downloaded_folder_by_infohash, resolve_cid, mkdir_year_dir,
                     )
                     info_hash = _magnet_info_hash(row['link'])
+                    year = int(row['date'][:4])
+                    directory = f'/GAL/GAL-{year}'
+                    # 提交阶段也只复用目标 /GAL 年份目录中的同 hash 目录；
+                    # /GAL.old 或其它位置的旧目录留给最后人工合并。
                     reused = adopt_downloaded_folder_by_infohash(
                         conn, row['date'], name, row['link'], row['infohash_hex'],
+                        allowed_parent_paths=[directory],
                     )
                     if reused:
                         report(
@@ -393,8 +463,6 @@ def execute_job(state, save, should_stop):
                         continue
                     prior = submitted_tasks.get(info_hash) if info_hash else None
                     if prior is None:
-                        year = int(row['date'][:4])
-                        directory = f'/GAL/GAL-{year}'
                         if directory not in year_dirs:
                             cid = resolve_cid(directory)
                             if not cid:
@@ -410,8 +478,9 @@ def execute_job(state, save, should_stop):
                     else:
                         # 同一条磁链本轮已提交过（本篇/补丁等重复条目），直接落库不再请求 115。
                         result = {'pick_code': prior['pick_code'], 'duplicate': True}
-                    conn.execute('UPDATE egs_games SET submitted_115=1, submitted_pick_code=?, updated_at=? WHERE egs_id=? AND link=?',
-                                 (result.get('pick_code'), now_ts(), row['egs_id'], row['link']))
+                    submitted_at = time.strftime('%Y-%m-%d %H:%M:%S')
+                    conn.execute('UPDATE egs_games SET submitted_115=1, submitted_pick_code=?, submitted_at=?, updated_at=? WHERE egs_id=? AND link=?',
+                                 (result.get('pick_code'), submitted_at, now_ts(), row['egs_id'], row['link']))
                     conn.commit()
                     if prior is not None:
                         report(name, 'success', f"磁链与《{prior['name']}》重复，沿用已提交任务")

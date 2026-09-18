@@ -345,7 +345,14 @@ if ($action === '115_login_status') {
 if ($action === '115_check') {
     $body = read_json_body();
     $magnet = $body['magnet'] ?? '';
-    $dir = $body['dir'] ?? '';
+    $dir = rtrim(strval($body['dir'] ?? ''), '/');
+    if (!preg_match('#^/GAL/GAL-[0-9]{4}$#', $dir)) {
+        json_response([
+            'success' => false,
+            'exists' => false,
+            'message' => '校对目录仅允许 /GAL/GAL-YYYY',
+        ]);
+    }
     $debug = $body['debug'] ?? null;
     $args = ['115', 'check', '--magnet', $magnet, '--dir', $dir];
     if ($debug) { $args[] = '--debug'; }

@@ -10,8 +10,8 @@
               无发布日时退化为标题[YYMMDD]月份匹配 +10
 - 发布者:     girlcelly +10 / 2D.G.F. +8
 
-护栏：名字高度相似但最后一个数字不同（如「コンチェルト4」→「コンチェルト3」）
-      视为不同版本，禁止仅靠公司/日期/发布者分数达到阈值。
+护栏：名字高度相似但作品编号不一致（如「コンチェルト4」→「コンチェルト3」，
+      或无编号原作→「睡眠姦シミュレーション9」）时，视为不同版本，禁止自动通过。
 """
 import re
 from datetime import datetime
@@ -66,14 +66,41 @@ def is_abnormally_short_name(name):
 
 
 def contains_english_marker(text):
-    """English releases are excluded unless the EGS title asks for one."""
+    """Detect an explicit English language word or code."""
     value = str(text or "")
-    return "english" in value.lower() or "英語" in value
+    lowered = value.lower()
+    return ("english" in lowered or "英語" in value
+            or bool(re.search(r"(?<![a-z])(?:eng|en)(?![a-z])", lowered)))
+
+
+def contains_supported_language_marker(text):
+    """Whether a release explicitly advertises Chinese or Japanese content.
+
+    Japanese text in a release title is commonly just the original work name,
+    so only explicit language words/codes count here.
+    """
+    value = str(text or "")
+    lowered = value.lower()
+    if ("chinese" in lowered or "japanese" in lowered
+            or any(marker in value for marker in (
+                "中文", "汉化", "漢化", "简体", "簡體", "繁体", "繁體",
+                "日語", "日本語",
+            ))):
+        return True
+    return bool(re.search(
+        r"(?<![a-z])(?:chs|cht|zh|cn|jpn|jp)(?![a-z])",
+        lowered,
+    ))
 
 
 def allows_english_candidate(game_name, candidate_title):
-    """Reject English-tagged candidates unless English is part of the game name."""
+    """Reject English-only candidates unless the game explicitly asks for English.
+
+    Multilingual releases that explicitly include Chinese or Japanese remain
+    eligible even when their title also contains an English marker.
+    """
     return (not contains_english_marker(candidate_title)
+            or contains_supported_language_marker(candidate_title)
             or contains_english_marker(game_name))
 
 
@@ -134,6 +161,21 @@ def _trailing_number_mismatch(gnorm, nt, match=None):
     return bool(next_char) and next_char.isdigit() and next_char != gnorm[-1]
 
 
+def _unnumbered_sequel_mismatch(gnorm, nt):
+    """Reject an unnumbered base title when the candidate immediately adds a sequel number."""
+    if not gnorm or gnorm[-1].isdigit():
+        return False
+    start = 0
+    while True:
+        pos = nt.find(gnorm, start)
+        if pos < 0:
+            return False
+        next_char = nt[pos + len(gnorm):pos + len(gnorm) + 1]
+        if next_char and next_char.isdigit():
+            return True
+        start = pos + 1
+
+
 def score_candidate(game, cand):
     """game: {name, company, date, release_date}; cand: {nyaa_title, nyaa_date, ...}
 
@@ -149,6 +191,8 @@ def score_candidate(game, cand):
         if gnorm in nt:
             total += 30
             detail["name_exact"] = 30
+            if _unnumbered_sequel_mismatch(gnorm, nt):
+                detail["edition_mismatch"] = True
         else:
             m = SequenceMatcher(None, gnorm, nt).find_longest_match(
                 0, len(gnorm), 0, len(nt)

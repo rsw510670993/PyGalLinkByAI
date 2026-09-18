@@ -8,7 +8,7 @@ import time
 from urllib.parse import unquote
 
 from .egs_core import ensure_egs_schema, open_egs_db as open_db
-from .runtime import read_config, repo_root
+from .runtime import read_config, repo_root, share_sqlite_wal_files
 from .p115_client import (
     get_item_info,
     parse_magnet_simple,
@@ -157,13 +157,20 @@ def find_downloaded_folder_by_infohash(conn, link, stored_infohash=None, getchu_
         return None
     finally:
         if legacy is not None:
+            # 只读打开也会生成 -wal/-shm；放开权限，避免之后 www-data 写 getchu.db 报 readonly。
+            share_sqlite_wal_files(os.path.abspath(db_path))
             legacy.close()
     return None
 
 
 def adopt_downloaded_folder_by_infohash(conn, date, name, link, stored_infohash=None,
-                                        getchu_db_path=None, verify_remote=True):
-    """Attach a downloaded folder to an EGS row iff the magnet infohash is identical."""
+                                        getchu_db_path=None, verify_remote=True,
+                                        allowed_parent_paths=None):
+    """Attach a downloaded folder iff both infohash and optional cloud scope match.
+
+    allowed_parent_paths is used by calibration and must be checked against the
+    current remote parent, since an old mapped directory may now be in /GAL.old.
+    """
     match = find_downloaded_folder_by_infohash(
         conn, link, stored_infohash=stored_infohash, getchu_db_path=getchu_db_path,
     )
@@ -173,10 +180,15 @@ def adopt_downloaded_folder_by_infohash(conn, date, name, link, stored_infohash=
     if not actual_name:
         return None
     folder_path = match.get("folder_path")
+    parent_path = None
     if match.get("pid"):
         parent_path = parent_crumbs_path(match["pid"])
         if parent_path:
             folder_path = parent_path.rstrip("/") + "/" + actual_name
+    if allowed_parent_paths is not None:
+        allowed = {str(path or "").rstrip("/") for path in allowed_parent_paths if path}
+        if not parent_path or parent_path.rstrip("/") not in allowed:
+            return None
     save_folder_record(
         conn, date, name, cid=match["cid"], pid=match.get("pid"),
         pick_code=match.get("pick_code"), folder_name=actual_name,
@@ -259,6 +271,12 @@ def adopt_downloaded_folder_by_torrent_name(conn, date, name, link, stored_infoh
 
 
 GAL_ROOT = "/GAL"
+
+
+def _in_gal_scope(path):
+    """Return whether a remote path is /GAL itself or below it."""
+    value = "/" + str(path or "").strip("/")
+    return value == GAL_ROOT or value.startswith(GAL_ROOT + "/")
 
 
 def _date_codes(value):
@@ -752,6 +770,12 @@ def _wrap_file_torrent(conn, loc, dn, target, year_dir_path, dry_run, year_dirs,
     result["old_path"] = ((loc.get("parent_path") or "").rstrip("/") + "/" + loc["name"])
     result["cid"] = loc.get("cid")
     result["located_by"] = "search_file"
+    if not _in_gal_scope(loc.get("parent_path")):
+        result["status"] = "outside_scope"
+        result["message"] = (
+            f"定位到 /GAL 之外：{result['old_path']}；按当前方针不整理，留待人工合并"
+        )
+        return result
     if dry_run:
         result["status"] = "would_wrap_file"
         result["target_path"] = f"{year_dir_path}/{target}"
@@ -1108,8 +1132,11 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
                         "pick_code": reused.get("pick_code"),
                         "located_by": "same_infohash_" + reused["source"],
                     }
-            if loc is None:
+            if loc is None or not _in_gal_scope(loc.get("parent_path")):
                 # 115 离线任务的定位同样只接受精确 infohash。
+                # 旧库映射可能已随目录整体迁入 /GAL.old（或父路径无法解析）；
+                # 此时不能直接放弃，同磁链的 115 离线产物可能已经落在 /GAL 内，
+                # 应优先复用范围内的产物再执行整理。
                 off = locate_offline_task_product(link, infohash_hex)
                 if off and off.get("offline_failed"):
                     if downloaded or submitted:
@@ -1178,6 +1205,19 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
                     result["status"] = "not_downloaded"
                     result["message"] = "未找到相同磁链的已下载内容"
                     return result
+            # 单文件种子也会被包装/移动；必须在包装前就拒绝 /GAL 之外的来源。
+            if not _in_gal_scope(loc.get("parent_path")):
+                result["old_name"] = loc.get("name")
+                result["old_path"] = (
+                    ((loc.get("parent_path") or "").rstrip("/") + "/" + str(loc.get("name") or ""))
+                    if loc.get("parent_path") else str(loc.get("name") or "")
+                )
+                result["status"] = "outside_scope"
+                result["message"] = (
+                    f"定位到 /GAL 之外：{result['old_path']}；按当前方针不整理，留待人工合并"
+                )
+                return result
+
             if not loc.get("is_dir"):
                 info = get_item_info(loc["cid"]) or {}
                 if info and not _item_is_single_file(str(info.get("cid") or loc["cid"]),
@@ -1205,6 +1245,15 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
         result["old_name"] = old_name
         result["old_path"] = (parent_path.rstrip("/") + "/" + old_name) if parent_path else old_name
         result["located_by"] = located_by
+
+        # 当前方针：新库只处理 /GAL 内的内容；/GAL.old 与 /GAL 之外的旧目录
+        # 留给最后人工合并，整理流程不得重命名、移动或展平。
+        if not _in_gal_scope(parent_path):
+            result["status"] = "outside_scope"
+            result["message"] = (
+                f"定位到 /GAL 之外：{result['old_path']}；按当前方针不整理，留待人工合并"
+            )
+            return result
 
         # 修复旧版把 115 自动生成的单文件目录再次包裹所形成的双层结构。
         repaired = _repair_double_wrapped_file(
@@ -1549,7 +1598,7 @@ def organize_report_outcome(code):
     """整理状态 → 流水线报告归类（failed/skipped/success），与页面统计口径一致。"""
     if code in ('error', 'conflict', 'ambiguous', 'shared_cid', 'not_dir', 'no_dn_date', 'missing_in_115'):
         return 'failed'
-    if code in ('no_link', 'not_downloaded', 'in_offline', 'duplicate_magnet', 'not_submittable', 'cross_year_confirm', 'month_shift_confirm', 'month_shift_rejected', 'cross_year_rejected'):
+    if code in ('no_link', 'not_downloaded', 'outside_scope', 'in_offline', 'duplicate_magnet', 'not_submittable', 'cross_year_confirm', 'month_shift_confirm', 'month_shift_rejected', 'cross_year_rejected'):
         return 'skipped'
     return 'success'
 

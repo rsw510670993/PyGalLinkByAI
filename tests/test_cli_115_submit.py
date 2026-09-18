@@ -61,6 +61,16 @@ class Submit115GuardTest(unittest.TestCase):
         submit.assert_not_called()
         self.assertEqual(output.call_args.args[0]["status"], "blocked")
 
+    @patch("tool.cli._print")
+    @patch("tool.p115_client.offline_submit")
+    def test_non_gal_submit_dir_is_rejected(self, submit, output):
+        args = self.args()
+        args.dir = "/我的下载/Getchu"
+        cmd_115_submit(args)
+
+        submit.assert_not_called()
+        self.assertEqual(output.call_args.args[0]["status"], "blocked")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -17,7 +17,7 @@ from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
 
-from .runtime import repo_root
+from .runtime import repo_root, share_sqlite_wal_files
 
 EGS_SQL_URL = "https://erogamescape.dyndns.org/~ap2/ero/toukei_kaiseki/sql_for_erogamer_form.php"
 HEADERS = {
@@ -52,10 +52,18 @@ def default_egs_db_path() -> str:
 
 
 def open_egs_db(db_path: str | None = None, timeout_s: int = 30) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path or default_egs_db_path(), timeout=timeout_s)
+    path = db_path or default_egs_db_path()
+    conn = sqlite3.connect(path, timeout=timeout_s)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 30000")
     conn.execute("PRAGMA journal_mode = WAL")
+    # 读一次 sqlite_master 促使 -wal/-shm 落盘，再放开跨用户写权限；
+    # 否则 web(www-data) 与 CLI(开发账号) 轮流写库时会互相报 readonly。
+    try:
+        conn.execute("SELECT count(*) FROM sqlite_master").fetchall()
+    except sqlite3.Error:
+        pass
+    share_sqlite_wal_files(path)
     return conn
 
 
@@ -96,6 +104,7 @@ def ensure_egs_schema(conn: sqlite3.Connection) -> None:
             infohash_hex    TEXT,
             submitted_115   INTEGER NOT NULL DEFAULT 0,
             submitted_pick_code TEXT,
+            submitted_at     TEXT,
             -- 种子真实 info 信息（来自 .torrent，与 115 产物目录精确对应）
             torrent_name    TEXT,
             torrent_files   TEXT,
@@ -140,6 +149,7 @@ def ensure_egs_schema(conn: sqlite3.Connection) -> None:
         ("torrent_size", "INTEGER"),
         ("download_failed", "INTEGER NOT NULL DEFAULT 0"),
         ("download_failed_at", "TEXT"),
+        ("submitted_at", "TEXT"),
         ("magnet_duplicate", "INTEGER NOT NULL DEFAULT 0"),
         ("duplicate_of_egs_id", "INTEGER"),
         ("duplicate_reason", "TEXT"),
@@ -173,6 +183,32 @@ _BUNDLE_OR_EXPANSION_RE = re.compile(
 
 def _duplicate_owner(members):
     """Choose the row that best represents the shared torrent's complete content."""
+    # Legacy data may already contain a sequel's torrent on its unnumbered base
+    # title. Prefer the EGS row that actually matches the shared torrent title.
+    from .egs_match import THRESHOLD, score_candidate
+
+    torrent_titles = {
+        str(row[key] or "").strip()
+        for row in members
+        for key in ("torrent_name", "nyaa_name")
+        if key in row.keys() and str(row[key] or "").strip()
+    }
+    if torrent_titles:
+        scored = []
+        for row in members:
+            game = {
+                "name": row["name"],
+                "company": row["company"] if "company" in row.keys() else "",
+                "date": row["date"],
+                "release_date": row["release_ts"],
+            }
+            best = max(score_candidate(game, {"nyaa_title": title})[0] for title in torrent_titles)
+            scored.append((best, row))
+        top_score = max(item[0] for item in scored)
+        winners = [row for score, row in scored if score == top_score]
+        if top_score >= THRESHOLD and len(winners) == 1:
+            return winners[0]
+
     expansions = [row for row in members if _BUNDLE_OR_EXPANSION_RE.search(row["name"] or "")]
     plain = [row for row in members if row not in expansions]
     if expansions and plain:
@@ -207,7 +243,8 @@ def refresh_magnet_duplicates(conn: sqlite3.Connection, infohashes=None) -> None
         marks = ",".join("?" for _ in hashes)
         values = tuple(sorted(hashes))
         rows = conn.execute(
-            f"SELECT egs_id,date,release_ts,name,lower(trim(infohash_hex)) AS hash FROM egs_games "
+            f"SELECT egs_id,date,release_ts,name,company,nyaa_name,torrent_name,"
+            f"lower(trim(infohash_hex)) AS hash FROM egs_games "
             f"WHERE trim(COALESCE(infohash_hex,'')) != '' "
             f"AND lower(trim(COALESCE(infohash_hex,''))) IN ({marks})", values
         ).fetchall()
@@ -218,7 +255,8 @@ def refresh_magnet_duplicates(conn: sqlite3.Connection, infohashes=None) -> None
         )
     else:
         rows = conn.execute(
-            "SELECT egs_id,date,release_ts,name,lower(trim(infohash_hex)) AS hash FROM egs_games "
+            "SELECT egs_id,date,release_ts,name,company,nyaa_name,torrent_name,"
+            "lower(trim(infohash_hex)) AS hash FROM egs_games "
             "WHERE trim(COALESCE(infohash_hex,'')) != ''"
         ).fetchall()
         conn.execute("UPDATE egs_games SET magnet_duplicate=0,duplicate_of_egs_id=NULL,duplicate_reason=NULL")
