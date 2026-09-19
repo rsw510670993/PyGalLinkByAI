@@ -164,6 +164,7 @@ cython_debug/
 *.xlsx
 uninstall.py
 .trae/
+.dsh-meow/
 getchu.db
 egs.db
 egs.db-shm
