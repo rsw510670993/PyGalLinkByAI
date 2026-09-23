@@ -25,7 +25,6 @@
             <div class="text-muted small">EGS 磁链仍由人工审核；此处负责提交后的下载核验、目录整理和历史资源归属。</div>
         </div>
         <div class="ms-auto d-flex gap-2">
-            <a class="btn btn-outline-secondary btn-sm" href="organize_review.php">旧待办页</a>
             <button id="refresh-btn" class="btn btn-outline-primary btn-sm" type="button">刷新</button>
         </div>
     </div>

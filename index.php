@@ -22,9 +22,6 @@
             .scope-actions .btn-group { width: 100%; }
             .scope-actions .btn-group > .btn { flex: 1 1 auto; }
         }
-        .pending-move-info { min-width: 0; }
-        .pending-move-info .path-arrow { font-family: monospace; word-break: break-all; }
-        .pending-move-actions { width: 120px; }
     </style>
 </head>
 <body class="bg-light">
@@ -58,13 +55,12 @@
                             <div class="btn-group" role="group" aria-label="115 操作">
                                 <button type="button" data-action="check" class="btn btn-outline-info" title="检查尚未确认下载的作品">校对115</button>
                                 <button type="button" data-action="submit" class="btn btn-outline-success" title="提交尚未提交且未下载的作品到 115">提交115</button>
-                                <button type="button" data-action="organize" class="btn btn-outline-danger" title="实际移动/重命名 115 目录并归入年份目录">整理115</button>
                             </div>
                         </div>
                     </div>
                 </div>
                 <div class="small text-muted mt-3">
-                    以上操作均使用所选年月范围。清单来自 EGS；磁链仅补充未匹配项目；校对检查尚未确认下载的作品；提交会跳过已提交或已下载作品；整理会实际移动/重命名 115 目录，请确认范围后再执行。
+                    以上操作均使用所选年月范围。清单来自 EGS；磁链仅补充未匹配项目；校对检查尚未确认下载的作品；提交会跳过已提交或已下载作品。提交后的下载核验和目录整理统一由 AI 整理工作台处理。
                 </div>
             </form>
             <div id="control-message" class="mt-2" role="status"></div>
@@ -96,40 +92,6 @@
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">知道了</button>
                     <a id="pending-review-link" class="btn btn-primary btn-sm" href="#">去审核</a>
-                </div>
-            </div>
-        </div>
-    </div>
-    <div class="modal fade" id="crossYearModal" tabindex="-1" aria-hidden="true">
-        <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title">搬月 / 跨年移动待人工确认</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                </div>
-                <div class="modal-body">
-                    <div class="alert alert-warning py-2 small">
-                        以下日期与 EGS 展示月份不同，或来源目录年份不同。确认后将以种子 info.name（缺失时回退磁链 dn）时间戳为准，写入实际发售月并更新展示月份；驳回则保留原目录，后续整理不再提示该候选。
-                    </div>
-                    <div class="table-responsive">
-                        <table class="table table-sm align-middle">
-                            <thead><tr>
-                                <th class="text-center" style="width:42px">
-                                    <input id="cross-year-select-all" class="form-check-input" type="checkbox" checked aria-label="全选待确认项">
-                                </th>
-                                <th>待确认项</th>
-                                <th class="text-end" style="width:120px">操作</th>
-                            </tr></thead>
-                            <tbody id="cross-year-body"></tbody>
-                        </table>
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <span id="cross-year-batch-status" class="small text-muted me-auto"></span>
-                    <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">暂不处理</button>
-                    <button type="button" id="confirm-all-cross-year" class="btn btn-warning btn-sm">
-                        批量同意已选
-                    </button>
                 </div>
             </div>
         </div>
