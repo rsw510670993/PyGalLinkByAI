@@ -27,6 +27,17 @@ pyGal 业务操作层
 
 Web 请求只负责入队、停止和读取事件，不同步等待模型执行。每次任务写入 `egs_ai_jobs`，进度写入 `egs_ai_events`，结构化判断和动作分别写入 `egs_ai_decisions`、`egs_ai_actions`。
 
+### 2.1 年度整理入口
+
+`tool/year_organizer.php` 提供年度候选扫描与提交界面。首个入口固定为 2022 年：
+
+- 扫描只读统计总记录、可处理磁链、已完成映射、等待下载和 AI 候选；
+- 已下载但缺少目录映射、映射位置异常或仍有整理待办的记录进入候选列表；
+- 用户可以逐项勾选后提交，选中的 EGS ID 结构化写入
+  `egs_ai_jobs.scope_egs_ids`；
+- worker 只能处理该 ID 列表，不得把范围扩展到同年其它记录；
+- 页面同时显示 Codex 与 115 登录状态，并可完成 115 二维码登录。
+
 ## 3. Agent 输出协议
 
 最终输出必须符合 `tool/ai_organizer_output.schema.json`：

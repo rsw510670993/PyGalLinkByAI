@@ -41,6 +41,7 @@ def ensure_ai_schema(conn: sqlite3.Connection) -> None:
             driver          TEXT NOT NULL,
             prompt          TEXT NOT NULL,
             scope_year      INTEGER,
+            scope_egs_ids   TEXT,
             status          TEXT NOT NULL DEFAULT 'queued',
             worker_pid      INTEGER,
             agent_pid       INTEGER,
@@ -102,6 +103,9 @@ def ensure_ai_schema(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(egs_ai_jobs)")}
+    if "scope_egs_ids" not in columns:
+        conn.execute("ALTER TABLE egs_ai_jobs ADD COLUMN scope_egs_ids TEXT")
     conn.commit()
 
 
@@ -119,6 +123,7 @@ def _json_value(value):
 def _job_dict(row, include_prompt: bool = True) -> dict:
     data = dict(row)
     data["cancel_requested"] = bool(data.get("cancel_requested"))
+    data["scope_egs_ids"] = _json_value(data.get("scope_egs_ids")) or []
     data["result"] = _json_value(data.pop("result_json", None))
     if not include_prompt:
         data.pop("prompt", None)
@@ -138,8 +143,28 @@ def record_event(conn, job_id: str, event_type: str, message: str,
     return int(cur.lastrowid)
 
 
+def _normalize_egs_ids(values) -> list[int]:
+    if values in (None, ""):
+        return []
+    if not isinstance(values, (list, tuple, set)):
+        raise ValueError("EGS 候选必须是 ID 列表")
+    result = []
+    for value in values:
+        try:
+            ident = int(value)
+        except (TypeError, ValueError):
+            raise ValueError("EGS 候选包含无效 ID") from None
+        if ident <= 0:
+            raise ValueError("EGS 候选包含无效 ID")
+        if ident not in result:
+            result.append(ident)
+    if len(result) > 500:
+        raise ValueError("单个任务最多处理 500 条 EGS 候选")
+    return result
+
+
 def create_job(prompt: str, *, driver: str = "codex", scope_year: int | None = None,
-               db_path: str | None = None) -> dict:
+               scope_egs_ids=None, db_path: str | None = None) -> dict:
     prompt = str(prompt or "").strip()
     if not prompt:
         raise ValueError("任务说明不能为空")
@@ -149,10 +174,28 @@ def create_job(prompt: str, *, driver: str = "codex", scope_year: int | None = N
         raise ValueError(f"不支持的 AI driver: {driver}")
     if scope_year is not None and not 1990 <= int(scope_year) <= 2100:
         raise ValueError("年份范围无效")
+    egs_ids = _normalize_egs_ids(scope_egs_ids)
 
     conn = open_egs_db(db_path)
     try:
         ensure_ai_schema(conn)
+        if egs_ids:
+            placeholders = ",".join("?" for _ in egs_ids)
+            rows = conn.execute(
+                f"SELECT egs_id,date FROM egs_games WHERE egs_id IN ({placeholders})",
+                tuple(egs_ids),
+            ).fetchall()
+            found = {int(row["egs_id"]): row["date"] for row in rows}
+            missing = [ident for ident in egs_ids if ident not in found]
+            if missing:
+                raise ValueError(f"EGS 候选不存在: {missing}")
+            if scope_year is not None:
+                wrong_year = [
+                    ident for ident in egs_ids
+                    if str(found[ident] or "")[:4] != str(int(scope_year))
+                ]
+                if wrong_year:
+                    raise ValueError(f"EGS 候选不属于 {scope_year} 年: {wrong_year}")
         active = conn.execute(
             "SELECT job_id,status FROM egs_ai_jobs WHERE status IN ('queued','running') LIMIT 1"
         ).fetchone()
@@ -162,10 +205,10 @@ def create_job(prompt: str, *, driver: str = "codex", scope_year: int | None = N
         now = _now()
         conn.execute(
             """INSERT INTO egs_ai_jobs
-               (job_id,driver,prompt,scope_year,status,created_at,updated_at)
-               VALUES (?,?,?,?,?,?,?)""",
+               (job_id,driver,prompt,scope_year,scope_egs_ids,status,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
             (job_id, driver, prompt, int(scope_year) if scope_year else None,
-             "queued", now, now),
+             json.dumps(egs_ids, ensure_ascii=False), "queued", now, now),
         )
         conn.commit()
         record_event(conn, job_id, "job.queued", "AI 整理任务已进入队列")
@@ -268,7 +311,132 @@ def system_status(*, db_path: str | None = None) -> dict:
     }
 
 
-def _snapshot(conn, scope_year: int | None) -> dict:
+def _year_preview(conn: sqlite3.Connection, year: int) -> dict:
+    ensure_egs_schema(conn)
+    tables = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    )}
+    has_folders = "egs_115_folders" in tables
+    folder_columns = (
+        "f.cid folder_cid,f.folder_name,f.folder_path,f.target_name,f.status folder_status"
+        if has_folders else
+        "NULL folder_cid,NULL folder_name,NULL folder_path,NULL target_name,NULL folder_status"
+    )
+    join = (
+        "LEFT JOIN egs_115_folders f ON f.date=g.date AND f.name=g.name"
+        if has_folders else ""
+    )
+    rows = conn.execute(
+        f"""SELECT g.egs_id,g.date,g.name,g.company,g.resource_kind,g.infohash_hex,g.link,
+                   g.torrent_name,COALESCE(g.downloaded,0) downloaded,
+                   COALESCE(g.submitted_115,0) submitted_115,
+                   COALESCE(g.download_failed,0) download_failed,
+                   COALESCE(g.magnet_duplicate,0) magnet_duplicate,
+                   COALESCE(g.submission_excluded,0) submission_excluded,
+                   {folder_columns}
+              FROM egs_games g {join}
+             WHERE substr(g.date,1,4)=?
+             ORDER BY g.date,g.egs_id""",
+        (str(year),),
+    ).fetchall()
+    pending_review = set()
+    if "egs_nyaa_search_log" in tables:
+        pending_review = {
+            int(row[0]) for row in conn.execute(
+                """SELECT egs_id FROM egs_nyaa_search_log
+                    WHERE COALESCE(result_count,0)>0
+                      AND selected_infohash IS NULL
+                      AND COALESCE(review_status,'pending')='pending'"""
+            )
+        }
+    issue_by_egs = {}
+    if "egs_organize_issues" in tables:
+        for row in conn.execute(
+            """SELECT id,egs_id,status,message FROM egs_organize_issues
+                WHERE resolved=0 AND substr(date,1,4)=? ORDER BY id""",
+            (str(year),),
+        ):
+            if row["egs_id"] is not None:
+                issue_by_egs[int(row["egs_id"])] = dict(row)
+
+    counts = {
+        "total": len(rows), "actionable": 0, "mapped": 0, "needs_ai": 0,
+        "awaiting_download": 0, "needs_submit": 0, "review_pending": 0,
+        "excluded": 0,
+    }
+    candidates = []
+    for row in rows:
+        item = dict(row)
+        ident = int(item["egs_id"])
+        actionable = (
+            str(item.get("link") or "").startswith("magnet:?")
+            and not item["magnet_duplicate"]
+            and not item["submission_excluded"]
+        )
+        if not actionable:
+            counts["excluded"] += 1
+            continue
+        counts["actionable"] += 1
+        if ident in pending_review:
+            counts["review_pending"] += 1
+            continue
+        mapped = bool(str(item.get("folder_cid") or "").strip())
+        mapping_mismatch = mapped and (
+            (
+                str(item.get("target_name") or "").strip()
+                and item.get("folder_name") != item.get("target_name")
+            )
+            or (
+                str(item.get("folder_path") or "").strip()
+                and not str(item["folder_path"]).startswith("/GAL/GAL-")
+            )
+        )
+        issue = issue_by_egs.get(ident)
+        reason = None
+        if issue:
+            reason = f"存在未解决整理待办：{issue.get('message') or issue.get('status')}"
+        elif item["downloaded"] and not mapped:
+            reason = "已下载但缺少 115 目录映射，需要核对 CID、名称和位置"
+        elif item["downloaded"] and mapping_mismatch:
+            reason = "目录映射与目标名称或正式年度目录不一致"
+
+        if reason:
+            counts["needs_ai"] += 1
+            candidates.append({
+                "egs_id": ident,
+                "date": item["date"],
+                "name": item["name"],
+                "company": item["company"],
+                "resource_kind": item["resource_kind"],
+                "infohash_hex": item["infohash_hex"],
+                "folder_cid": item.get("folder_cid"),
+                "folder_name": item.get("folder_name"),
+                "folder_path": item.get("folder_path"),
+                "target_name": item.get("target_name"),
+                "reason": reason,
+                "issue_id": issue.get("id") if issue else None,
+            })
+        elif item["downloaded"] and mapped:
+            counts["mapped"] += 1
+        elif item["submitted_115"]:
+            counts["awaiting_download"] += 1
+        elif not item["download_failed"]:
+            counts["needs_submit"] += 1
+    return {"success": True, "year": int(year), "counts": counts, "candidates": candidates}
+
+
+def year_preview(year: int, *, db_path: str | None = None) -> dict:
+    year = int(year)
+    if not 1990 <= year <= 2100:
+        raise ValueError("年份范围无效")
+    conn = open_egs_db(db_path)
+    try:
+        return _year_preview(conn, year)
+    finally:
+        conn.close()
+
+
+def _snapshot(conn, scope_year: int | None, scope_egs_ids=None) -> dict:
     ensure_egs_schema(conn)
     where = "WHERE resolved=0"
     params: list[object] = []
@@ -300,7 +468,22 @@ def _snapshot(conn, scope_year: int | None) -> dict:
                     sum(COALESCE(magnet_duplicate,0)=1) duplicates
                FROM egs_games {game_where}""", game_params
     ).fetchone())
-    return {"scope_year": scope_year, "totals": totals, "open_issues": issues}
+    selected_ids = _normalize_egs_ids(scope_egs_ids)
+    candidates = []
+    if scope_year:
+        preview = _year_preview(conn, int(scope_year))
+        selected = set(selected_ids)
+        candidates = [
+            item for item in preview["candidates"]
+            if not selected or int(item["egs_id"]) in selected
+        ]
+    return {
+        "scope_year": scope_year,
+        "scope_egs_ids": selected_ids,
+        "totals": totals,
+        "open_issues": issues,
+        "candidates": candidates,
+    }
 
 
 def _output_schema_path() -> str:
@@ -314,6 +497,11 @@ def _build_agent_prompt(job: sqlite3.Row, snapshot: dict) -> str:
 
 用户任务：
 {job['prompt']}
+
+本任务允许处理的 EGS ID：
+{json.dumps(_json_value(job['scope_egs_ids']) or [], ensure_ascii=False)}
+
+若上述列表非空，只能处理其中记录，不得扩展到同年其它记录。
 
 任务范围快照：
 {json.dumps(snapshot, ensure_ascii=False, indent=2)}
@@ -389,7 +577,7 @@ def run_job(job_id: str, *, db_path: str | None = None,
         binary = shutil.which("codex")
         if not binary:
             raise RuntimeError("找不到 codex CLI")
-        snapshot = _snapshot(conn, job["scope_year"])
+        snapshot = _snapshot(conn, job["scope_year"], _json_value(job["scope_egs_ids"]))
         record_event(conn, job_id, "context.ready", "任务上下文已生成", payload=snapshot)
 
         status_dir = Path(repo_root()) / "status"
@@ -481,13 +669,16 @@ def run_job(job_id: str, *, db_path: str | None = None,
 
 
 def start_job(prompt: str, *, driver: str = "codex", scope_year: int | None = None,
-              db_path: str | None = None) -> dict:
+              scope_egs_ids=None, db_path: str | None = None) -> dict:
     health = driver_status()
     if not health.get("available"):
         raise RuntimeError(health.get("message") or "找不到 codex CLI")
     if health.get("logged_in") is not True:
         raise RuntimeError("当前 Web/Worker 运行账户尚未登录 Codex")
-    job = create_job(prompt, driver=driver, scope_year=scope_year, db_path=db_path)
+    job = create_job(
+        prompt, driver=driver, scope_year=scope_year,
+        scope_egs_ids=scope_egs_ids, db_path=db_path,
+    )
     command = [sys.executable, "-m", "tool.ai_organizer_entry"]
     if db_path:
         command.extend(("--db", db_path))

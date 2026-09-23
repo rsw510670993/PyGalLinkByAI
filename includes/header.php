@@ -9,6 +9,7 @@ $navItems = [
     ['index.php', '年历与控制'],
     ['tool/egs.php', 'EGS 数据'],
     ['tool/ai_organizer.php', 'AI 整理'],
+    ['tool/year_organizer.php', '2022 整理'],
     ['tool/logs.php', '日志'],
 ];
 $escapeHeader = static fn($value) => htmlspecialchars($value, ENT_QUOTES, 'UTF-8');

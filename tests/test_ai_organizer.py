@@ -73,6 +73,41 @@ class AiOrganizerTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(tuple(action), ("move", "reported"))
 
+    def test_year_preview_and_scoped_candidate_job(self):
+        conn = ai_organizer.open_egs_db(self.db)
+        ai_organizer.ensure_egs_schema(conn)
+        conn.execute(
+            """INSERT INTO egs_games
+               (egs_id,model,egs_date,egs_name,egs_company,date,name,company,
+                release_ts,link,infohash_hex,downloaded,submitted_115)
+               VALUES (1,'PC','2022-01-01','Needs AI','Studio','2022-01',
+                       'Needs AI','Studio','2022-01-01','magnet:?xt=urn:btih:abc',
+                       'abc',1,1)"""
+        )
+        conn.execute(
+            """INSERT INTO egs_games
+               (egs_id,model,egs_date,egs_name,egs_company,date,name,company,
+                release_ts,link,infohash_hex,downloaded,submitted_115)
+               VALUES (2,'PC','2021-01-01','Other Year','Studio','2021-01',
+                       'Other Year','Studio','2021-01-01','magnet:?xt=urn:btih:def',
+                       'def',1,1)"""
+        )
+        conn.commit()
+        conn.close()
+
+        preview = ai_organizer.year_preview(2022, db_path=self.db)
+        self.assertEqual(preview["counts"]["needs_ai"], 1)
+        self.assertEqual(preview["candidates"][0]["egs_id"], 1)
+
+        job = ai_organizer.create_job(
+            "只处理页面选择", scope_year=2022, scope_egs_ids=[1], db_path=self.db
+        )
+        self.assertEqual(job["scope_egs_ids"], [1])
+        with self.assertRaisesRegex(ValueError, "不属于 2022 年"):
+            ai_organizer.create_job(
+                "错误年份", scope_year=2022, scope_egs_ids=[2], db_path=self.db
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -77,6 +77,18 @@ if ($action === 'ai_organizer_status') {
     json_response($data);
 }
 
+if ($action === 'ai_year_preview') {
+    $year = as_int($_GET['year'] ?? null, null);
+    if ($year === null) {
+        json_response(['success' => false, 'message' => '缺少 year']);
+    }
+    [$code, $data] = run_cli(
+        ['year-preview', '--year', strval($year)],
+        'ai_organizer_entry.py'
+    );
+    json_response($data);
+}
+
 if ($action === 'ai_job_detail') {
     $jobId = trim(strval($_GET['job_id'] ?? ''));
     $after = max(0, as_int($_GET['after_event_id'] ?? 0, 0));
@@ -97,6 +109,11 @@ if ($action === 'ai_job_start') {
     $body = read_json_body();
     $prompt = trim(strval($body['prompt'] ?? ''));
     $year = as_int($body['year'] ?? null, null);
+    $egsIds = $body['egs_ids'] ?? [];
+    if (!is_array($egsIds)) {
+        json_response(['success' => false, 'message' => 'egs_ids 必须是数组']);
+    }
+    $egsIds = array_values(array_unique(array_filter(array_map('intval', $egsIds), fn($id) => $id > 0)));
     if ($prompt === '') {
         json_response(['success' => false, 'message' => '任务说明不能为空']);
     }
@@ -104,6 +121,10 @@ if ($action === 'ai_job_start') {
     if ($year !== null) {
         $args[] = '--year';
         $args[] = strval($year);
+    }
+    if ($egsIds) {
+        $args[] = '--egs-ids';
+        $args[] = implode(',', $egsIds);
     }
     [$code, $data] = run_cli($args, 'ai_organizer_entry.py');
     json_response($data);

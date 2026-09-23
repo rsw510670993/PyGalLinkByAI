@@ -25,6 +25,7 @@
             <div class="text-muted small">EGS 磁链仍由人工审核；此处负责提交后的下载核验、目录整理和历史资源归属。</div>
         </div>
         <div class="ms-auto d-flex gap-2">
+            <a class="btn btn-outline-success btn-sm" href="year_organizer.php">2022 整理入口</a>
             <button id="refresh-btn" class="btn btn-outline-primary btn-sm" type="button">刷新</button>
         </div>
     </div>
@@ -86,7 +87,7 @@
     const $ = id => document.getElementById(id);
     const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','>':'&gt;','<':'&lt;','"':'&quot;',"'":'&#39;'}[c]));
     const terminal = new Set(['completed', 'partial', 'blocked', 'failed', 'cancelled']);
-    let selectedJob = null;
+    let selectedJob = new URLSearchParams(location.search).get('job_id');
     let refreshTimer = null;
 
     const statusMeta = status => ({
