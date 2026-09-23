@@ -165,6 +165,7 @@ cython_debug/
 uninstall.py
 .trae/
 .dsh-meow/
+.codex/
 getchu.db
 egs.db
 egs.db-shm

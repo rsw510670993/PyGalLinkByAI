@@ -39,9 +39,13 @@ function run_cli($args, $entry = 'cli.py') {
         2 => ['pipe', 'w'],
     ];
 
-    $env = array_merge($_SERVER, [
-        'HOME' => $root,
-    ]);
+    $env = [];
+    foreach ($_SERVER as $key => $value) {
+        if (is_string($key) && is_scalar($value)) {
+            $env[$key] = strval($value);
+        }
+    }
+    $env['HOME'] = $root;
     if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
         $env['USERPROFILE'] = $root;
         if (preg_match('/^[A-Za-z]:/', $root)) {
@@ -67,6 +71,56 @@ function run_cli($args, $entry = 'cli.py') {
 }
 
 $action = isset($_GET['action']) ? $_GET['action'] : '';
+
+if ($action === 'ai_organizer_status') {
+    [$code, $data] = run_cli(['status'], 'ai_organizer_entry.py');
+    json_response($data);
+}
+
+if ($action === 'ai_job_detail') {
+    $jobId = trim(strval($_GET['job_id'] ?? ''));
+    $after = max(0, as_int($_GET['after_event_id'] ?? 0, 0));
+    if ($jobId === '') {
+        json_response(['success' => false, 'message' => '缺少 job_id']);
+    }
+    [$code, $data] = run_cli(
+        ['detail', '--job-id', $jobId, '--after-event-id', strval($after)],
+        'ai_organizer_entry.py'
+    );
+    json_response($data);
+}
+
+if ($action === 'ai_job_start') {
+    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+        json_response(['success' => false, 'message' => '请使用 POST 请求']);
+    }
+    $body = read_json_body();
+    $prompt = trim(strval($body['prompt'] ?? ''));
+    $year = as_int($body['year'] ?? null, null);
+    if ($prompt === '') {
+        json_response(['success' => false, 'message' => '任务说明不能为空']);
+    }
+    $args = ['start', '--driver', 'codex', '--prompt', $prompt];
+    if ($year !== null) {
+        $args[] = '--year';
+        $args[] = strval($year);
+    }
+    [$code, $data] = run_cli($args, 'ai_organizer_entry.py');
+    json_response($data);
+}
+
+if ($action === 'ai_job_stop') {
+    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+        json_response(['success' => false, 'message' => '请使用 POST 请求']);
+    }
+    $body = read_json_body();
+    $jobId = trim(strval($body['job_id'] ?? ''));
+    if ($jobId === '') {
+        json_response(['success' => false, 'message' => '缺少 job_id']);
+    }
+    [$code, $data] = run_cli(['stop', '--job-id', $jobId], 'ai_organizer_entry.py');
+    json_response($data);
+}
 
 if ($action === 'pipeline_preflight') {
     $actionName = strval($_GET['pipeline_action'] ?? 'check');
