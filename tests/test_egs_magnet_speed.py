@@ -418,6 +418,37 @@ class MagnetSpeedTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_reviewed_collection_resource_owns_shared_magnet(self):
+        title = "[241206] 桃色恋姫 桃香編 + 華琳編 + 雪蓮編"
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = egs_core.open_egs_db(str(Path(tmp) / "egs.db"))
+            try:
+                egs_core.ensure_egs_schema(conn)
+                for ident, date, release, name, resource_kind in (
+                    (1, "2022-09", "2022-09-30", "桃色恋姫 桃香編", ""),
+                    (2, "2022-12", "2022-12-23", "桃色恋姫 華琳編", ""),
+                    (3, "2024-02", "2024-02-22", "桃色恋姫 雪蓮編", "collection_dlc"),
+                ):
+                    conn.execute(
+                        """INSERT INTO egs_games
+                           (egs_id,model,egs_date,egs_name,egs_company,date,name,company,
+                            release_ts,link,infohash_hex,nyaa_name,resource_kind)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (ident, "PC", release, name, "BaseSon", date, name, "BaseSon",
+                         release, LINK, HASH, title, resource_kind),
+                    )
+                egs_core.refresh_magnet_duplicates(conn)
+
+                states = {
+                    row["egs_id"]: (row["magnet_duplicate"], row["duplicate_of_egs_id"])
+                    for row in conn.execute(
+                        "SELECT egs_id,magnet_duplicate,duplicate_of_egs_id FROM egs_games"
+                    )
+                }
+                self.assertEqual(states, {1: (1, 3), 2: (1, 3), 3: (0, None)})
+            finally:
+                conn.close()
+
     def test_shared_magnet_title_owns_numbered_sequel_not_shorter_base(self):
         title = "[260416][エロフラ部] 睡眠姦シミュレーション9 [RJ01605313].zip"
         with tempfile.TemporaryDirectory() as tmp:

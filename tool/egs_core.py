@@ -183,6 +183,19 @@ _BUNDLE_OR_EXPANSION_RE = re.compile(
 
 def _duplicate_owner(members):
     """Choose the row that best represents the shared torrent's complete content."""
+    # A manually reviewed collection/DLC row is an explicit ownership decision.
+    # Prefer the newest such row before fuzzy title scoring, which can otherwise
+    # assign a multi-title bundle to the first/shortest installment.
+    collection_rows = [
+        row for row in members
+        if "resource_kind" in row.keys() and row["resource_kind"] == "collection_dlc"
+    ]
+    if collection_rows:
+        return max(
+            collection_rows,
+            key=lambda row: (str(row["release_ts"] or row["date"] or ""), int(row["egs_id"])),
+        )
+
     # Legacy data may already contain a sequel's torrent on its unnumbered base
     # title. Prefer the EGS row that actually matches the shared torrent title.
     from .egs_match import THRESHOLD, score_candidate
@@ -243,7 +256,7 @@ def refresh_magnet_duplicates(conn: sqlite3.Connection, infohashes=None) -> None
         marks = ",".join("?" for _ in hashes)
         values = tuple(sorted(hashes))
         rows = conn.execute(
-            f"SELECT egs_id,date,release_ts,name,company,nyaa_name,torrent_name,"
+            f"SELECT egs_id,date,release_ts,name,company,nyaa_name,torrent_name,resource_kind,"
             f"lower(trim(infohash_hex)) AS hash FROM egs_games "
             f"WHERE trim(COALESCE(infohash_hex,'')) != '' "
             f"AND lower(trim(COALESCE(infohash_hex,''))) IN ({marks})", values
@@ -255,7 +268,7 @@ def refresh_magnet_duplicates(conn: sqlite3.Connection, infohashes=None) -> None
         )
     else:
         rows = conn.execute(
-            "SELECT egs_id,date,release_ts,name,company,nyaa_name,torrent_name,"
+            "SELECT egs_id,date,release_ts,name,company,nyaa_name,torrent_name,resource_kind,"
             "lower(trim(infohash_hex)) AS hash FROM egs_games "
             "WHERE trim(COALESCE(infohash_hex,'')) != ''"
         ).fetchall()
