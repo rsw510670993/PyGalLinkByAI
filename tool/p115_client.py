@@ -258,6 +258,55 @@ def qr_login_step3(uid, app="alipaymini"):
         return {"success": False, "message": str(e)}
 
 
+def _magnet_info_hash(magnet):
+    """从磁链中提取 info_hash（小写 hex），失败返回空串。"""
+    parsed = parse_magnet_simple(magnet or "")
+    return parsed.get("infohash_hex") or ""
+
+
+def _error_response(exc):
+    """尽量从 p115client 异常中取出原始 115 响应 dict，取不到返回 None。"""
+    resp = getattr(exc, "message", None)
+    return resp if isinstance(resp, dict) else None
+
+
+def _is_duplicate_task_error(exc):
+    """115 对重复离线任务的拒绝：lixianssp errcode=10008 / web errno=919。"""
+    resp = _error_response(exc)
+    if resp is not None:
+        inner = resp.get("data") if isinstance(resp.get("data"), dict) else resp
+        if isinstance(inner, dict):
+            if str(inner.get("errcode") or "") == "10008" or str(inner.get("errno") or "") == "919":
+                return True
+    return "任务已存在" in str(exc)
+
+
+def _duplicate_task_info(exc, magnet):
+    """重复提交时回收已有任务信息：优先取 115 返回的 info_hash/pick_code，
+    否则按 info_hash 查离线任务列表补齐 pick_code。"""
+    info_hash = ""
+    pick_code = None
+    resp = _error_response(exc)
+    if resp is not None:
+        inner = resp.get("data") if isinstance(resp.get("data"), dict) else resp
+        if isinstance(inner, dict):
+            info_hash = str(inner.get("info_hash") or "").lower()
+            pick_code = inner.get("pick_code") or inner.get("pickcode") or inner.get("pc") or None
+    if not info_hash:
+        info_hash = _magnet_info_hash(magnet)
+    if not pick_code and info_hash:
+        ol = offline_list()
+        for task in ol.get("tasks", []) if ol.get("success") else []:
+            if not isinstance(task, dict):
+                continue
+            task_hash = str(task.get("info_hash") or "").lower()
+            task_url = str(task.get("url") or "").lower()
+            if info_hash in (task_hash, task_url):
+                pick_code = task.get("pick_code") or None
+                break
+    return {"info_hash": info_hash, "pick_code": pick_code}
+
+
 def offline_submit(magnet, save_path):
     client = load_client()
     if client is None:
@@ -267,6 +316,8 @@ def offline_submit(magnet, save_path):
         cid = 0
         if save_path:
             cid = _resolve_path_to_cid(save_path)
+            if not cid:
+                return {"success": False, "message": "无法定位下载目录: " + save_path}
         payload = {"url": magnet}
         if cid:
             payload["wp_path_id"] = cid
@@ -277,7 +328,34 @@ def offline_submit(magnet, save_path):
             pick_code = data.get("pick_code") or data.get("pickcode") or data.get("pc")
         return {"success": True, "pick_code": pick_code, "response": resp}
     except Exception as e:
+        if _is_duplicate_task_error(e):
+            # 任务已存在 = 该磁链已在 115 离线列表中，语义上等同于提交成功，
+            # 回收已有任务的 info_hash/pick_code 供上层落库，避免每次重跑都报错。
+            info = _duplicate_task_info(e, magnet)
+            return {
+                "success": True,
+                "duplicate": True,
+                "info_hash": info["info_hash"],
+                "pick_code": info["pick_code"],
+                "message": "任务已存在，视为提交成功",
+                "response": _error_response(e),
+            }
         return {"success": False, "message": str(e)}
+
+
+def _offline_tasks_from_response(resp):
+    if not isinstance(resp, dict):
+        return []
+    for key in ("tasks", "data", "list"):
+        value = resp.get(key)
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            for nested_key in ("tasks", "data", "list"):
+                nested = value.get(nested_key)
+                if isinstance(nested, list):
+                    return nested
+    return []
 
 
 def offline_list():
@@ -287,21 +365,16 @@ def offline_list():
     try:
         _, check_response = _import_p115client()
         resp = check_response(client.offline_list({"page": 1, "page_size": 100}))
-        tasks = []
-        if isinstance(resp, dict):
-            for k in ("tasks", "data", "list"):
-                v = resp.get(k)
-                if isinstance(v, list):
-                    tasks = v
-                    break
-                if isinstance(v, dict):
-                    for kk in ("tasks", "data", "list"):
-                        vv = v.get(kk)
-                        if isinstance(vv, list):
-                            tasks = vv
-                            break
-                    if tasks:
-                        break
+        tasks = _offline_tasks_from_response(resp)
+        try:
+            page_count = min(100, max(1, int(resp.get("page_count") or 1)))
+        except (AttributeError, TypeError, ValueError):
+            page_count = 1
+        for page in range(2, page_count + 1):
+            page_resp = check_response(
+                client.offline_list({"page": page, "page_size": 100})
+            )
+            tasks.extend(_offline_tasks_from_response(page_resp))
         return {"success": True, "tasks": tasks, "response": resp}
     except Exception as e:
         return {"success": False, "message": str(e), "tasks": []}
@@ -386,18 +459,142 @@ def _normalize_for_comparison(name):
     first_bracket = name.find('[')
     if first_bracket > 0:
         name = name[first_bracket:]
-    name = re.split(r'\s*\+\s*', name)[0]
+    # 仅去掉“ + 追加内容/特典”后缀；不能用无空格的 + 切分（会误截公司名如 [Brand+1]）
+    name = re.split(r'\s+\+\s+', name)[0]
+    name = re.sub(r'\]\s+\[', '][', name)
     name = name.lower()
-    name = name.replace('・', '').replace('♡', '').replace('❤', '').replace('♥', '')
-    name = name.replace('~', '').replace('～', '').replace('！', '').replace('：', '')
-    name = re.sub(r'\(\s*mdf\s*\+\s*mds\s*\)', '', name)
-    name = re.sub(r'\b(disc|disk)\s*\d+\b', '', name)
-    name = re.sub(r'\[(\d{7,})\]', '', name)
-    name = re.sub(r'\[\s*\d+(?:\.\d+)?\s*(?:kb|mb|gb|tb)\s*\]', '', name)
-    name = re.sub(r'\b(?:crack|patch|update)\b', '', name)
-    name = re.sub(r'\bmini\s*adv\b', '', name)
+    name = name.translate(str.maketrans('０１２３４５６７８９', '0123456789'))
+    for ch in '・♡❤♥~～〜！!？?：:『』「」－–—−―ｰ‐‑‒ー♀♂':
+        name = name.replace(ch, '')
+    for pattern in (
+        r'\(\s*mdf\s*\+\s*mds\s*\)',
+        r'\(\s*mdf\+mds\s*\)',
+        r'\b(disc|disk)\s*\d+\b',
+        r'<[^>]*>',
+        r'＜[^＞]*＞',
+        r'【[^】]*】',
+        r'(?i)\[\s*(?:jpn|jp|eng|english|chs|cht|cn|zh|chinese|kr|korean|japanese)\s*\]',
+        r'\[[^\]]*(?:汉化|漢化|中文|简体|繁体|硬盘|硬碟|硬盤)[^\]]*\]',
+        r'\[(\d{7,})\]',
+        r'\[\s*\d[\d.,]*(?:\.\d+)?\s*(?:k|m|g|t)i?b\s*\]',
+        r'(?i)\bdvd\s*version\b',
+        r'(?i)\bdvd\b',
+        r'\b(?:crack|patch|update|updated)\b',
+        r'(?:パッケージ版|ダウンロード版|dl\s*版|通常版)',
+        r'\[\s*\]',
+        r'\bmini\s*adv\b',
+    ):
+        name = re.sub(pattern, '', name)
     name = re.sub(r'[\s\-_.]+', ' ', name).strip()
     return name
+
+
+_DATE_PREFIX_RE = re.compile(r'^\[(\d{6})\]')
+_DATE_BRACKET_RE = re.compile(r'^\[\d{6}\]\s*')
+
+
+def _leading_date_codes(s):
+    codes = []
+    while True:
+        m = _DATE_PREFIX_RE.match(s or "")
+        if not m:
+            break
+        codes.append(m.group(1))
+        s = (s or "")[m.end():]
+    return codes
+
+
+def _strip_leading_dates_and_tags(s):
+    s = (s or "").strip()
+    while True:
+        m = _DATE_PREFIX_RE.match(s)
+        if not m:
+            break
+        s = s[m.end():].lstrip()
+    while True:
+        if not s.startswith('['):
+            break
+        end = s.find(']')
+        if end <= 0:
+            break
+        s = s[end + 1:].lstrip()
+    return s.strip()
+
+
+def _is_safe_substring(needle, haystack):
+    """判断 needle 是否是 haystack 的边界完整子串。
+
+    不做无边界包含，避免《Game》被误判成《Game2》《GameX》等前作/异作。
+    """
+    if not needle or not haystack or len(needle) > len(haystack):
+        return False
+    start = 0
+    while True:
+        pos = haystack.find(needle, start)
+        if pos < 0:
+            return False
+        before_ok = pos == 0 or not haystack[pos - 1].isalnum()
+        after_pos = pos + len(needle)
+        after_ok = after_pos == len(haystack) or not haystack[after_pos].isalnum()
+        # 标题归一化会把感叹号等标点删除，但可能留下空格：
+        # ``SPIN!2`` 因而变成 ``SPIN 2``，而 ``B2-STYLE`` 等版本名也可能
+        # 接在旧作标题之后。空格后的字母/数字仍属于副标题、版本或续作后缀。
+        if after_ok and after_pos < len(haystack) and haystack[after_pos].isspace():
+            next_text = haystack[after_pos:].lstrip()
+            if next_text and next_text[0].isalnum():
+                after_ok = False
+        if before_ok and after_ok:
+            return True
+        start = pos + 1
+
+
+def _names_match(norm_dn, norm_fname):
+    if not norm_dn or not norm_fname:
+        return False
+    dn_core = _strip_leading_dates_and_tags(norm_dn).replace(" ", "")
+    fn_core = _strip_leading_dates_and_tags(norm_fname).replace(" ", "")
+    # 短词（如搜索产生的 ``style`` 目录）不能对长标题做包含匹配；
+    # 短作品名仍可通过核心标题完全相等命中。
+    if min(len(dn_core), len(fn_core)) <= 6:
+        return dn_core == fn_core
+    if _is_safe_substring(norm_dn, norm_fname) or _is_safe_substring(norm_fname, norm_dn):
+        return True
+    dn_compact = norm_dn.replace(" ", "")
+    fn_compact = norm_fname.replace(" ", "")
+    if _is_safe_substring(dn_compact, fn_compact) or _is_safe_substring(fn_compact, dn_compact):
+        return True
+    dn_codes = _leading_date_codes(norm_dn)
+    fn_codes = _leading_date_codes(norm_fname)
+    common = None
+    for c in dn_codes:
+        if c in fn_codes:
+            common = c
+            break
+    if not common:
+        dn_tail = _strip_leading_dates_and_tags(norm_dn)
+        fn_tail = _strip_leading_dates_and_tags(norm_fname)
+        dn_compact_tail = dn_tail.replace(" ", "")
+        fn_compact_tail = fn_tail.replace(" ", "")
+        if dn_tail and fn_tail and min(len(dn_compact_tail), len(fn_compact_tail)) >= 6:
+            if _is_safe_substring(dn_tail, fn_tail) or _is_safe_substring(fn_tail, dn_tail):
+                return True
+            dn2 = dn_tail.replace(" ", "")
+            fn2 = fn_tail.replace(" ", "")
+            if _is_safe_substring(dn2, fn2) or _is_safe_substring(fn2, dn2):
+                return True
+        return False
+
+    dn_no_date = re.sub(r'^\[' + re.escape(common) + r'\]\s*', '', norm_dn, count=1)
+    fn_no_date = re.sub(r'^\[' + re.escape(common) + r'\]\s*', '', norm_fname, count=1)
+    dn_no_date = re.sub(r'^(?:\[[^\]]+\]\s*)+', '', dn_no_date).strip()
+    fn_no_date = re.sub(r'^(?:\[[^\]]+\]\s*)+', '', fn_no_date).strip()
+    if dn_no_date and fn_no_date:
+        if _is_safe_substring(dn_no_date, fn_no_date) or _is_safe_substring(fn_no_date, dn_no_date):
+            return True
+        dn2 = dn_no_date.replace(" ", "")
+        fn2 = fn_no_date.replace(" ", "")
+        return _is_safe_substring(dn2, fn2) or _is_safe_substring(fn2, dn2)
+    return False
 
 
 def _search_keyword_from_dn(dn):
@@ -416,7 +613,7 @@ def _search_keyword_from_dn(dn):
             continue
         if re.fullmatch(r'\d{7,}', v):
             continue
-        if re.fullmatch(r'\s*\d+(?:\.\d+)?\s*(?:kb|mb|gb|tb)\s*', v.lower()):
+        if re.fullmatch(r'\s*\d[\d.,]*(?:\.\d+)?\s*(?:k|m|g|t)i?b\s*', v.lower()):
             continue
         rest.append(v)
     if date_bracket and rest:
@@ -425,14 +622,127 @@ def _search_keyword_from_dn(dn):
         return f"[{date_bracket}]"
     if rest:
         return f"[{rest[0]}]"
-    name = re.split(r'\s*\+\s*', name)[0]
+    # 仅去掉“ + 追加内容/特典”后缀；不能用无空格的 + 切分（会误截公司名如 [Brand+1]）
+    name = re.split(r'\s+\+\s+', name)[0]
     return name.strip()[:30]
 
 
-def check_magnet_exists(magnet, save_path):
+def _extra_keywords_from_dn(dn):
+    name = (dn or "").strip()
+    first_bracket = name.find('[')
+    if first_bracket > 0:
+        name = name[first_bracket:]
+
+    brackets = re.findall(r'\[([^\]]+)\]', name)
+    date_code = ""
+    company = ""
+    digits7 = ""
+    for raw in brackets:
+        v = raw.strip()
+        if not date_code and re.fullmatch(r'\d{6}', v):
+            date_code = v
+            continue
+        if not digits7 and re.fullmatch(r'\d{7,}', v):
+            digits7 = v
+            continue
+        if not company and v and not re.fullmatch(r'\s*\d[\d.,]*(?:\.\d+)?\s*(?:k|m|g|t)i?b\s*', v.lower()):
+            company = v
+
+    title = re.sub(r'\[[^\]]+\]', ' ', name)
+    title = re.split(r'\s*\+\s*', title)[0]
+    title = re.sub(r'\[\s*\d[\d.,]*(?:\.\d+)?\s*(?:k|m|g|t)i?b\s*\]', ' ', title, flags=re.I)
+    title = re.sub(r'(?:パッケージ版|ダウンロード版|dl\s*版|通常版)', ' ', title, flags=re.I)
+    title = re.sub(r'[\(\（].*?[\)\）]', ' ', title)
+    title = re.sub(r'[\s\-_.]+', ' ', title).strip()
+    if len(title) > 24:
+        title = title[:24].strip()
+
+    kws = []
+    if digits7:
+        kws.append(f"[{digits7}]")
+    if date_code:
+        kws.append(f"[{date_code}]")
+    if title and date_code:
+        kws.append(f"[{date_code}] {title}")
+        kws.append(f"[{date_code}]{title}")
+    if title and company:
+        kws.append(f"[{company}] {title}")
+        kws.append(f"[{company}]{title}")
+    if title:
+        kws.append(title)
+
+    uniq = []
+    for it in kws:
+        it = (it or "").strip()
+        if not it:
+            continue
+        if it not in uniq:
+            uniq.append(it)
+    return uniq
+
+
+def _offline_task_in_save_paths(task, save_paths):
+    """Return whether an offline task/product is currently inside an allowed path."""
+    paths = {str(path or "").rstrip("/") for path in (save_paths or []) if path}
+    if not paths:
+        return True
+    target_cids = {str(_resolve_path_to_cid(path)) for path in paths}
+    target_cids.discard("0")
+    target_cids.discard("None")
+
+    file_id = str(task.get("file_id") or task.get("delete_file_id") or "")
+    if file_id:
+        info = get_item_info(file_id)
+        if not info:
+            return False
+        pid = info.get("pid")
+        parent_path = parent_crumbs_path(pid) if pid else None
+        parent_path = str(parent_path or "").rstrip("/")
+        return any(parent_path == path or parent_path.startswith(path + "/") for path in paths)
+
+    # Pending tasks do not necessarily have a product yet; their explicit save CID is
+    # the only reliable scope. Completed tasks without an accessible product are not
+    # accepted as downloaded during scoped calibration.
+    display = str(task.get("display_status") or "").strip().lower()
+    finished = display == "finished"
+    try:
+        finished = finished or int(task.get("status")) == 2
+    except (TypeError, ValueError):
+        pass
+    try:
+        finished = finished or float(
+            task.get("percentDone") or task.get("percent_done") or 0
+        ) >= 100
+    except (TypeError, ValueError):
+        pass
+    if finished:
+        return False
+    wp_path_id = str(task.get("wp_path_id") or "")
+    return bool(wp_path_id and wp_path_id in target_cids)
+
+
+def _search_item_in_save_paths(item, save_paths, target_cids=None):
+    """Verify a search hit's real parent because 115 may ignore fs_search's CID."""
+    paths = {str(path or "").rstrip("/") for path in (save_paths or []) if path}
+    if not paths:
+        return True
+    target_cids = {str(cid) for cid in (target_cids or []) if cid}
+    fid = item.get("fid")
+    is_dir = not fid and str(item.get("fc", "")) != "1"
+    pid = item.get("pid") if is_dir else (item.get("pid") or item.get("cid"))
+    if not pid:
+        return False
+    if str(pid) in target_cids:
+        return True
+    parent_path = str(parent_crumbs_path(pid) or "").rstrip("/")
+    return any(parent_path == path or parent_path.startswith(path + "/") for path in paths)
+
+
+def check_magnet_exists(magnet, save_path, debug=False, strict_infohash=False,
+                        offline_tasks=None, allowed_save_paths=None):
     parsed = parse_magnet_simple(magnet)
     if not parsed.get("ok"):
-        return {
+        out = {
             "exists": False,
             "confidence": "none",
             "infohash_hex": parsed.get("infohash_hex"),
@@ -440,57 +750,192 @@ def check_magnet_exists(magnet, save_path):
             "in_offline_tasks": False,
             "message": "磁链解析失败: " + ", ".join(parsed.get("errors", [])),
         }
+        if debug:
+            out["debug"] = {"stage": "parse_magnet_simple", "parsed": parsed}
+        return out
 
     infohash_hex = parsed.get("infohash_hex")
     dn = parsed.get("dn", "")
 
     matched_files = []
     in_offline = False
+    offline_finished = False
+    download_failed = False
+    matched_offline_task = None
     confidence = "none"
+    cid = None
 
-    ol = offline_list()
+    dbg = None
+    if debug:
+        dbg = {
+            "parsed": parsed,
+            "has_cookie_file": bool(_read_cookie_string()),
+            "save_path_input": save_path,
+            "save_path_default": _get_default_save_path(),
+            "steps": [],
+        }
+
+    scoped_paths = list(allowed_save_paths or [])
+    if save_path and save_path not in scoped_paths:
+        scoped_paths.append(save_path)
+    scoped_cids = {
+        str(_resolve_path_to_cid(path)) for path in scoped_paths if path
+    }
+    scoped_cids.discard("0")
+    scoped_cids.discard("None")
+
+    def scoped_search(keyword, search_cid):
+        items = search_files(keyword, search_cid)
+        if not scoped_paths:
+            return items
+        return [
+            item for item in items
+            if isinstance(item, dict)
+            and _search_item_in_save_paths(item, scoped_paths, scoped_cids)
+        ]
+
+    ol = ({"success": True, "tasks": offline_tasks}
+          if offline_tasks is not None else offline_list())
     if ol.get("success"):
         tasks = ol.get("tasks", [])
         if isinstance(tasks, dict):
             tasks = tasks.get("data", []) if isinstance(tasks, dict) else []
         for task in tasks:
-            if isinstance(task, dict):
-                task_url = (task.get("url") or "").lower()
-                if magnet.lower() in task_url or (infohash_hex and infohash_hex in task_url):
-                    in_offline = True
-                    break
-
-    if dn:
-        actual_save_path = save_path or _get_default_save_path()
-        cid = _resolve_path_to_cid(actual_save_path) if actual_save_path else 0
-        keyword = _search_keyword_from_dn(dn)
-        norm_dn = _normalize_for_comparison(dn)
-        if cid is not None:
-            files = search_files(keyword, cid)
-            for f in files:
-                fname = f.get("n", "") if isinstance(f, dict) else ""
-                norm_fname = _normalize_for_comparison(fname)
-                if norm_dn and norm_fname and (norm_dn in norm_fname or norm_fname in norm_dn):
-                    matched_files.append({
-                        "name": fname,
-                        "size": f.get("s") if isinstance(f, dict) else None,
-                        "pick_code": f.get("pc") if isinstance(f, dict) else None,
+            if not isinstance(task, dict):
+                continue
+            task_url = (task.get("url") or "").lower()
+            if not (magnet.lower() in task_url or (infohash_hex and infohash_hex in task_url)):
+                continue
+            if scoped_paths and not _offline_task_in_save_paths(task, scoped_paths):
+                if dbg is not None:
+                    dbg["steps"].append({
+                        "stage": "offline_scope", "accepted": False,
+                        "allowed_save_paths": scoped_paths,
                     })
+                continue
+            # 失败任务不算“离线等待/已下载”，单独标记
+            display = str(task.get("display_status") or "").strip().lower()
+            if display in ("failed", "error"):
+                download_failed = True
+                continue
+            in_offline = True
+            matched_offline_task = task
+            if display == "finished":
+                offline_finished = True
+            try:
+                offline_finished = offline_finished or int(task.get("status")) == 2
+            except (TypeError, ValueError):
+                pass
+            try:
+                offline_finished = offline_finished or float(
+                    task.get("percentDone") or task.get("percent_done") or 0
+                ) >= 100
+            except (TypeError, ValueError):
+                pass
+            break
+        if dbg is not None:
+            dbg["steps"].append({"stage": "offline_list", "success": True, "tasks_len": len(tasks), "in_offline": in_offline, "download_failed": download_failed})
+    else:
+        if dbg is not None:
+            dbg["steps"].append({"stage": "offline_list", "success": False, "message": ol.get("message")})
+
+    # EGS 的复用身份必须是 infohash。严格模式只接受离线任务中的精确 hash，
+    # 不再用标题/目录名推断“已经下载”；同标题的另一条磁链属于新内容。
+    if dn and not strict_infohash:
+        # 文件搜索也必须遵守调用方给出的范围：显式目录优先，其次 allowed_save_paths，
+        # 最后才回退到配置的默认目录。目录无法定位时不再退化成 cid=0 的全盘搜索。
+        if save_path:
+            search_paths = [str(save_path).strip()]
+        elif allowed_save_paths:
+            search_paths = [str(path).strip() for path in allowed_save_paths if str(path or "").strip()]
+        else:
+            default_save_path = _get_default_save_path()
+            search_paths = [default_save_path] if default_save_path else []
+        actual_save_path = search_paths[0] if search_paths else ""
+        cid = _resolve_path_to_cid(actual_save_path) if actual_save_path else None
+        keyword = _search_keyword_from_dn(dn)
+        keywords = []
+        if keyword:
+            keywords.append(keyword)
+            compact = keyword.replace("] [", "][")
+            if compact != keyword:
+                keywords.append(compact)
+            compact2 = re.sub(r'\s+', ' ', keyword).strip()
+            if compact2 and compact2 not in keywords:
+                keywords.append(compact2)
+        for it in _extra_keywords_from_dn(dn):
+            if it not in keywords:
+                keywords.append(it)
+        norm_dn = _normalize_for_comparison(dn)
+        if dbg is not None:
+            dbg["dn"] = dn
+            dbg["norm_dn"] = norm_dn
+            dbg["actual_save_path"] = actual_save_path
+            dbg["cid"] = cid
+            dbg["keyword_primary"] = keyword
+            dbg["keywords"] = keywords
+
+        if cid:
+            files = []
+            for kw in keywords:
+                files = scoped_search(kw, cid)
+                if dbg is not None:
+                    dbg["steps"].append({"stage": "search_files", "mode": "keyword", "query": kw, "cid": cid, "result_len": len(files)})
+                for f in files:
+                    fname = f.get("n", "") if isinstance(f, dict) else ""
+                    norm_fname = _normalize_for_comparison(fname)
+                    if _names_match(norm_dn, norm_fname):
+                        matched_files.append({
+                            "name": fname,
+                            "size": f.get("s") if isinstance(f, dict) else None,
+                            "pick_code": f.get("pc") if isinstance(f, dict) else None,
+                        })
+                if dbg is not None:
+                    dbg["steps"].append({
+                        "stage": "match_compare",
+                        "mode": "keyword",
+                        "query": kw,
+                        "matched_len": len(matched_files),
+                        "sample_files": [
+                            {"name": (it.get("n") or ""), "norm": _normalize_for_comparison(it.get("n") or "")}
+                            for it in (files[:5] if isinstance(files, list) else [])
+                            if isinstance(it, dict)
+                        ],
+                    })
+                if matched_files:
+                    break
 
             if not files and not matched_files:
                 brackets = re.findall(r'\[(\d{6})\]', dn)
                 date_code = brackets[0] if brackets else ""
                 if date_code:
-                    files = search_files(date_code, cid or 0)
-                    for f in files:
-                        fname = f.get("n", "") if isinstance(f, dict) else ""
-                        norm_fname = _normalize_for_comparison(fname)
-                        if norm_dn and norm_fname and (norm_dn in norm_fname or norm_fname in norm_dn):
-                            matched_files.append({
-                                "name": fname,
-                                "size": f.get("s") if isinstance(f, dict) else None,
-                                "pick_code": f.get("pc") if isinstance(f, dict) else None,
+                    for kw in (date_code, f"[{date_code}]"):
+                        files = scoped_search(kw, cid or 0)
+                        if dbg is not None:
+                            dbg["steps"].append({"stage": "search_files", "mode": "date_code", "query": kw, "cid": cid or 0, "result_len": len(files)})
+                        for f in files:
+                            fname = f.get("n", "") if isinstance(f, dict) else ""
+                            norm_fname = _normalize_for_comparison(fname)
+                            if _names_match(norm_dn, norm_fname):
+                                matched_files.append({
+                                    "name": fname,
+                                    "size": f.get("s") if isinstance(f, dict) else None,
+                                    "pick_code": f.get("pc") if isinstance(f, dict) else None,
+                                })
+                        if dbg is not None:
+                            dbg["steps"].append({
+                                "stage": "match_compare",
+                                "mode": "date_code",
+                                "query": kw,
+                                "matched_len": len(matched_files),
+                                "sample_files": [
+                                    {"name": (it.get("n") or ""), "norm": _normalize_for_comparison(it.get("n") or "")}
+                                    for it in (files[:5] if isinstance(files, list) else [])
+                                    if isinstance(it, dict)
+                                ],
                             })
+                        if matched_files:
+                            break
 
             if not files and not matched_files:
                 name_no_bracket = re.split(r'\s*\+\s*', dn)[0]
@@ -499,24 +944,40 @@ def check_magnet_exists(magnet, save_path):
                     name_no_bracket = name_no_bracket[first_bracket:]
                 name_no_bracket = re.sub(r'\[[^\]]+\]', '', name_no_bracket).strip()
                 if len(name_no_bracket) >= 3:
-                    files = search_files(name_no_bracket[:20], cid or 0)
+                    files = scoped_search(name_no_bracket[:20], cid or 0)
+                    if dbg is not None:
+                        dbg["steps"].append({"stage": "search_files", "mode": "plain_name", "query": name_no_bracket[:20], "cid": cid or 0, "result_len": len(files)})
                     for f in files:
                         fname = f.get("n", "") if isinstance(f, dict) else ""
                         norm_fname = _normalize_for_comparison(fname)
-                        if norm_dn and norm_fname and (norm_dn in norm_fname or norm_fname in norm_dn):
+                        if _names_match(norm_dn, norm_fname):
                             matched_files.append({
                                 "name": fname,
                                 "size": f.get("s") if isinstance(f, dict) else None,
                                 "pick_code": f.get("pc") if isinstance(f, dict) else None,
                             })
+                    if dbg is not None:
+                        dbg["steps"].append({
+                            "stage": "match_compare",
+                            "mode": "plain_name",
+                            "query": name_no_bracket[:20],
+                            "matched_len": len(matched_files),
+                            "sample_files": [
+                                {"name": (it.get("n") or ""), "norm": _normalize_for_comparison(it.get("n") or "")}
+                                for it in (files[:5] if isinstance(files, list) else [])
+                                if isinstance(it, dict)
+                            ],
+                        })
 
-        if not matched_files and not in_offline and infohash_hex:
+        if cid and not matched_files and not in_offline and infohash_hex:
             try:
-                broad = search_files(infohash_hex[:12], cid or 0)
+                broad = scoped_search(infohash_hex[:12], cid)
+                if dbg is not None:
+                    dbg["steps"].append({"stage": "search_files", "mode": "infohash_prefix", "query": infohash_hex[:12], "cid": cid or 0, "result_len": len(broad)})
                 for f in broad:
                     fname = f.get("n", "") if isinstance(f, dict) else ""
                     norm_fname = _normalize_for_comparison(fname)
-                    if norm_dn and norm_fname and (norm_dn in norm_fname or norm_fname in norm_dn):
+                    if _names_match(norm_dn, norm_fname):
                         matched_files.append({
                             "name": fname,
                             "size": f.get("s") if isinstance(f, dict) else None,
@@ -531,15 +992,168 @@ def check_magnet_exists(magnet, save_path):
         confidence = "high"
     elif dn and cid:
         keyword = _search_keyword_from_dn(dn)
-        broad = search_files(keyword[:max(8, len(keyword)//3)], cid)
+        broad_kw = keyword[:max(8, len(keyword)//3)] if keyword else ""
+        broad_kw2 = broad_kw.replace("] [", "][") if broad_kw else ""
+        broad = scoped_search(broad_kw, cid) if broad_kw else []
+        if not broad and broad_kw2 and broad_kw2 != broad_kw:
+            broad = scoped_search(broad_kw2, cid)
         if broad:
             confidence = "low"
 
-    return {
-        "exists": bool(matched_files) or in_offline,
+    out = {
+        "exists": bool(matched_files) or (in_offline and (offline_finished or not strict_infohash)),
         "confidence": confidence,
         "infohash_hex": infohash_hex,
         "matched_files": matched_files,
         "in_offline_tasks": in_offline,
+        "offline_finished": offline_finished,
+        "download_failed": download_failed,
+        "offline_task_add_time": (
+            matched_offline_task.get("add_time") if matched_offline_task else None
+        ),
+        "offline_percent": (
+            matched_offline_task.get("percentDone") if matched_offline_task else None
+        ),
         "dn": dn,
+        "strict_infohash": bool(strict_infohash),
     }
+    if dbg is not None:
+        dbg["result"] = {"matched_len": len(matched_files), "in_offline": in_offline, "confidence": confidence}
+        out["debug"] = dbg
+    if dbg is not None and not dbg.get("has_cookie_file"):
+        out["message"] = "cookie文件不存在或为空，可能未登录导致搜索结果为空"
+    return out
+
+
+def _crumbs_to_path(crumbs, tail_name=None):
+    """把fs_files返回的path面包屑数组拼成完整路径，排除'根目录'/'回收站'"""
+    if not crumbs or not isinstance(crumbs, list):
+        return None
+    parts = []
+    for c in crumbs:
+        if not isinstance(c, dict):
+            continue
+        n = c.get("name") or ""
+        if n in ("根目录", "回收站") and not parts:
+            continue
+        parts.append(n)
+    if tail_name:
+        parts.append(tail_name)
+    return "/" + "/".join(parts) if parts else None
+
+
+def get_item_name(file_id):
+    """按file_id查询名称（fs_file_skim，用于cid精确校验）"""
+    client = load_client()
+    if client is None:
+        return None
+    try:
+        _, check_response = _import_p115client()
+        resp = check_response(client.fs_file_skim({"file_id": str(file_id)}))
+        data = resp.get("data") or []
+        if data and isinstance(data[0], dict):
+            return data[0].get("file_name")
+    except Exception:
+        pass
+    return None
+
+
+def get_item_info(file_id):
+    """按file_id取标准化条目信息（fs_file；目录/文件通用）。
+
+    115 对目录返回 ``cid``，对文件返回 ``fid``，而文件记录里的 ``cid``
+    是父目录，不是文件本身。
+    """
+    client = load_client()
+    if client is None:
+        return None
+    try:
+        _, check_response = _import_p115client()
+        resp = check_response(client.fs_file({"file_id": str(file_id)}))
+        data = resp.get("data")
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            d0 = data[0]
+        elif isinstance(data, dict) and (data.get("cid") or data.get("fid")):
+            d0 = data
+        else:
+            return None
+        fid = d0.get("fid")
+        is_dir = not fid and str(d0.get("fc", "")) != "1"
+        item_id = d0.get("cid") if is_dir else (fid or file_id)
+        pid = d0.get("pid") if is_dir else (d0.get("pid") or d0.get("cid"))
+        return {
+            "n": d0.get("n") or d0.get("file_name"),
+            "cid": str(item_id or file_id),
+            "pid": str(pid) if pid not in (None, "") else None,
+            "fc": 0 if is_dir else 1,
+            "pc": d0.get("pc"),
+            "fid": str(fid) if fid else None,
+            "is_dir": is_dir,
+        }
+    except Exception:
+        pass
+    return None
+
+
+def rename_item(file_id, new_name):
+    """重命名115文件/目录（web端点batch_rename）"""
+    client = load_client()
+    if client is None:
+        return {"success": False, "message": "未登录"}
+    try:
+        _, check_response = _import_p115client()
+        resp = check_response(client.fs_rename({f"files_new_name[{file_id}]": new_name}))
+        return {"success": True, "response": resp}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+def delete_item(file_id):
+    """删除115文件/目录（进入回收站）。file_id 为 cid/fid 均可。"""
+    client = load_client()
+    if client is None:
+        return {"success": False, "message": "未登录"}
+    try:
+        _, check_response = _import_p115client()
+        resp = check_response(client.fs_delete(str(file_id)))
+        return {"success": True, "response": resp}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+def list_dir_children_names(cid, max_pages=20):
+    """列出目录下所有子项名称（分页），用于重名冲突检查。失败返回None"""
+    client = load_client()
+    if client is None:
+        return None
+    names = []
+    try:
+        _, check_response = _import_p115client()
+        offset = 0
+        for _ in range(max_pages):
+            resp = check_response(
+                client.fs_files({"cid": str(cid), "limit": 200, "offset": offset, "show_dir": 1})
+            )
+            data = resp.get("data") or []
+            for it in data:
+                if isinstance(it, dict) and it.get("n"):
+                    names.append(it["n"])
+            if len(data) < 200:
+                break
+            offset += len(data)
+        return names
+    except Exception:
+        return None
+
+
+def parent_crumbs_path(pid):
+    """获取指定目录cid的父链面包屑完整路径（不含自身名）"""
+    client = load_client()
+    if client is None:
+        return None
+    try:
+        _, check_response = _import_p115client()
+        resp = check_response(client.fs_files({"cid": str(pid), "limit": 1, "show_dir": 1}))
+        return _crumbs_to_path(resp.get("path"))
+    except Exception:
+        return None

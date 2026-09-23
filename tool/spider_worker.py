@@ -2,14 +2,13 @@ import argparse
 import logging
 import os
 import signal
-import sqlite3
 import sys
 import traceback
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
 import tool
-from tool.runtime import now_ts, runtime_paths, write_json_atomic
+from tool.runtime import cleanup_old_logs, daily_log_path, now_ts, runtime_paths, write_json_atomic
 
 
 _stop_requested = False
@@ -28,10 +27,12 @@ def main():
 
     paths = runtime_paths()
     os.makedirs(paths["status_dir"], exist_ok=True)
-    os.makedirs(os.path.dirname(paths["log_path"]) or ".", exist_ok=True)
+    os.makedirs(paths["log_dir"], exist_ok=True)
+    if paths.get("log_auto_cleanup"):
+        cleanup_old_logs(retention_days=paths.get("log_retention_days"))
 
     logging.basicConfig(
-        filename=paths["log_path"],
+        filename=daily_log_path("spider"),
         level=logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s",
     )
@@ -64,7 +65,7 @@ def main():
         total_months = (end_year - start_year + 1) * 12
         done_months = 0
 
-        conn = sqlite3.connect(paths["db_path"])
+        conn = tool.open_db(db_path=paths["db_path"])
         try:
             tool.ensure_getchu_schema(conn)
             cursor = conn.cursor()

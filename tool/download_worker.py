@@ -8,7 +8,7 @@ import traceback
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
 import tool
-from tool.runtime import now_ts, runtime_paths, write_json_atomic
+from tool.runtime import cleanup_old_logs, daily_log_path, now_ts, runtime_paths, write_json_atomic
 
 
 _stop_requested = False
@@ -23,14 +23,17 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--year", type=int, required=True)
     parser.add_argument("--month", type=int, default=0)
+    parser.add_argument("--source", choices=["getchu", "egs"], default="getchu")
     args = parser.parse_args()
 
     paths = runtime_paths()
     os.makedirs(paths["status_dir"], exist_ok=True)
-    os.makedirs(os.path.dirname(paths["log_path"]) or ".", exist_ok=True)
+    os.makedirs(paths["log_dir"], exist_ok=True)
+    if paths.get("log_auto_cleanup"):
+        cleanup_old_logs(retention_days=paths.get("log_retention_days"))
 
     logging.basicConfig(
-        filename=paths["log_path"],
+        filename=daily_log_path("download"),
         level=logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s",
     )
@@ -42,6 +45,7 @@ def main():
 
     status = {
         "running": True,
+        "source": args.source,
         "pid": os.getpid(),
         "year": int(args.year),
         "month": int(args.month),
@@ -67,7 +71,12 @@ def main():
             status["updated_at"] = now_ts()
             write_json_atomic(paths["download_status_path"], status)
 
-            ok = tool.download_games_by_month(int(args.year), m)
+            if args.source == "egs":
+                from tool.egs_magnet import run_magnet
+                result = run_magnet(int(args.year), month=m, should_stop=lambda: _stop_requested)
+                ok = not result["error"] and not result.get("stopped")
+            else:
+                ok = tool.download_games_by_month(int(args.year), m)
             success_all = success_all and bool(ok)
 
             status["finished_months"] += 1

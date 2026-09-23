@@ -11,5 +11,5 @@ from .core import (
     get_nyaa_data,
     get_raw_getchu_games,
     get_years_list,
+    open_db,
 )
-

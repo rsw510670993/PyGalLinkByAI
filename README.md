@@ -34,6 +34,29 @@
 3. 点击"获取下载链接"按钮
 4. 查看游戏列表和对应的下载链接
 
+## 闲时自动任务（Getchu入库 / 磁链入库 / 115已下载校验）
+
+项目新增 CLI：`python tool/cli.py auto idle_run`，用于在“闲时”自动执行：
+- 当年 Getchu 游戏入库（已存在的记录会跳过）
+- 当年 Nyaa 磁链获取入库（已存在 link 的记录会跳过）
+- 115 登录有效时：对“有磁链且未标记已下载”的记录进行 115 已下载校验（不会自动发起 115 云下载）
+
+### 配置项
+在 `tool/config.json` 可选增加：
+- `idle_timezone`：闲时判断时区（默认 `Asia/Tokyo`）
+- `idle_start_hour`：闲时开始小时（默认 `0`）
+- `idle_end_hour`：闲时结束小时（默认 `9`，按 `[start, end)` 判断）
+
+### cron 示例
+由你在服务器上自行配置 cron。命令本身会判断是否在闲时，不在闲时会自动退出（输出 JSON 便于日志排查）。
+
+另外，`idle_run` 会记录“本周是否已运行”，同一自然周内重复触发会自动跳过（除非加 `--force`）。
+
+例如每周执行一次（周日 00:00 执行）：
+```cron
+0 0 * * 0 cd /path/to/repo && /path/to/repo/.venv/bin/python tool/cli.py auto idle_run >> logs/idle_run.log 2>&1
+```
+
 ## 磁链校验测试页
 
 - 入口：数据展示页每条含磁链记录的“校验”按钮，会打开 `tool/magnet_check.php`

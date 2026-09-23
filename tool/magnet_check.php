@@ -3,11 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>磁链校验</title>
+    <title>磁链校验 · pyGal</title>
     <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.1/css/bootstrap.min.css" rel="stylesheet">
 </head>
-<body style="padding-top: 56px;">
-<?php $base = rtrim(dirname(dirname($_SERVER['SCRIPT_NAME'])), '/'); ?>
+<body>
 <?php
 function call_magnet_meta($magnet) {
     $root = realpath(__DIR__ . '/..');
@@ -48,15 +47,7 @@ if ($magnet) {
     $result = call_magnet_meta($magnet);
 }
 ?>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark fixed-top">
-        <div class="container">
-            <a class="navbar-brand" href="#">磁链校验</a>
-            <div class="navbar-nav">
-                <a class="nav-link" href="<?= $base ?>/index.php">首页</a>
-                <a class="nav-link" href="<?= $base ?>/tool/data.php">数据展示</a>
-            </div>
-        </div>
-    </nav>
+<?php require dirname(__DIR__) . '/includes/header.php'; ?>
 
     <div class="container mt-4">
         <div class="card mb-3">
