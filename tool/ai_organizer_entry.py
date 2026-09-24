@@ -9,7 +9,7 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
 from tool.ai_organizer import (
-    get_job, list_jobs, request_cancel, run_job, start_job, system_status, year_preview,
+    get_job, list_jobs, request_cancel, run_job, start_job, system_status,
 )
 
 
@@ -22,8 +22,6 @@ def main() -> None:
     parser.add_argument("--db")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("status")
-    preview = sub.add_parser("year-preview")
-    preview.add_argument("--year", type=int, required=True)
     jobs = sub.add_parser("jobs")
     jobs.add_argument("--limit", type=int, default=30)
     detail = sub.add_parser("detail")
@@ -31,9 +29,8 @@ def main() -> None:
     detail.add_argument("--after-event-id", type=int, default=0)
     start = sub.add_parser("start")
     start.add_argument("--prompt", required=True)
-    start.add_argument("--driver", choices=("codex",), default="codex")
+    start.add_argument("--driver", choices=("responses", "codex"), default="responses")
     start.add_argument("--year", type=int)
-    start.add_argument("--egs-ids", default="")
     stop = sub.add_parser("stop")
     stop.add_argument("--job-id", required=True)
     worker = sub.add_parser("worker")
@@ -44,18 +41,15 @@ def main() -> None:
     try:
         if args.command == "status":
             result = system_status(db_path=args.db)
-        elif args.command == "year-preview":
-            result = year_preview(args.year, db_path=args.db)
         elif args.command == "jobs":
             result = list_jobs(limit=args.limit, db_path=args.db)
         elif args.command == "detail":
             job = get_job(args.job_id, db_path=args.db, after_event_id=args.after_event_id)
             result = {"success": bool(job), "job": job, "message": None if job else "任务不存在"}
         elif args.command == "start":
-            egs_ids = [int(value) for value in args.egs_ids.split(",") if value.strip()]
             result = start_job(
                 args.prompt, driver=args.driver, scope_year=args.year,
-                scope_egs_ids=egs_ids, db_path=args.db,
+                db_path=args.db,
             )
         elif args.command == "stop":
             result = request_cancel(args.job_id, db_path=args.db)

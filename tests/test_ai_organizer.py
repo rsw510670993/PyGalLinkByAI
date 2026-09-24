@@ -1,8 +1,9 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from tool import ai_organizer
+from tool import ai_organizer, ai_responses_driver, p115_client
 
 
 class AiOrganizerTests(unittest.TestCase):
@@ -43,13 +44,15 @@ class AiOrganizerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "不支持"):
             ai_organizer.create_job("task", driver="unknown", db_path=self.db)
 
+        with self.assertRaisesRegex(ValueError, "必须指定年份"):
+            ai_organizer.start_job("task", db_path=self.db)
+
     def test_start_refuses_unavailable_worker_login_before_writing_job(self):
-        from unittest.mock import patch
         with patch.object(ai_organizer, "driver_status", return_value={
             "available": True, "logged_in": False, "message": "Not logged in"
         }):
-            with self.assertRaisesRegex(RuntimeError, "尚未登录"):
-                ai_organizer.start_job("task", db_path=self.db)
+            with self.assertRaisesRegex(RuntimeError, "尚未配置"):
+                ai_organizer.start_job("task", scope_year=2022, db_path=self.db)
         self.assertEqual(ai_organizer.list_jobs(db_path=self.db)["jobs"], [])
 
     def test_structured_result_is_written_to_decision_and_action_audit(self):
@@ -73,15 +76,24 @@ class AiOrganizerTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(tuple(action), ("move", "reported"))
 
-    def test_year_preview_and_scoped_candidate_job(self):
+    def test_year_job_has_no_fixed_candidate_ids(self):
+        job = ai_organizer.create_job(
+            "AI读取115后判断", scope_year=2022, db_path=self.db
+        )
+        self.assertEqual(job["driver"], "responses")
+        self.assertEqual(job["scope_year"], 2022)
+        self.assertEqual(job["scope_egs_ids"], [])
+
+    def test_responses_tools_read_live_115_and_enforce_year_scope(self):
         conn = ai_organizer.open_egs_db(self.db)
+        self.addCleanup(conn.close)
         ai_organizer.ensure_egs_schema(conn)
         conn.execute(
             """INSERT INTO egs_games
                (egs_id,model,egs_date,egs_name,egs_company,date,name,company,
                 release_ts,link,infohash_hex,downloaded,submitted_115)
-               VALUES (1,'PC','2022-01-01','Needs AI','Studio','2022-01',
-                       'Needs AI','Studio','2022-01-01','magnet:?xt=urn:btih:abc',
+               VALUES (1,'PC','2022-01-01','Live Match','Studio','2022-01',
+                       'Live Match','Studio','2022-01-01','magnet:?xt=urn:btih:abc',
                        'abc',1,1)"""
         )
         conn.execute(
@@ -93,20 +105,73 @@ class AiOrganizerTests(unittest.TestCase):
                        'def',1,1)"""
         )
         conn.commit()
-        conn.close()
+        state = {"saw_live_115": False, "known_cids": set(), "previews": {}}
 
-        preview = ai_organizer.year_preview(2022, db_path=self.db)
-        self.assertEqual(preview["counts"]["needs_ai"], 1)
-        self.assertEqual(preview["candidates"][0]["egs_id"], 1)
-
-        job = ai_organizer.create_job(
-            "只处理页面选择", scope_year=2022, scope_egs_ids=[1], db_path=self.db
-        )
-        self.assertEqual(job["scope_egs_ids"], [1])
-        with self.assertRaisesRegex(ValueError, "不属于 2022 年"):
-            ai_organizer.create_job(
-                "错误年份", scope_year=2022, scope_egs_ids=[2], db_path=self.db
+        with patch.object(ai_responses_driver, "list_directory", return_value={
+            "success": True, "path": "/GAL/GAL-2022", "total": 1,
+            "has_more": False,
+            "items": [{"id": "11522", "name": "Live Match", "is_dir": True}],
+        }) as mocked:
+            result = ai_responses_driver.execute_tool(
+                conn, year=2022, name="list_115_path",
+                arguments={"path": "/GAL/GAL-2022", "offset": 0, "limit": 100},
+                state=state,
             )
+        self.assertTrue(result["success"])
+        self.assertTrue(state["saw_live_115"])
+        self.assertIn("11522", state["known_cids"])
+        mocked.assert_called_once_with(path="/GAL/GAL-2022", offset=0, limit=100)
+        with self.assertRaisesRegex(ValueError, "连续分页"):
+            ai_responses_driver.execute_tool(
+                conn, year=2022, name="list_115_path",
+                arguments={"path": "/GAL/GAL-2022", "offset": 0, "limit": 100},
+                state=state,
+            )
+
+
+        records = ai_responses_driver.execute_tool(
+            conn, year=2022, name="list_egs_year",
+            arguments={"year": 2022, "offset": 0, "limit": 100}, state=state,
+        )
+        self.assertEqual([row["egs_id"] for row in records["records"]], [1])
+        with self.assertRaisesRegex(ValueError, "不属于任务年份"):
+            ai_responses_driver.execute_tool(
+                conn, year=2022, name="get_egs_record", arguments={"egs_id": 2},
+                state=state,
+            )
+        with self.assertRaisesRegex(ValueError, "超出任务范围"):
+            ai_responses_driver.execute_tool(
+                conn, year=2022, name="list_115_path",
+                arguments={"path": "/GAL.old", "offset": 0, "limit": 100},
+                state=state,
+            )
+
+    def test_live_115_directory_listing_is_normalized(self):
+        class FakeClient:
+            def fs_files(self, payload):
+                self.payload = payload
+                return {
+                    "count": 2,
+                    "data": [
+                        {"cid": "11", "pid": "99", "n": "Folder"},
+                        {"fid": "12", "cid": "99", "n": "file.bin", "s": "3"},
+                    ],
+                }
+
+        client = FakeClient()
+        with patch.object(p115_client, "load_client", return_value=client), patch.object(
+            p115_client, "_import_p115client", return_value=(object, lambda value: value)
+        ):
+            result = p115_client.list_directory(
+                path="/GAL/GAL-2022", cid=99, offset=0, limit=100,
+            )
+        self.assertTrue(result["success"])
+        self.assertEqual(result["total"], 2)
+        self.assertEqual(result["items"][0]["id"], "11")
+        self.assertTrue(result["items"][0]["is_dir"])
+        self.assertEqual(result["items"][1]["id"], "12")
+        self.assertFalse(result["items"][1]["is_dir"])
+        self.assertEqual(result["items"][1]["parent_id"], "99")
 
 
 if __name__ == "__main__":

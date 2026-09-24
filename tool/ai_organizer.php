@@ -30,7 +30,7 @@
         </div>
     </div>
 
-    <div id="driver-alert" class="alert alert-secondary py-2">正在检查 Codex...</div>
+    <div id="driver-alert" class="alert alert-secondary py-2">正在检查 AI API...</div>
 
     <div class="card mb-3">
         <div class="card-header">交给 AI</div>
@@ -38,7 +38,7 @@
             <div class="row g-3">
                 <div class="col-md-2">
                     <label for="scope-year" class="form-label">限定年份</label>
-                    <input id="scope-year" type="number" class="form-control" min="1990" max="2100" placeholder="可选">
+                    <input id="scope-year" type="number" class="form-control" min="1990" max="2100" placeholder="必填" required>
                 </div>
                 <div class="col-md-10">
                     <label for="task-prompt" class="form-label">任务</label>
@@ -155,8 +155,8 @@
             const ok = driver.available && driver.logged_in;
             $('driver-alert').className = `alert py-2 ${ok ? 'alert-success' : 'alert-warning'}`;
             $('driver-alert').textContent = ok
-                ? `Codex 已就绪 · ${driver.version || ''}`
-                : `Codex 尚未就绪：${driver.message || '未安装或未登录'}`;
+                ? `AI API 已就绪 · ${driver.provider || ''} / ${driver.model || ''}`
+                : `AI API 尚未就绪：${driver.message || 'Provider 或 API Key 未配置'}`;
             $('start-btn').disabled = !ok || (data.jobs || []).some(job => ['queued', 'running'].includes(job.status));
             renderJobs(data.jobs || [], data.counts || {});
             if (selectedJob) await loadDetail(selectedJob);
@@ -185,6 +185,7 @@
         const prompt = $('task-prompt').value.trim();
         const yearValue = $('scope-year').value.trim();
         if (!prompt) return alert('请输入任务说明');
+        if (!yearValue) return alert('请输入整理年份');
         $('start-btn').disabled = true;
         $('start-message').textContent = '正在创建后台任务...';
         try {

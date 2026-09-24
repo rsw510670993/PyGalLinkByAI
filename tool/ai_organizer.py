@@ -24,7 +24,7 @@ from .runtime import read_config, repo_root
 JOB_STATES = ("queued", "running", "completed", "partial", "blocked", "failed", "cancelled")
 ACTIVE_STATES = ("queued", "running")
 FINAL_STATES = tuple(state for state in JOB_STATES if state not in ACTIVE_STATES)
-DRIVERS = ("codex",)
+DRIVERS = ("responses", "codex")
 MAX_PROMPT_CHARS = 12000
 DEFAULT_TIMEOUT_SECONDS = 1800
 
@@ -163,7 +163,7 @@ def _normalize_egs_ids(values) -> list[int]:
     return result
 
 
-def create_job(prompt: str, *, driver: str = "codex", scope_year: int | None = None,
+def create_job(prompt: str, *, driver: str = "responses", scope_year: int | None = None,
                scope_egs_ids=None, db_path: str | None = None) -> dict:
     prompt = str(prompt or "").strip()
     if not prompt:
@@ -282,21 +282,8 @@ def request_cancel(job_id: str, *, db_path: str | None = None) -> dict:
 
 
 def driver_status() -> dict:
-    binary = shutil.which("codex")
-    result = {"driver": "codex", "available": bool(binary), "binary": binary,
-              "version": None, "logged_in": None, "message": None}
-    if not binary:
-        result["message"] = "找不到 codex CLI"
-        return result
-    try:
-        version = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=10)
-        result["version"] = (version.stdout or version.stderr).strip()
-        login = subprocess.run([binary, "login", "status"], capture_output=True, text=True, timeout=15)
-        result["logged_in"] = login.returncode == 0
-        result["message"] = (login.stdout or login.stderr).strip()
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        result["message"] = str(exc)
-    return result
+    from .ai_responses_driver import driver_status as responses_status
+    return responses_status()
 
 
 def system_status(*, db_path: str | None = None) -> dict:
@@ -310,130 +297,6 @@ def system_status(*, db_path: str | None = None) -> dict:
         "skill": ".agents/skills/egs-115-organizer/SKILL.md",
     }
 
-
-def _year_preview(conn: sqlite3.Connection, year: int) -> dict:
-    ensure_egs_schema(conn)
-    tables = {row[0] for row in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'"
-    )}
-    has_folders = "egs_115_folders" in tables
-    folder_columns = (
-        "f.cid folder_cid,f.folder_name,f.folder_path,f.target_name,f.status folder_status"
-        if has_folders else
-        "NULL folder_cid,NULL folder_name,NULL folder_path,NULL target_name,NULL folder_status"
-    )
-    join = (
-        "LEFT JOIN egs_115_folders f ON f.date=g.date AND f.name=g.name"
-        if has_folders else ""
-    )
-    rows = conn.execute(
-        f"""SELECT g.egs_id,g.date,g.name,g.company,g.resource_kind,g.infohash_hex,g.link,
-                   g.torrent_name,COALESCE(g.downloaded,0) downloaded,
-                   COALESCE(g.submitted_115,0) submitted_115,
-                   COALESCE(g.download_failed,0) download_failed,
-                   COALESCE(g.magnet_duplicate,0) magnet_duplicate,
-                   COALESCE(g.submission_excluded,0) submission_excluded,
-                   {folder_columns}
-              FROM egs_games g {join}
-             WHERE substr(g.date,1,4)=?
-             ORDER BY g.date,g.egs_id""",
-        (str(year),),
-    ).fetchall()
-    pending_review = set()
-    if "egs_nyaa_search_log" in tables:
-        pending_review = {
-            int(row[0]) for row in conn.execute(
-                """SELECT egs_id FROM egs_nyaa_search_log
-                    WHERE COALESCE(result_count,0)>0
-                      AND selected_infohash IS NULL
-                      AND COALESCE(review_status,'pending')='pending'"""
-            )
-        }
-    issue_by_egs = {}
-    if "egs_organize_issues" in tables:
-        for row in conn.execute(
-            """SELECT id,egs_id,status,message FROM egs_organize_issues
-                WHERE resolved=0 AND substr(date,1,4)=? ORDER BY id""",
-            (str(year),),
-        ):
-            if row["egs_id"] is not None:
-                issue_by_egs[int(row["egs_id"])] = dict(row)
-
-    counts = {
-        "total": len(rows), "actionable": 0, "mapped": 0, "needs_ai": 0,
-        "awaiting_download": 0, "needs_submit": 0, "review_pending": 0,
-        "excluded": 0,
-    }
-    candidates = []
-    for row in rows:
-        item = dict(row)
-        ident = int(item["egs_id"])
-        actionable = (
-            str(item.get("link") or "").startswith("magnet:?")
-            and not item["magnet_duplicate"]
-            and not item["submission_excluded"]
-        )
-        if not actionable:
-            counts["excluded"] += 1
-            continue
-        counts["actionable"] += 1
-        if ident in pending_review:
-            counts["review_pending"] += 1
-            continue
-        mapped = bool(str(item.get("folder_cid") or "").strip())
-        mapping_mismatch = mapped and (
-            (
-                str(item.get("target_name") or "").strip()
-                and item.get("folder_name") != item.get("target_name")
-            )
-            or (
-                str(item.get("folder_path") or "").strip()
-                and not str(item["folder_path"]).startswith("/GAL/GAL-")
-            )
-        )
-        issue = issue_by_egs.get(ident)
-        reason = None
-        if issue:
-            reason = f"存在未解决整理待办：{issue.get('message') or issue.get('status')}"
-        elif item["downloaded"] and not mapped:
-            reason = "已下载但缺少 115 目录映射，需要核对 CID、名称和位置"
-        elif item["downloaded"] and mapping_mismatch:
-            reason = "目录映射与目标名称或正式年度目录不一致"
-
-        if reason:
-            counts["needs_ai"] += 1
-            candidates.append({
-                "egs_id": ident,
-                "date": item["date"],
-                "name": item["name"],
-                "company": item["company"],
-                "resource_kind": item["resource_kind"],
-                "infohash_hex": item["infohash_hex"],
-                "folder_cid": item.get("folder_cid"),
-                "folder_name": item.get("folder_name"),
-                "folder_path": item.get("folder_path"),
-                "target_name": item.get("target_name"),
-                "reason": reason,
-                "issue_id": issue.get("id") if issue else None,
-            })
-        elif item["downloaded"] and mapped:
-            counts["mapped"] += 1
-        elif item["submitted_115"]:
-            counts["awaiting_download"] += 1
-        elif not item["download_failed"]:
-            counts["needs_submit"] += 1
-    return {"success": True, "year": int(year), "counts": counts, "candidates": candidates}
-
-
-def year_preview(year: int, *, db_path: str | None = None) -> dict:
-    year = int(year)
-    if not 1990 <= year <= 2100:
-        raise ValueError("年份范围无效")
-    conn = open_egs_db(db_path)
-    try:
-        return _year_preview(conn, year)
-    finally:
-        conn.close()
 
 
 def _snapshot(conn, scope_year: int | None, scope_egs_ids=None) -> dict:
@@ -469,20 +332,11 @@ def _snapshot(conn, scope_year: int | None, scope_egs_ids=None) -> dict:
                FROM egs_games {game_where}""", game_params
     ).fetchone())
     selected_ids = _normalize_egs_ids(scope_egs_ids)
-    candidates = []
-    if scope_year:
-        preview = _year_preview(conn, int(scope_year))
-        selected = set(selected_ids)
-        candidates = [
-            item for item in preview["candidates"]
-            if not selected or int(item["egs_id"]) in selected
-        ]
     return {
         "scope_year": scope_year,
         "scope_egs_ids": selected_ids,
         "totals": totals,
         "open_issues": issues,
-        "candidates": candidates,
     }
 
 
@@ -574,6 +428,43 @@ def run_job(job_id: str, *, db_path: str | None = None,
         backup = _backup_database(conn, job_id)
         record_event(conn, job_id, "database.backup", f"数据库备份已创建：{backup}")
 
+        if job["driver"] == "responses":
+            if not job["scope_year"]:
+                raise RuntimeError("Responses API 年度整理任务必须限定年份")
+            from .ai_responses_driver import run_responses_job
+
+            def api_event(event_type, message, *, level="info", payload=None):
+                return record_event(
+                    conn, job_id, event_type, message, level=level, payload=payload,
+                )
+
+            def is_cancelled():
+                row = conn.execute(
+                    "SELECT cancel_requested FROM egs_ai_jobs WHERE job_id=?", (job_id,)
+                ).fetchone()
+                return bool(row and row[0])
+
+            result = run_responses_job(
+                conn, job, record_event=api_event, is_cancelled=is_cancelled,
+            )
+            outcome = result.get("outcome") or "completed"
+            if outcome not in ("completed", "partial", "blocked", "failed"):
+                outcome = "partial"
+            store_result_audit(conn, job_id, result)
+            _set_job(
+                conn, job_id, status=outcome, summary=str(result.get("summary") or ""),
+                result_json=json.dumps(result, ensure_ascii=False), finished_at=_now(),
+                agent_pid=None,
+            )
+            record_event(
+                conn, job_id, "job.finished", result.get("summary") or "AI 整理任务结束",
+                level="error" if outcome == "failed" else "info", payload=result,
+            )
+            return {
+                "success": outcome == "completed", "status": outcome,
+                "job_id": job_id, "result": result,
+            }
+
         binary = shutil.which("codex")
         if not binary:
             raise RuntimeError("找不到 codex CLI")
@@ -655,6 +546,13 @@ def run_job(job_id: str, *, db_path: str | None = None,
                      level="error" if outcome == "failed" else "info", payload=result)
         return {"success": outcome == "completed", "status": outcome, "job_id": job_id,
                 "result": result}
+    except InterruptedError as exc:
+        try:
+            _set_job(conn, job_id, status="cancelled", error=str(exc), finished_at=_now(), agent_pid=None)
+            record_event(conn, job_id, "job.cancelled", str(exc), level="warning")
+        except Exception:
+            pass
+        return {"success": True, "status": "cancelled", "job_id": job_id}
     except Exception as exc:
         if process is not None and process.poll() is None:
             process.terminate()
@@ -668,13 +566,15 @@ def run_job(job_id: str, *, db_path: str | None = None,
         conn.close()
 
 
-def start_job(prompt: str, *, driver: str = "codex", scope_year: int | None = None,
+def start_job(prompt: str, *, driver: str = "responses", scope_year: int | None = None,
               scope_egs_ids=None, db_path: str | None = None) -> dict:
+    if driver == "responses" and scope_year is None:
+        raise ValueError("AI API 整理任务必须指定年份")
     health = driver_status()
     if not health.get("available"):
-        raise RuntimeError(health.get("message") or "找不到 codex CLI")
+        raise RuntimeError(health.get("message") or "Responses API 未配置")
     if health.get("logged_in") is not True:
-        raise RuntimeError("当前 Web/Worker 运行账户尚未登录 Codex")
+        raise RuntimeError("当前 Web/Worker 尚未配置 AI API")
     job = create_job(
         prompt, driver=driver, scope_year=scope_year,
         scope_egs_ids=scope_egs_ids, db_path=db_path,

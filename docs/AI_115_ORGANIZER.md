@@ -13,9 +13,8 @@ AI 整理工作台
     │ 创建后台 job
     ▼
 AI Organizer Worker
-    ├─ Codex CLI driver（首版）
-    ├─ Codex app-server driver（后续）
-    └─ Responses API driver（后续）
+    ├─ Responses API function-calling driver
+    └─ Codex CLI driver（管理员后备）
     │
     ▼
 pyGal 业务操作层
@@ -29,14 +28,13 @@ Web 请求只负责入队、停止和读取事件，不同步等待模型执行�
 
 ### 2.1 年度整理入口
 
-`tool/year_organizer.php` 提供年度候选扫描与提交界面。首个入口固定为 2022 年：
+`tool/year_organizer.php` 提供年度任务入口。首个入口固定为 2022 年：
 
-- 扫描只读统计总记录、可处理磁链、已完成映射、等待下载和 AI 候选；
-- 已下载但缺少目录映射、映射位置异常或仍有整理待办的记录进入候选列表；
-- 用户可以逐项勾选后提交，选中的 EGS ID 结构化写入
-  `egs_ai_jobs.scope_egs_ids`；
-- worker 只能处理该 ID 列表，不得把范围扩展到同年其它记录；
-- 页面同时显示 Codex 与 115 登录状态，并可完成 115 二维码登录。
+- 页面只提交年份，不运行规则预筛选，也不生成供用户勾选的固定候选列表；
+- AI 必须先分页读取 `/GAL/GAL-2022` 与 `/GAL/todo` 的 115 实时返回清单；
+- AI 可继续读取目录子项、115 离线任务以及 2022 年 EGS 记录，自行判断归属、合集和重复；
+- AI 选中记录后先调用确定性整理预览，只有无需人工确认的安全结果才能执行；
+- 页面显示 AI API Provider 与 115 登录状态，并可完成 115 二维码登录。
 
 ## 3. Agent 输出协议
 
@@ -73,9 +71,9 @@ Web 请求只负责入队、停止和读取事件，不同步等待模型执行�
 
 ## 5. Driver 策略
 
-首版使用本地 `codex exec --json --output-schema`，后台 worker 保存线程 ID、事件、结果和任务前数据库备份。Codex 使用 `workspace-write` 且不允许交互式批准；Skill 明确禁止改源码和 Git。
+默认 driver 使用 Responses API function calling，把 115 实时清单、离线任务、EGS 查询、整理预览与安全执行作为明确函数工具暴露。Provider、Base URL、模型和 Key 沿用 phpAiAPI 的分离配置方式；Key 只在 worker 内存中读取，不进入页面、数据库或 Git。
 
-正式版应优先迁移到 Codex app-server 或 Responses API function calling，把 115/数据库能力作为明确的函数工具暴露。dsh 保留为管理员调试和紧急接管入口，不作为业务状态的唯一来源。
+本地 Codex CLI 保留为管理员后备，不再作为 Web 年度入口的运行前提。dsh 只用于调试和紧急接管，不作为业务状态来源。
 
 ## 6. 安全要求
 
@@ -88,9 +86,9 @@ Web 请求只负责入队、停止和读取事件，不同步等待模型执行�
 
 ## 7. 迭代顺序
 
-1. 后台任务、审计表、结构化输出和 Codex driver；
+1. 后台任务、审计表和结构化输出；
 2. Web 工作台的任务输入、状态和事件时间线；
-3. 将现有整理动作收口为带预期状态的限权工具；
-4. 接入 app-server 的持续会话和流式工具事件；
-5. 增加 Responses API driver，沿用 phpAiAPI 的 Provider/Key 配置方式；
-6. 将旧的逐条整理待办 UI 降级为只读兼容页并最终移除。
+3. Responses API function-calling driver 与 phpAiAPI Provider/Key 配置；
+4. 115/EGS 只读工具及带前置状态的限权整理工具；
+5. 扩充合集、重复目录等 AI 决策后的原子业务操作；
+6. 将旧的逐条整理待办 UI 最终移除。
