@@ -80,6 +80,7 @@ def ensure_ai_schema(conn: sqlite3.Connection) -> None:
             confidence      REAL,
             evidence_json   TEXT,
             actions_json    TEXT,
+            human_review_json TEXT,
             requires_human  INTEGER NOT NULL DEFAULT 0,
             status          TEXT NOT NULL DEFAULT 'proposed',
             created_at      TEXT NOT NULL,
@@ -106,6 +107,9 @@ def ensure_ai_schema(conn: sqlite3.Connection) -> None:
     columns = {row[1] for row in conn.execute("PRAGMA table_info(egs_ai_jobs)")}
     if "scope_egs_ids" not in columns:
         conn.execute("ALTER TABLE egs_ai_jobs ADD COLUMN scope_egs_ids TEXT")
+    decision_columns = {row[1] for row in conn.execute("PRAGMA table_info(egs_ai_decisions)")}
+    if "human_review_json" not in decision_columns:
+        conn.execute("ALTER TABLE egs_ai_decisions ADD COLUMN human_review_json TEXT")
     conn.commit()
 
 
@@ -379,13 +383,15 @@ def store_result_audit(conn, job_id: str, result: dict) -> int:
     outcome = str(result.get("outcome") or "partial")
     actions = result.get("actions") if isinstance(result.get("actions"), list) else []
     evidence = result.get("evidence") if isinstance(result.get("evidence"), list) else []
+    human_review = result.get("human_review") if isinstance(result.get("human_review"), list) else []
     cur = conn.execute(
         """INSERT INTO egs_ai_decisions
-           (job_id,decision,evidence_json,actions_json,requires_human,status,created_at,applied_at)
-           VALUES (?,?,?,?,?,?,?,?)""",
+           (job_id,decision,evidence_json,actions_json,human_review_json,
+            requires_human,status,created_at,applied_at)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
         (job_id, outcome, json.dumps(evidence, ensure_ascii=False),
-         json.dumps(actions, ensure_ascii=False), bool(result.get("requires_human")),
-         "recorded", now, now),
+         json.dumps(actions, ensure_ascii=False), json.dumps(human_review, ensure_ascii=False),
+         bool(human_review), "recorded", now, now),
     )
     decision_id = int(cur.lastrowid)
     for action in actions:

@@ -42,9 +42,20 @@ Web 请求只负责入队、停止和读取事件，不同步等待模型执行�
 
 - `outcome`: `completed | partial | blocked | failed`
 - `summary`: 面向用户的结果摘要
-- `requires_human`: 是否仍需要人工判断
+- `requires_human`: 是否存在待人工确认项
 - `evidence`: 实际使用的 EGS、InfoHash、CID、路径或文件证据
 - `actions`: 动作、目标和验证结果
+- `human_review`: 可直接显示在网页上的待人工确认队列，每项包含：
+  - `review_key`: 稳定、可读的确认项标识
+  - `category`: 归属、合集、重复、跨年、哈希冲突、删除或其它
+  - `target`: 涉及的 EGS ID、115 CID 或路径
+  - `question`: 用户需要回答的单一问题
+  - `reason`: AI 无法自动处理的原因
+  - `evidence`: 支持判断的具体证据
+  - `recommended_action`: AI 首选建议
+  - `alternatives`: 其它可选处理
+
+网页的“整理 2022 年 115”预设只填入年份和任务说明，不会自动启动任务。人工确认项当前只作为审计和后续操作依据，不会因页面展示而自动执行建议。
 
 模型文本本身不构成执行授权。业务操作层必须再次校验动作目标和预期状态。
 

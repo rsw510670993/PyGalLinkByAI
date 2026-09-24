@@ -64,17 +64,43 @@ class AiOrganizerTests(unittest.TestCase):
             "requires_human": True,
             "evidence": ["infohash matched"],
             "actions": [{"action": "move", "target": "cid:1", "result": "verified"}],
+            "human_review": [{
+                "review_key": "egs-1-owner",
+                "category": "ownership",
+                "target": "EGS #1 / CID 1",
+                "question": "归给哪条记录？",
+                "reason": "存在两个候选",
+                "evidence": ["infohash matched"],
+                "recommended_action": "归给 EGS #1",
+                "alternatives": ["保留在 todo"],
+            }],
         })
         decision = conn.execute(
-            "SELECT decision,requires_human,status FROM egs_ai_decisions WHERE job_id=?",
+            "SELECT decision,requires_human,status,human_review_json FROM egs_ai_decisions WHERE job_id=?",
             (job["job_id"],),
         ).fetchone()
-        self.assertEqual(tuple(decision), ("partial", 1, "recorded"))
+        self.assertEqual(tuple(decision[:3]), ("partial", 1, "recorded"))
+        self.assertIn("egs-1-owner", decision["human_review_json"])
         action = conn.execute(
             "SELECT action_type,status FROM egs_ai_actions WHERE job_id=?",
             (job["job_id"],),
         ).fetchone()
         self.assertEqual(tuple(action), ("move", "reported"))
+
+    def test_human_review_schema_and_terminal_state_are_consistent(self):
+        import json
+        schema = json.loads(
+            (Path(__file__).parents[1] / "tool" / "ai_organizer_output.schema.json").read_text()
+        )
+        self.assertIn("human_review", schema["required"])
+        item = schema["properties"]["human_review"]["items"]
+        self.assertIn("question", item["required"])
+        result = ai_responses_driver._normalize_final_result({
+            "outcome": "completed", "actions": [], "human_review": [{"review_key": "x"}],
+            "requires_human": False,
+        })
+        self.assertTrue(result["requires_human"])
+        self.assertEqual(result["outcome"], "blocked")
 
     def test_year_job_has_no_fixed_candidate_ids(self):
         job = ai_organizer.create_job(

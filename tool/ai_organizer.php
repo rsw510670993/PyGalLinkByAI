@@ -13,6 +13,8 @@
         .event-line.warning { border-color: #ffc107; }
         .event-payload { max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
         .prompt-box { min-height: 110px; }
+        .review-item { border-left: 4px solid var(--bs-warning) !important; }
+        .review-evidence { margin-bottom: 0; }
     </style>
 </head>
 <body class="bg-light">
@@ -35,6 +37,14 @@
         <div class="card-header">交给 AI</div>
         <div class="card-body">
             <div class="row g-3">
+                <div class="col-12">
+                    <label for="task-preset" class="form-label">任务预设</label>
+                    <select id="task-preset" class="form-select">
+                        <option value="">自定义任务</option>
+                        <option value="organize-2022">整理 2022 年 115</option>
+                    </select>
+                    <div class="form-text">预设只填入年份和任务说明，点击“启动 AI 整理”后才会执行。</div>
+                </div>
                 <div class="col-md-2">
                     <label for="scope-year" class="form-label">限定年份</label>
                     <input id="scope-year" type="number" class="form-control" min="1990" max="2100" placeholder="必填" required>
@@ -75,6 +85,10 @@
         <div class="card-body">
             <div id="detail-prompt" class="mb-3"></div>
             <div id="detail-summary" class="alert alert-light border" hidden></div>
+            <section id="human-review-section" class="mb-4" hidden>
+                <h6 class="d-flex align-items-center gap-2">待人工确认 <span id="human-review-count" class="badge text-bg-warning"></span></h6>
+                <div id="human-review-list" class="vstack gap-2"></div>
+            </section>
             <h6>事件时间线</h6>
             <div id="event-list" class="vstack gap-2"></div>
         </div>
@@ -88,6 +102,12 @@
     const terminal = new Set(['completed', 'partial', 'blocked', 'failed', 'cancelled']);
     let selectedJob = new URLSearchParams(location.search).get('job_id');
     let refreshTimer = null;
+    const presets = {
+        'organize-2022': {
+            year: 2022,
+            prompt: '完整分页读取 /GAL/GAL-2022、/GAL/todo 和 115 离线任务，与 2022 年 EGS 记录比对并整理。识别合集、重复和错误归属；安全动作先预览再执行。无法确定的事项逐条返回人工确认问题、证据、建议和备选方案，不删除任何 115 内容。'
+        }
+    };
 
     const statusMeta = status => ({
         queued: ['排队中', 'text-bg-secondary'], running: ['执行中', 'text-bg-primary'],
@@ -121,6 +141,7 @@
                         ${badge(job.status)}
                         <code class="small">${escape(job.job_id.slice(0, 12))}</code>
                         ${job.scope_year ? `<span class="badge text-bg-light">${escape(job.scope_year)}年</span>` : ''}
+                        ${job.result?.human_review?.length ? `<span class="badge text-bg-warning">待确认 ${job.result.human_review.length}</span>` : ''}
                         <span class="small text-muted ms-auto">${escape(job.created_at)}</span>
                     </div>
                     <div class="mt-2">${escape(job.summary || job.error || '等待结果')}</div>
@@ -138,6 +159,25 @@
         const summary = job.summary || job.error;
         $('detail-summary').hidden = !summary;
         $('detail-summary').textContent = summary || '';
+        const reviews = Array.isArray(job.result?.human_review) ? job.result.human_review : [];
+        $('human-review-section').hidden = reviews.length === 0;
+        $('human-review-count').textContent = reviews.length;
+        $('human-review-list').innerHTML = reviews.map(item => `
+            <article class="review-item border rounded p-3 bg-warning-subtle">
+                <div class="d-flex flex-wrap align-items-center gap-2">
+                    <span class="badge text-bg-warning">${escape(item.category)}</span>
+                    <code>${escape(item.review_key)}</code>
+                    <span class="small text-muted ms-auto">${escape(item.target)}</span>
+                </div>
+                <div class="fw-semibold mt-2">${escape(item.question)}</div>
+                <div class="small mt-1">${escape(item.reason)}</div>
+                <div class="small fw-semibold mt-2">证据</div>
+                <ul class="review-evidence small">
+                    ${(item.evidence || []).map(value => `<li>${escape(value)}</li>`).join('')}
+                </ul>
+                <div class="small mt-2"><strong>AI 建议：</strong>${escape(item.recommended_action)}</div>
+                ${item.alternatives?.length ? `<div class="small mt-1"><strong>其它选项：</strong>${item.alternatives.map(escape).join('；')}</div>` : ''}
+            </article>`).join('');
         const events = job.events || [];
         $('event-list').innerHTML = events.length ? events.map(event => `
             <div class="event-line ${escape(event.level)}">
@@ -173,6 +213,14 @@
     $('job-list').addEventListener('click', event => {
         const card = event.target.closest('[data-job-id]');
         if (card) loadDetail(card.dataset.jobId).catch(error => alert(error.message));
+    });
+
+    $('task-preset').addEventListener('change', event => {
+        const preset = presets[event.target.value];
+        if (!preset) return;
+        $('scope-year').value = preset.year;
+        $('task-prompt').value = preset.prompt;
+        $('task-prompt').focus();
     });
 
     document.querySelectorAll('.quick-prompt').forEach(button => button.addEventListener('click', () => {

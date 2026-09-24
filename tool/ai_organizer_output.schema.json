@@ -25,7 +25,34 @@
         },
         "required": ["action", "target", "result"]
       }
+    },
+    "human_review": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "review_key": {"type": "string"},
+          "category": {
+            "type": "string",
+            "enum": ["ownership", "collection", "duplicate", "cross_year", "hash_conflict", "delete", "other"]
+          },
+          "target": {"type": "string"},
+          "question": {"type": "string"},
+          "reason": {"type": "string"},
+          "evidence": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "recommended_action": {"type": "string"},
+          "alternatives": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        },
+        "required": ["review_key", "category", "target", "question", "reason", "evidence", "recommended_action", "alternatives"]
+      }
     }
   },
-  "required": ["outcome", "summary", "requires_human", "evidence", "actions"]
+  "required": ["outcome", "summary", "requires_human", "evidence", "actions", "human_review"]
 }

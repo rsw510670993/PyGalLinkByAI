@@ -335,7 +335,23 @@ def _instructions(year: int) -> str:
 
 EGS磁链审核不在本任务范围。机械改名、移动与状态同步只能通过 preview_egs_organization 后调用 execute_egs_organization；工具会保留跨年、搬月、不同哈希、共享CID和冲突护栏。没有直接证据时不要猜测，不要删除115内容。无归属的历史内容保持在 /GAL/todo，并在结论中说明。
 
-如果分页结果 has_more=true，继续读取下一页，不能只看第一页便宣称年度完成。最终以结构化结果总结你实际读取的115范围、判断和执行结果。"""
+如果分页结果 has_more=true，继续读取下一页，不能只看第一页便宣称年度完成。最终以结构化结果总结你实际读取的115范围、判断和执行结果。
+
+所有需要用户决定的事项必须逐条写入 human_review，不能只在 summary 中笼统说明。每项使用稳定且可读的 review_key，category 标明问题类型，target 写 EGS ID、115 CID/路径等目标，question 写用户需要回答的单一问题，reason 说明为何不能自动处理，evidence 列出具体 InfoHash、CID、路径或文件证据，recommended_action 给出你的首选建议，alternatives 列出其它可选处理。不得把建议操作当成已执行动作。
+
+没有待确认事项时 human_review 必须是空数组且 requires_human=false。有待确认事项时 requires_human=true；如果同时完成了安全动作，outcome=partial；如果没有可继续执行的安全动作，outcome=blocked。"""
+
+
+def _normalize_final_result(result: dict) -> dict:
+    """Keep terminal state consistent with the structured review queue."""
+    reviews = result.get("human_review")
+    if not isinstance(reviews, list):
+        reviews = []
+    result["human_review"] = reviews
+    result["requires_human"] = bool(reviews)
+    if reviews and result.get("outcome") == "completed":
+        result["outcome"] = "partial" if result.get("actions") else "blocked"
+    return result
 
 
 def run_responses_job(conn, job, *, record_event, is_cancelled) -> dict:
@@ -380,6 +396,7 @@ def run_responses_job(conn, job, *, record_event, is_cancelled) -> dict:
                 result = json.loads(response.output_text)
             except (TypeError, json.JSONDecodeError) as exc:
                 raise RuntimeError("AI 未返回有效的结构化整理结果") from exc
+            result = _normalize_final_result(result)
             required_paths = {f"/GAL/GAL-{year}", "/GAL/todo"}
             missing = required_paths - state["completed_paths"]
             if missing:
