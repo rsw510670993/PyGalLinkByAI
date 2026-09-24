@@ -80,6 +80,7 @@
             <span>任务详情</span>
             <code id="detail-id" class="small"></code>
             <span id="detail-status"></span>
+            <button id="retry-btn" class="btn btn-outline-warning btn-sm ms-auto" type="button" hidden>从中断点重试</button>
             <button id="stop-btn" class="btn btn-outline-danger btn-sm ms-auto" type="button" hidden>停止</button>
         </div>
         <div class="card-body">
@@ -142,6 +143,8 @@
                         <code class="small">${escape(job.job_id.slice(0, 12))}</code>
                         ${job.scope_year ? `<span class="badge text-bg-light">${escape(job.scope_year)}年</span>` : ''}
                         ${job.result?.human_review?.length ? `<span class="badge text-bg-warning">待确认 ${job.result.human_review.length}</span>` : ''}
+                        ${job.has_checkpoint ? `<span class="badge text-bg-info">中断点 R${escape(job.checkpoint_round)}</span>` : ''}
+                        ${job.attempt_count ? `<span class="small text-muted">尝试 ${escape(job.attempt_count)}</span>` : ''}
                         <span class="small text-muted ms-auto">${escape(job.created_at)}</span>
                     </div>
                     <div class="mt-2">${escape(job.summary || job.error || '等待结果')}</div>
@@ -156,6 +159,9 @@
         $('detail-status').innerHTML = badge(job.status);
         $('detail-prompt').innerHTML = `<div class="small text-muted mb-1">任务说明</div><div>${escape(job.prompt)}</div>`;
         $('stop-btn').hidden = terminal.has(job.status);
+        $('retry-btn').hidden = !job.retryable;
+        $('retry-btn').disabled = false;
+        $('retry-btn').title = job.checkpoint_at ? `中断点保存于 ${job.checkpoint_at}` : '';
         const summary = job.summary || job.error;
         $('detail-summary').hidden = !summary;
         $('detail-summary').textContent = summary || '';
@@ -247,6 +253,22 @@
         } catch (error) {
             $('start-message').textContent = error.message;
             $('start-btn').disabled = false;
+        }
+    });
+
+    $('retry-btn').addEventListener('click', async () => {
+        if (!selectedJob || !confirm('确认从保存的中断点继续该任务？已完成的分页和工具上下文会被复用。')) return;
+        $('retry-btn').disabled = true;
+        try {
+            await api('ai_job_retry', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({job_id: selectedJob})
+            });
+            await load();
+            await loadDetail(selectedJob);
+        } catch (error) {
+            alert(error.message);
+            $('retry-btn').disabled = false;
         }
     });
 

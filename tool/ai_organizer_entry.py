@@ -9,7 +9,7 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
 from tool.ai_organizer import (
-    get_job, list_jobs, request_cancel, run_job, start_job, system_status,
+    get_job, list_jobs, request_cancel, retry_job, run_job, start_job, system_status,
 )
 
 
@@ -33,6 +33,8 @@ def main() -> None:
     start.add_argument("--year", type=int)
     stop = sub.add_parser("stop")
     stop.add_argument("--job-id", required=True)
+    retry = sub.add_parser("retry")
+    retry.add_argument("--job-id", required=True)
     worker = sub.add_parser("worker")
     worker.add_argument("--job-id", required=True)
     worker.add_argument("--timeout", type=int, default=1800)
@@ -53,6 +55,8 @@ def main() -> None:
             )
         elif args.command == "stop":
             result = request_cancel(args.job_id, db_path=args.db)
+        elif args.command == "retry":
+            result = retry_job(args.job_id, db_path=args.db)
         else:
             result = run_job(args.job_id, db_path=args.db, timeout_seconds=args.timeout)
         emit(result)

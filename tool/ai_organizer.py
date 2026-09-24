@@ -48,6 +48,9 @@ def ensure_ai_schema(conn: sqlite3.Connection) -> None:
             thread_id       TEXT,
             summary         TEXT,
             result_json     TEXT,
+            checkpoint_json TEXT,
+            checkpoint_at   TEXT,
+            attempt_count   INTEGER NOT NULL DEFAULT 0,
             error           TEXT,
             cancel_requested INTEGER NOT NULL DEFAULT 0,
             created_at      TEXT NOT NULL,
@@ -107,9 +110,20 @@ def ensure_ai_schema(conn: sqlite3.Connection) -> None:
     columns = {row[1] for row in conn.execute("PRAGMA table_info(egs_ai_jobs)")}
     if "scope_egs_ids" not in columns:
         conn.execute("ALTER TABLE egs_ai_jobs ADD COLUMN scope_egs_ids TEXT")
+    if "checkpoint_json" not in columns:
+        conn.execute("ALTER TABLE egs_ai_jobs ADD COLUMN checkpoint_json TEXT")
+    if "checkpoint_at" not in columns:
+        conn.execute("ALTER TABLE egs_ai_jobs ADD COLUMN checkpoint_at TEXT")
+    if "attempt_count" not in columns:
+        conn.execute("ALTER TABLE egs_ai_jobs ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0")
     decision_columns = {row[1] for row in conn.execute("PRAGMA table_info(egs_ai_decisions)")}
     if "human_review_json" not in decision_columns:
         conn.execute("ALTER TABLE egs_ai_decisions ADD COLUMN human_review_json TEXT")
+    conn.execute(
+        """UPDATE egs_ai_jobs SET worker_pid=NULL,agent_pid=NULL
+            WHERE status NOT IN ('queued','running')
+              AND (worker_pid IS NOT NULL OR agent_pid IS NOT NULL)"""
+    )
     conn.commit()
 
 
@@ -129,6 +143,15 @@ def _job_dict(row, include_prompt: bool = True) -> dict:
     data["cancel_requested"] = bool(data.get("cancel_requested"))
     data["scope_egs_ids"] = _json_value(data.get("scope_egs_ids")) or []
     data["result"] = _json_value(data.pop("result_json", None))
+    checkpoint = _json_value(data.pop("checkpoint_json", None))
+    data["has_checkpoint"] = bool(checkpoint)
+    data["checkpoint_round"] = (
+        int(checkpoint.get("next_round") or 1) if isinstance(checkpoint, dict) else None
+    )
+    data["retryable"] = bool(
+        checkpoint and data.get("driver") == "responses"
+        and data.get("status") in ("failed", "cancelled")
+    )
     if not include_prompt:
         data.pop("prompt", None)
     return data
@@ -377,7 +400,7 @@ def _set_job(conn, job_id: str, **fields) -> None:
     conn.commit()
 
 
-def store_result_audit(conn, job_id: str, result: dict) -> int:
+def store_result_audit(conn, job_id: str, result: dict, *, commit: bool = True) -> int:
     """Persist the agent's structured conclusion separately from job transport state."""
     now = _now()
     outcome = str(result.get("outcome") or "partial")
@@ -406,7 +429,8 @@ def store_result_audit(conn, job_id: str, result: dict) -> int:
              "reported", json.dumps({"result": action.get("result")}, ensure_ascii=False),
              now, now),
         )
-    conn.commit()
+    if commit:
+        conn.commit()
     return decision_id
 
 
@@ -429,10 +453,21 @@ def run_job(job_id: str, *, db_path: str | None = None,
             raise RuntimeError("AI 任务不存在")
         if job["status"] != "queued":
             return {"success": False, "message": f"任务状态不是 queued: {job['status']}"}
-        _set_job(conn, job_id, status="running", worker_pid=os.getpid(), started_at=_now())
-        record_event(conn, job_id, "job.started", "AI 整理任务开始执行")
-        backup = _backup_database(conn, job_id)
-        record_event(conn, job_id, "database.backup", f"数据库备份已创建：{backup}")
+        checkpoint = _json_value(job["checkpoint_json"])
+        attempt = int(job["attempt_count"] or 0) + 1
+        _set_job(
+            conn, job_id, status="running", worker_pid=os.getpid(), started_at=_now(),
+            finished_at=None, error=None, cancel_requested=0, attempt_count=attempt,
+        )
+        if checkpoint:
+            record_event(
+                conn, job_id, "job.resumed",
+                f"从第 {int(checkpoint.get('next_round') or 1)} 轮中断点继续，第 {attempt} 次尝试",
+            )
+        else:
+            record_event(conn, job_id, "job.started", "AI 整理任务开始执行")
+            backup = _backup_database(conn, job_id)
+            record_event(conn, job_id, "database.backup", f"数据库备份已创建：{backup}")
 
         if job["driver"] == "responses":
             if not job["scope_year"]:
@@ -449,18 +484,26 @@ def run_job(job_id: str, *, db_path: str | None = None,
                     "SELECT cancel_requested FROM egs_ai_jobs WHERE job_id=?", (job_id,)
                 ).fetchone()
                 return bool(row and row[0])
+            def save_checkpoint(payload):
+                _set_job(
+                    conn, job_id,
+                    checkpoint_json=json.dumps(payload, ensure_ascii=False),
+                    checkpoint_at=str(payload.get("saved_at") or _now()),
+                )
+
 
             result = run_responses_job(
                 conn, job, record_event=api_event, is_cancelled=is_cancelled,
+                save_checkpoint=save_checkpoint, checkpoint=checkpoint,
             )
             outcome = result.get("outcome") or "completed"
             if outcome not in ("completed", "partial", "blocked", "failed"):
                 outcome = "partial"
-            store_result_audit(conn, job_id, result)
+            store_result_audit(conn, job_id, result, commit=False)
             _set_job(
                 conn, job_id, status=outcome, summary=str(result.get("summary") or ""),
                 result_json=json.dumps(result, ensure_ascii=False), finished_at=_now(),
-                agent_pid=None,
+                agent_pid=None, worker_pid=None, checkpoint_json=None, checkpoint_at=None,
             )
             record_event(
                 conn, job_id, "job.finished", result.get("summary") or "AI 整理任务结束",
@@ -509,7 +552,7 @@ def run_job(job_id: str, *, db_path: str | None = None,
             ).fetchone()[0]
             if cancel:
                 process.terminate()
-                _set_job(conn, job_id, status="cancelled", finished_at=_now(), agent_pid=None)
+                _set_job(conn, job_id, status="cancelled", finished_at=_now(), agent_pid=None, worker_pid=None)
                 record_event(conn, job_id, "job.cancelled", "任务已停止", level="warning")
                 return {"success": True, "status": "cancelled", "job_id": job_id}
             if time.monotonic() - started > int(timeout_seconds):
@@ -546,7 +589,7 @@ def run_job(job_id: str, *, db_path: str | None = None,
         store_result_audit(conn, job_id, result)
         _set_job(
             conn, job_id, status=outcome, summary=str(result.get("summary") or ""),
-            result_json=json.dumps(result, ensure_ascii=False), finished_at=_now(), agent_pid=None,
+            result_json=json.dumps(result, ensure_ascii=False), finished_at=_now(), agent_pid=None, worker_pid=None,
         )
         record_event(conn, job_id, "job.finished", result.get("summary") or "AI 整理任务结束",
                      level="error" if outcome == "failed" else "info", payload=result)
@@ -554,7 +597,7 @@ def run_job(job_id: str, *, db_path: str | None = None,
                 "result": result}
     except InterruptedError as exc:
         try:
-            _set_job(conn, job_id, status="cancelled", error=str(exc), finished_at=_now(), agent_pid=None)
+            _set_job(conn, job_id, status="cancelled", error=str(exc), finished_at=_now(), agent_pid=None, worker_pid=None)
             record_event(conn, job_id, "job.cancelled", str(exc), level="warning")
         except Exception:
             pass
@@ -563,7 +606,7 @@ def run_job(job_id: str, *, db_path: str | None = None,
         if process is not None and process.poll() is None:
             process.terminate()
         try:
-            _set_job(conn, job_id, status="failed", error=str(exc), finished_at=_now(), agent_pid=None)
+            _set_job(conn, job_id, status="failed", error=str(exc), finished_at=_now(), agent_pid=None, worker_pid=None)
             record_event(conn, job_id, "job.failed", str(exc), level="error")
         except Exception:
             pass
@@ -572,26 +615,22 @@ def run_job(job_id: str, *, db_path: str | None = None,
         conn.close()
 
 
-def start_job(prompt: str, *, driver: str = "responses", scope_year: int | None = None,
-              scope_egs_ids=None, db_path: str | None = None) -> dict:
-    if driver == "responses" and scope_year is None:
-        raise ValueError("AI API 整理任务必须指定年份")
+def _ensure_ai_ready() -> None:
     health = driver_status()
     if not health.get("available"):
         raise RuntimeError(health.get("message") or "Responses API 未配置")
     if health.get("logged_in") is not True:
         raise RuntimeError("当前 Web/Worker 尚未配置 AI API")
-    job = create_job(
-        prompt, driver=driver, scope_year=scope_year,
-        scope_egs_ids=scope_egs_ids, db_path=db_path,
-    )
+
+
+def _spawn_worker(job_id: str, *, db_path: str | None = None) -> dict:
     command = [sys.executable, "-m", "tool.ai_organizer_entry"]
     if db_path:
         command.extend(("--db", db_path))
-    command.extend(("worker", "--job-id", job["job_id"]))
+    command.extend(("worker", "--job-id", job_id))
     log_dir = Path(repo_root()) / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    log = open(log_dir / f"ai_organizer_{job['job_id']}.log", "ab", buffering=0)
+    log = open(log_dir / f"ai_organizer_{job_id}.log", "ab", buffering=0)
     try:
         proc = subprocess.Popen(
             command, cwd=repo_root(), stdin=subprocess.DEVNULL,
@@ -602,7 +641,58 @@ def start_job(prompt: str, *, driver: str = "responses", scope_year: int | None 
     conn = open_egs_db(db_path)
     try:
         ensure_ai_schema(conn)
-        _set_job(conn, job["job_id"], worker_pid=proc.pid)
+        _set_job(conn, job_id, worker_pid=proc.pid)
     finally:
         conn.close()
-    return {"success": True, "message": "AI 整理任务已启动", "job_id": job["job_id"]}
+    return {"success": True, "message": "AI 整理任务已启动", "job_id": job_id}
+
+
+def start_job(prompt: str, *, driver: str = "responses", scope_year: int | None = None,
+              scope_egs_ids=None, db_path: str | None = None) -> dict:
+    if driver == "responses" and scope_year is None:
+        raise ValueError("AI API 整理任务必须指定年份")
+    _ensure_ai_ready()
+    job = create_job(
+        prompt, driver=driver, scope_year=scope_year,
+        scope_egs_ids=scope_egs_ids, db_path=db_path,
+    )
+    return _spawn_worker(job["job_id"], db_path=db_path)
+
+
+def retry_job(job_id: str, *, db_path: str | None = None) -> dict:
+    _ensure_ai_ready()
+    conn = open_egs_db(db_path)
+    try:
+        ensure_ai_schema(conn)
+        row = conn.execute(
+            "SELECT job_id,driver,status,checkpoint_json FROM egs_ai_jobs WHERE job_id=?",
+            (job_id,),
+        ).fetchone()
+        if not row:
+            raise ValueError("任务不存在")
+        if row["driver"] != "responses":
+            raise ValueError("只有 Responses API 任务支持中断点续跑")
+        if row["status"] not in ("failed", "cancelled"):
+            raise ValueError(f"任务状态不能续跑: {row['status']}")
+        if not _json_value(row["checkpoint_json"]):
+            raise ValueError("任务没有可用中断点，只能从头新建")
+        active = conn.execute(
+            """SELECT job_id FROM egs_ai_jobs
+                WHERE status IN ('queued','running') AND job_id<>? LIMIT 1""",
+            (job_id,),
+        ).fetchone()
+        if active:
+            raise RuntimeError(f"已有 AI 任务正在处理: {active['job_id']}")
+        _set_job(
+            conn, job_id, status="queued", error=None, finished_at=None,
+            cancel_requested=0, worker_pid=None, agent_pid=None,
+        )
+        record_event(
+            conn, job_id, "job.retry_queued",
+            "检测到未清除中断点，任务已进入续跑队列",
+        )
+    finally:
+        conn.close()
+    result = _spawn_worker(job_id, db_path=db_path)
+    result["message"] = "AI 整理任务将从中断点继续"
+    return result

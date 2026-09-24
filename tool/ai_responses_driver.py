@@ -8,6 +8,7 @@ from __future__ import annotations
 import configparser
 import json
 import os
+import time
 from pathlib import Path
 
 from .egs_core import ensure_egs_schema
@@ -16,6 +17,8 @@ from .p115_client import list_directory, offline_list
 from .runtime import read_config, repo_root
 
 MAX_TOOL_ROUNDS = 80
+MAX_RESPONSE_RETRIES = 4
+CHECKPOINT_VERSION = 1
 SAFE_EXECUTE_PREVIEWS = {
     "would_rename", "would_move", "would_rename_moved",
     "would_set_downloaded", "already_ok",
@@ -354,35 +357,123 @@ def _normalize_final_result(result: dict) -> dict:
     return result
 
 
-def run_responses_job(conn, job, *, record_event, is_cancelled) -> dict:
+def _empty_state() -> dict:
+    return {
+        "saw_live_115": False, "known_cids": set(), "previews": {},
+        "path_offsets": {}, "completed_paths": set(),
+    }
+
+
+def _checkpoint_payload(inputs: list, state: dict, next_round: int,
+                        *, response_id=None) -> dict:
+    return {
+        "version": CHECKPOINT_VERSION,
+        "next_round": int(next_round),
+        "response_id": response_id,
+        "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "inputs": inputs,
+        "state": {
+            "saw_live_115": bool(state.get("saw_live_115")),
+            "known_cids": sorted(str(value) for value in state.get("known_cids", set())),
+            "previews": {str(key): value for key, value in state.get("previews", {}).items()},
+            "path_offsets": dict(state.get("path_offsets", {})),
+            "completed_paths": sorted(state.get("completed_paths", set())),
+        },
+    }
+
+
+def _restore_checkpoint(checkpoint, prompt: str) -> tuple[list, dict, int]:
+    if not isinstance(checkpoint, dict):
+        return ([{"role": "user", "content": str(prompt)}], _empty_state(), 1)
+    if int(checkpoint.get("version") or 0) != CHECKPOINT_VERSION:
+        raise RuntimeError("AI 中断点版本不兼容，不能安全续跑")
+    inputs = checkpoint.get("inputs")
+    raw_state = checkpoint.get("state")
+    if not isinstance(inputs, list) or not isinstance(raw_state, dict):
+        raise RuntimeError("AI 中断点内容不完整，不能安全续跑")
+    state = _empty_state()
+    state["saw_live_115"] = bool(raw_state.get("saw_live_115"))
+    state["known_cids"] = {str(value) for value in raw_state.get("known_cids", [])}
+    state["previews"] = {
+        int(key): value for key, value in (raw_state.get("previews") or {}).items()
+    }
+    state["path_offsets"] = {
+        str(key): int(value) for key, value in (raw_state.get("path_offsets") or {}).items()
+    }
+    state["completed_paths"] = {
+        str(value) for value in raw_state.get("completed_paths", [])
+    }
+    next_round = max(1, int(checkpoint.get("next_round") or 1))
+    return inputs, state, next_round
+
+
+def _retry_delay(exc, retry_no: int) -> float:
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", {}) or {}
+    value = headers.get("retry-after") if hasattr(headers, "get") else None
+    try:
+        return min(120.0, max(1.0, float(value)))
+    except (TypeError, ValueError):
+        return float(min(60, 5 * (2 ** retry_no)))
+
+
+def _wait_for_retry(delay: float, is_cancelled) -> None:
+    deadline = time.monotonic() + max(0.0, float(delay))
+    while time.monotonic() < deadline:
+        if is_cancelled():
+            raise InterruptedError("任务已请求停止")
+        time.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
+
+
+def _create_response(client, request: dict, *, round_no: int,
+                     record_event, is_cancelled):
+    for retry_no in range(MAX_RESPONSE_RETRIES + 1):
+        try:
+            return client.responses.create(**request)
+        except Exception as exc:
+            if getattr(exc, "status_code", None) != 429 or retry_no >= MAX_RESPONSE_RETRIES:
+                raise
+            delay = _retry_delay(exc, retry_no)
+            record_event(
+                "api.retry",
+                f"Responses API 第 {round_no} 轮遇到 429，{delay:g} 秒后重试",
+                level="warning",
+                payload={"round": round_no, "retry": retry_no + 1, "delay": delay},
+            )
+            _wait_for_retry(delay, is_cancelled)
+
+
+def run_responses_job(conn, job, *, record_event, is_cancelled,
+                      save_checkpoint, checkpoint=None) -> dict:
     from openai import OpenAI
 
     settings = provider_settings(include_key=True)
     if not settings.get("configured"):
         raise RuntimeError(settings.get("message") or "Responses API 未配置")
-    client_kwargs = {"api_key": settings["api_key"]}
+    client_kwargs = {"api_key": settings["api_key"], "max_retries": 0}
     if settings.get("base_url"):
         client_kwargs["base_url"] = settings["base_url"]
     client = OpenAI(**client_kwargs)
     year = int(job["scope_year"])
     schema = json.loads((Path(repo_root()) / "tool" / "ai_organizer_output.schema.json").read_text(encoding="utf-8"))
-    inputs = [{"role": "user", "content": str(job["prompt"])}]
-    state = {
-        "saw_live_115": False, "known_cids": set(), "previews": {},
-        "path_offsets": {}, "completed_paths": set(),
-    }
+    inputs, state, start_round = _restore_checkpoint(checkpoint, str(job["prompt"]))
+    save_checkpoint(_checkpoint_payload(inputs, state, start_round))
 
-    for round_no in range(1, MAX_TOOL_ROUNDS + 1):
+    for round_no in range(start_round, MAX_TOOL_ROUNDS + 1):
         if is_cancelled():
             raise InterruptedError("任务已请求停止")
-        response = client.responses.create(
-            model=settings["model"], instructions=_instructions(year), input=inputs,
-            tools=tool_definitions(), parallel_tool_calls=False,
-            text={"format": {
+        request = {
+            "model": settings["model"], "instructions": _instructions(year),
+            "input": inputs, "tools": tool_definitions(), "parallel_tool_calls": False,
+            "text": {"format": {
                 "type": "json_schema", "name": "ai_organizer_result",
                 "strict": True, "schema": schema,
             }},
-            max_output_tokens=10000,
+            "max_output_tokens": 10000,
+        }
+        response = _create_response(
+            client, request, round_no=round_no,
+            record_event=record_event, is_cancelled=is_cancelled,
         )
         record_event(
             "api.response", f"Responses API 第 {round_no} 轮完成",
@@ -424,4 +515,7 @@ def run_responses_job(conn, job, *, record_event, is_cancelled) -> dict:
                 "type": "function_call_output", "call_id": call.call_id,
                 "output": json.dumps(output, ensure_ascii=False),
             })
+        save_checkpoint(_checkpoint_payload(
+            inputs, state, round_no + 1, response_id=response.id,
+        ))
     raise RuntimeError(f"Responses API 工具调用超过 {MAX_TOOL_ROUNDS} 轮")

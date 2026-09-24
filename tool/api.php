@@ -123,6 +123,22 @@ if ($action === 'ai_job_stop') {
     json_response($data);
 }
 
+if ($action === 'ai_job_retry') {
+    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+        json_response(['success' => false, 'message' => '请使用 POST 请求']);
+    }
+    $body = read_json_body();
+    $jobId = trim(strval($body['job_id'] ?? ''));
+    if ($jobId === '') {
+        json_response(['success' => false, 'message' => '缺少 job_id']);
+    }
+    [$code, $data] = run_cli(
+        ['retry', '--job-id', $jobId],
+        'ai_organizer_entry.py'
+    );
+    json_response($data);
+}
+
 if ($action === 'pipeline_preflight') {
     $actionName = strval($_GET['pipeline_action'] ?? 'check');
     $args = ['preflight', '--action', $actionName,

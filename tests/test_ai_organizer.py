@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -88,7 +89,6 @@ class AiOrganizerTests(unittest.TestCase):
         self.assertEqual(tuple(action), ("move", "reported"))
 
     def test_human_review_schema_and_terminal_state_are_consistent(self):
-        import json
         schema = json.loads(
             (Path(__file__).parents[1] / "tool" / "ai_organizer_output.schema.json").read_text()
         )
@@ -101,6 +101,103 @@ class AiOrganizerTests(unittest.TestCase):
         })
         self.assertTrue(result["requires_human"])
         self.assertEqual(result["outcome"], "blocked")
+
+    def test_completed_job_clears_checkpoint_after_result_audit(self):
+        job = ai_organizer.create_job(
+            "checkpoint complete", scope_year=2022, db_path=self.db
+        )
+
+        def fake_run(conn, row, **kwargs):
+            kwargs["save_checkpoint"](
+                ai_responses_driver._checkpoint_payload(
+                    [{"role": "user", "content": "checkpoint complete"}],
+                    ai_responses_driver._empty_state(), 2,
+                )
+            )
+            return {
+                "outcome": "completed", "summary": "done",
+                "requires_human": False, "evidence": [], "actions": [],
+                "human_review": [],
+            }
+
+        with patch.object(ai_organizer, "_backup_database", return_value="backup"), patch.object(
+            ai_responses_driver, "run_responses_job", side_effect=fake_run
+        ):
+            result = ai_organizer.run_job(job["job_id"], db_path=self.db)
+
+        self.assertTrue(result["success"])
+        detail = ai_organizer.get_job(job["job_id"], db_path=self.db)
+        self.assertEqual(detail["status"], "completed")
+        self.assertEqual(detail["attempt_count"], 1)
+        self.assertFalse(detail["has_checkpoint"])
+        conn = ai_organizer.open_egs_db(self.db)
+        self.addCleanup(conn.close)
+        count = conn.execute(
+            "SELECT count(*) FROM egs_ai_decisions WHERE job_id=?", (job["job_id"],)
+        ).fetchone()[0]
+        self.assertEqual(count, 1)
+
+    def test_failed_job_keeps_checkpoint_and_can_be_requeued(self):
+        job = ai_organizer.create_job(
+            "checkpoint retry", scope_year=2022, db_path=self.db
+        )
+
+        def fake_run(conn, row, **kwargs):
+            state = ai_responses_driver._empty_state()
+            state["path_offsets"]["/GAL/GAL-2022"] = 100
+            kwargs["save_checkpoint"](
+                ai_responses_driver._checkpoint_payload(
+                    [{"role": "user", "content": "checkpoint retry"}], state, 2,
+                )
+            )
+            raise RuntimeError("429 saturated")
+
+        with patch.object(ai_organizer, "_backup_database", return_value="backup"), patch.object(
+            ai_responses_driver, "run_responses_job", side_effect=fake_run
+        ):
+            result = ai_organizer.run_job(job["job_id"], db_path=self.db)
+        self.assertFalse(result["success"])
+        detail = ai_organizer.get_job(job["job_id"], db_path=self.db)
+        self.assertTrue(detail["retryable"])
+        self.assertEqual(detail["checkpoint_round"], 2)
+
+        with patch.object(ai_organizer, "_ensure_ai_ready"), patch.object(
+            ai_organizer, "_spawn_worker",
+            return_value={"success": True, "job_id": job["job_id"]},
+        ):
+            retried = ai_organizer.retry_job(job["job_id"], db_path=self.db)
+        self.assertTrue(retried["success"])
+        detail = ai_organizer.get_job(job["job_id"], db_path=self.db)
+        self.assertEqual(detail["status"], "queued")
+        self.assertTrue(detail["has_checkpoint"])
+        self.assertEqual(detail["events"][-1]["event_type"], "job.retry_queued")
+
+    def test_429_uses_job_level_retry(self):
+        class RateLimited(Exception):
+            status_code = 429
+            response = None
+
+        class Responses:
+            def __init__(self):
+                self.calls = 0
+
+            def create(self, **kwargs):
+                self.calls += 1
+                if self.calls < 3:
+                    raise RateLimited("busy")
+                return "ok"
+
+        client = type("Client", (), {"responses": Responses()})()
+        events = []
+        with patch.object(ai_responses_driver, "_wait_for_retry"):
+            result = ai_responses_driver._create_response(
+                client, {}, round_no=2,
+                record_event=lambda *args, **kwargs: events.append((args, kwargs)),
+                is_cancelled=lambda: False,
+            )
+        self.assertEqual(result, "ok")
+        self.assertEqual(client.responses.calls, 3)
+        self.assertEqual(len(events), 2)
 
     def test_year_job_has_no_fixed_candidate_ids(self):
         job = ai_organizer.create_job(
