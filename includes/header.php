@@ -8,6 +8,7 @@ if ($base === '.' || $base === '/') $base = '';
 $navItems = [
     ['index.php', '年历与控制'],
     ['tool/egs.php', 'EGS 数据'],
+    ['tool/agent_jobs.php', '任务总线'],
     ['tool/ai_organizer.php', 'AI 整理'],
     ['tool/logs.php', '日志'],
 ];

@@ -169,6 +169,49 @@ if (in_array($action, ['pipeline_start', 'pipeline_status', 'pipeline_stop'], tr
     json_response($data);
 }
 
+// 任务信箱（agent_jobs）：web 手动启动确定性流程，执行器不看 TUI。
+// 契约见 tool/agent_jobs.py —— 入队写 inbox/<job_id>.json，结果读 outbox/<job_id>.json。
+if ($action === 'agent_job_start') {
+    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+        json_response(['status' => 'error', 'message' => '请使用 POST 请求']);
+    }
+    $body = read_json_body();
+    $year = as_int($body['year'] ?? null, 0);
+    $args = ['start',
+             '--action', strval($body['action'] ?? ''),
+             '--year', strval($year),
+             '--year-end', strval(as_int($body['year_end'] ?? null, $year)),
+             '--requested-by', 'web'];
+    if (($body['execute'] ?? false) === true) $args[] = '--execute';
+    $timeout = as_int($body['timeout'] ?? null, 0);
+    if ($timeout > 0) {
+        $args[] = '--timeout';
+        $args[] = strval($timeout);
+    }
+    [$code, $data] = run_cli($args, 'agent_jobs_entry.py');
+    json_response($data);
+}
+
+if ($action === 'agent_job_stop') {
+    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+        json_response(['status' => 'error', 'message' => '请使用 POST 请求']);
+    }
+    $body = read_json_body();
+    [$code, $data] = run_cli(['stop', '--job-id', strval($body['job_id'] ?? '')], 'agent_jobs_entry.py');
+    json_response($data);
+}
+
+if ($action === 'agent_job_status') {
+    [$code, $data] = run_cli(['status', '--job-id', strval($_GET['job_id'] ?? '')], 'agent_jobs_entry.py');
+    json_response($data);
+}
+
+if ($action === 'agent_job_list') {
+    $args = ['list', '--limit', strval(as_int($_GET['limit'] ?? null, 20))];
+    [$code, $data] = run_cli($args, 'agent_jobs_entry.py');
+    json_response($data);
+}
+
 if ($action === 'years') {
     [$code, $data] = run_cli(['years', '--source', ($_GET['source'] ?? '') === 'egs' ? 'egs' : 'getchu']);
     json_response($data);
