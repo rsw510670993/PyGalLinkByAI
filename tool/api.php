@@ -169,7 +169,8 @@ if (in_array($action, ['pipeline_start', 'pipeline_status', 'pipeline_stop'], tr
     json_response($data);
 }
 
-// 任务信箱（agent_jobs）：web 手动启动确定性流程，执行器不看 TUI。
+// 任务信箱（agent_jobs）：web 手动启动确定性流程；organize 例外——只入队，
+// 由 TUI 侧领取执行（见 tool/agent_jobs.py:QUEUE_ONLY_ACTIONS）。
 // 契约见 tool/agent_jobs.py —— 入队写 inbox/<job_id>.json，结果读 outbox/<job_id>.json。
 if ($action === 'agent_job_start') {
     if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
@@ -208,6 +209,23 @@ if ($action === 'agent_job_status') {
 
 if ($action === 'agent_job_list') {
     $args = ['list', '--limit', strval(as_int($_GET['limit'] ?? null, 20))];
+    [$code, $data] = run_cli($args, 'agent_jobs_entry.py');
+    json_response($data);
+}
+
+// 维护：清理任务记录与 db 快照（默认预览，execute=true 才真删；删 db 快照前必弹确认）
+if ($action === 'agent_job_prune') {
+    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+        json_response(['status' => 'error', 'message' => '请使用 POST 请求']);
+    }
+    $body = read_json_body();
+    $args = ['prune',
+             '--keep', strval(as_int($body['keep'] ?? null, 50)),
+             '--days', strval(as_int($body['days'] ?? null, 14)),
+             '--db-keep', strval(as_int($body['db_keep'] ?? null, 3)),
+             '--db-days', strval(as_int($body['db_days'] ?? null, 7)),
+             '--requested-by', 'web'];
+    if (($body['execute'] ?? false) === true) $args[] = '--execute';
     [$code, $data] = run_cli($args, 'agent_jobs_entry.py');
     json_response($data);
 }

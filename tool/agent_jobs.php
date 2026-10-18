@@ -22,7 +22,9 @@
             <h4 class="mb-1">任务总线</h4>
             <div class="text-muted small">
                 网页手动启动确定性流程；执行器在后台跑，结果以 JSON 落在
-                <code>status/agent_jobs/outbox/</code>，此处直接读回。复杂判定（整理、孤儿、移 todo）不在这里。
+                <code>status/agent_jobs/outbox/</code>，此处直接读回。整理115 例外：<strong>只入队</strong>，
+                由 TUI 侧领取执行（<code>python -m tool.agent_jobs run --once</code> 或 agent 按 skill 处理）；
+                复杂判定（孤儿、移 todo、搬月）仍不在这里。
             </div>
         </div>
         <div class="ms-auto d-flex gap-2">
@@ -36,52 +38,49 @@
         <div class="card-header">启动任务</div>
         <div class="card-body">
             <div class="row g-3 align-items-end">
-                <div class="col-6 col-md-2">
+                <div class="col-6 col-xl-2">
                     <label for="start-year" class="form-label">起始年份</label>
                     <input id="start-year" type="number" class="form-control" min="1990" max="2100" value="2020">
                 </div>
-                <div class="col-6 col-md-2">
+                <div class="col-6 col-xl-2">
                     <label for="end-year" class="form-label">结束年份</label>
                     <input id="end-year" type="number" class="form-control" min="1990" max="2100" placeholder="同起始年">
                 </div>
-                <div class="col-12 col-md-4">
+                <div class="col-12 col-xl-3">
                     <label for="job-action" class="form-label">动作</label>
                     <select id="job-action" class="form-select">
-                        <option value="crawl" data-hint="抓取该年度的 EGS 游戏清单">获取游戏清单 (crawl)</option>
-                        <option value="magnet" data-hint="为该年度记录获取下载用磁链">获取下载用磁链 (magnet)</option>
-                        <option value="submit" data-hint="把磁链提交到 115 离线下载">提交 115 (submit)</option>
-                        <option value="old_audit" data-hint="只读审计 /GAL.old/GAL-YYYY，只出报告，没有任何删除模式">核对旧库 (old_audit · 只读)</option>
-                        <option value="old_clean" data-hint="清理审计结论为「旧⊆新」的冗余候选：删前现场复验，删除进 115 回收站可恢复；关闭“真正执行”即只预览">清理旧库 (old_clean)</option>
+                        <option value="crawl" data-hint="抓取该年 EGS 清单">获取游戏清单 (crawl)</option>
+                        <option value="magnet" data-hint="补该年缺失的磁链">获取下载用磁链 (magnet)</option>
+                        <option value="submit" data-hint="提交磁链到 115 离线">提交 115 (submit)</option>
+                        <option value="organize" data-hint="整理目录名与映射（只入队）">整理 115 (organize · 只入队)</option>
+                        <option value="old_audit" data-hint="核对 /GAL.old 与 /GAL 的重合">核对旧库 (old_audit)</option>
                     </select>
-                    <div id="action-hint" class="form-text"></div>
                 </div>
-                <div class="col-12 col-md-2">
-                    <div class="form-check form-switch">
-                        <input class="form-check-input" type="checkbox" id="execute-switch">
-                        <label class="form-check-label" for="execute-switch">真正执行</label>
+                <div class="col-6 col-xl-2">
+                    <label for="job-timeout" class="form-label">超时(秒)</label>
+                    <input id="job-timeout" type="number" min="60" class="form-control" placeholder="按动作默认">
+                </div>
+                <div class="col-6 col-xl-2">
+                    <span class="form-label d-block">执行方式</span>
+                    <div class="d-flex align-items-center gap-3" style="height:38px">
+                        <div class="form-check mb-0">
+                            <input class="form-check-input" type="radio" name="execute-mode" id="mode-preview" value="0" checked>
+                            <label class="form-check-label" for="mode-preview">预演</label>
+                        </div>
+                        <div class="form-check mb-0">
+                            <input class="form-check-input" type="radio" name="execute-mode" id="mode-execute" value="1">
+                            <label class="form-check-label" for="mode-execute">真正执行</label>
+                        </div>
                     </div>
-                    <div class="form-text">关闭=dry-run</div>
                 </div>
-                <div class="col-12 col-md-2">
-                    <button id="start-btn" class="btn btn-primary w-100" type="button">启动</button>
+                <div class="col-12 col-xl-1">
+                    <button id="start-btn" class="btn btn-primary w-100 px-2" type="button">启动</button>
                 </div>
             </div>
-            <div class="d-flex flex-wrap gap-2 align-items-center mt-3">
-                <button class="btn btn-outline-secondary btn-sm quick" type="button"
-                        data-action="crawl" data-execute="0">清单 2020（预演）</button>
-                <button class="btn btn-outline-secondary btn-sm quick" type="button"
-                        data-action="old_audit" data-execute="0">核对旧库 2020</button>
-                <button class="btn btn-outline-secondary btn-sm quick" type="button"
-                        data-action="old_clean" data-execute="0">清理旧库（预览）</button>
-                <button class="btn btn-outline-danger btn-sm quick" type="button"
-                        data-action="old_clean" data-execute="1">清理旧库（真删）</button>
-                <button class="btn btn-outline-secondary btn-sm quick" type="button"
-                        data-action="submit" data-execute="0">提交 115 2020（预演）</button>
-                <span class="input-group input-group-sm" style="max-width:220px">
-                    <span class="input-group-text">超时(秒)</span>
-                    <input id="job-timeout" type="number" min="60" class="form-control" placeholder="按动作默认">
-                </span>
-                <span id="start-message" class="small text-muted ms-auto"></span>
+            <div class="form-text d-flex flex-wrap gap-3 mt-2">
+                <span id="action-hint"></span>
+                <span id="execute-hint">预演：只出报告，不改数据</span>
+                <span id="start-message" class="text-muted ms-auto"></span>
             </div>
         </div>
     </div>
@@ -171,9 +170,11 @@
                         ${badge(job)}
                         <span class="badge text-bg-light">${escape(job.label || job.action)}</span>
                         <span class="badge text-bg-light">${escape(job.year)}${job.year_end && job.year_end !== job.year ? '-' + escape(job.year_end) : ''}</span>
-                        ${job.action === 'old_audit'
-                            ? '<span class="badge text-bg-secondary">只读</span>'
+                        ${job.action === 'organize'
+                            ? (job.dry_run ? '<span class="badge text-bg-info">预演</span>' : '<span class="badge text-bg-warning">真跑</span>')
                             : (job.dry_run ? '<span class="badge text-bg-info">dry-run</span>' : '<span class="badge text-bg-warning">真删</span>')}
+                        ${job.action === 'organize' && job._state === 'queued'
+                            ? '<span class="badge text-bg-secondary">待 TUI 领取</span>' : ''}
                         ${progressChip}
                         ${chips}
                         <span class="small text-muted ms-auto">${escape(job.created_at || job.finished_at || '')}</span>
@@ -241,7 +242,9 @@
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(payload)
             });
-            $('start-message').textContent = `已入队 ${data.job_id}（超时 ${data.timeout_s}s）`;
+            $('start-message').textContent = data.queued_only
+                ? `已入队 ${data.job_id}（等待 TUI 侧领取执行）`
+                : `已入队 ${data.job_id}（超时 ${data.timeout_s}s）`;
             selectedJob = data.job_id;
             await load();
         } catch (error) {
@@ -251,9 +254,24 @@
         }
     }
 
+    const EXECUTE_HINTS = {
+        old_audit: '会删「旧⊆新」冗余进回收站',
+        old_clean: '会删冗余目录进回收站',
+        organize: '仍只入队，等 TUI 领取',
+    };
+
+    function syncMode() {
+        const execute = $('mode-execute').checked;
+        const action = $('job-action').value;
+        $('execute-hint').textContent = execute
+            ? '真正执行：' + (EXECUTE_HINTS[action] || '按动作执行，不可撤销')
+            : '预演：只出报告，不改数据';
+    }
+
     function syncHint() {
         const option = $('job-action').selectedOptions[0];
         $('action-hint').textContent = option ? option.dataset.hint : '';
+        syncMode();
     }
 
     $('refresh-btn').addEventListener('click', load);
@@ -273,23 +291,21 @@
         load();
     });
     $('job-action').addEventListener('change', syncHint);
+    document.querySelectorAll('input[name="execute-mode"]').forEach(radio => {
+        radio.addEventListener('change', syncMode);
+    });
     $('start-btn').addEventListener('click', () => {
         const action = $('job-action').value;
         const year = parseInt($('start-year').value, 10);
         const endRaw = $('end-year').value.trim();
         const yearEnd = endRaw ? parseInt(endRaw, 10) : year;
         if (!year) { $('start-message').textContent = '请填写起始年份'; return; }
-        if ($('execute-switch').checked && !confirm(`确认真正执行 ${action} ${year}-${yearEnd}？dry-run 才安全。`)) return;
-        startJob(action, year, yearEnd, $('execute-switch').checked);
-    });
-
-    document.querySelectorAll('.quick').forEach(button => {
-        button.addEventListener('click', () => {
-            $('job-action').value = button.dataset.action;
-            $('execute-switch').checked = button.dataset.execute === '1';
-            syncHint();
-            $('start-btn').click();
-        });
+        const execute = $('mode-execute').checked;
+        if (execute) {
+            const warn = EXECUTE_HINTS[action] || '不可撤销';
+            if (!confirm(`确认真正执行 ${action} ${year}-${yearEnd}？${warn}`)) return;
+        }
+        startJob(action, year, yearEnd, execute);
     });
 
     $('job-list').addEventListener('click', event => {

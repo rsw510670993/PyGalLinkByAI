@@ -28,7 +28,9 @@ Web 请求只负责入队、停止和读取事件，不同步等待模型执行�
 
 ### 2.1 年度整理入口
 
-`tool/year_organizer.php` 提供年度任务入口。首个入口固定为 2022 年：
+> 2026-10-16：`tool/year_organizer.php` 与 `tool/ai_organizer.php` 两个页面已退役删除。整理改从「任务总线」入队（`organize` 只入队、不派生 worker），由 TUI 侧的 agent 领取后按 egs-115-organizer skill 执行。下面记录的是原年度入口的行为约定，仍然适用。
+
+原 `tool/year_organizer.php` 提供年度任务入口，首个入口固定为 2022 年：
 
 - 页面只提交年份，不运行规则预筛选，也不生成供用户勾选的固定候选列表；
 - AI 必须先分页读取 `/GAL/GAL-2022` 与 `/GAL/todo` 的 115 实时返回清单；

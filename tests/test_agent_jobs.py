@@ -143,6 +143,73 @@ class AgentJobsTests(unittest.TestCase):
         job = agent_jobs.enqueue('old_audit', 2020, root=self.root)
         self.assertEqual(agent_jobs.stop(job['job_id'], root=self.root)['status'], 'error')
 
+    def test_organize_start_queues_without_spawning_worker(self):
+        """organize 走「网页只入队、TUI 侧领取」：不得派生后台 worker。"""
+        with patch.object(agent_jobs, 'jobs_root', return_value=self.root), \
+             patch.object(agent_jobs.subprocess, 'Popen') as popen:
+            result = agent_jobs.start('organize', 2020, dry_run=True, requested_by='web')
+        self.assertTrue(result['queued_only'])
+        self.assertNotIn('pid', result)
+        popen.assert_not_called()
+        stored = agent_jobs.read_job(result['job_id'], root=self.root)
+        self.assertEqual(stored['_state'], 'queued')
+        self.assertEqual(stored['action'], 'organize')
+        self.assertTrue(stored['dry_run'])
+
+    def test_other_actions_still_spawn_worker(self):
+        with patch.object(agent_jobs, 'jobs_root', return_value=self.root), \
+             patch.object(agent_jobs, 'daily_log_path',
+                          return_value=str(self.root / 'agent_jobs.log')), \
+             patch.object(agent_jobs, 'repo_root', return_value=str(self.root)), \
+             patch.object(agent_jobs.subprocess, 'Popen') as popen:
+            result = agent_jobs.start('crawl', 2020)
+        popen.assert_called_once()
+        cmd = popen.call_args.args[0]
+        self.assertIn('worker', cmd)
+        self.assertNotIn('queued_only', result)
+
+    def test_old_audit_dry_run_never_cleans(self):
+        """默认 dry-run：核对只出报告，一条都不删。"""
+        job = {'job_id': 'j-audit', 'action': 'old_audit', 'label': '核对旧库',
+               'year': 2020, 'year_end': 2020, 'dry_run': True}
+        audit = {'ok': True, 'status': 'complete', 'counts': {'old_subset_new': 3},
+                 'highlights': ['审完'], 'artifacts': ['x.json']}
+        with patch('tool.gal_old_audit.audit_old_year', return_value=audit), \
+             patch('tool.gal_old_audit.clean_old_year') as clean:
+            result = agent_jobs._run_old_audit(job)
+        clean.assert_not_called()
+        self.assertTrue(result['ok'])
+        self.assertNotIn('clean_deleted', result['counts'])
+
+    def test_old_audit_execute_deletes_subset_candidates(self):
+        """真正执行 = 核对完按手顺删「旧⊆新」冗余（clean_old_year execute=True）。"""
+        job = {'job_id': 'j-audit2', 'action': 'old_audit', 'label': '核对旧库',
+               'year': 2021, 'year_end': 2021, 'dry_run': False}
+        audit = {'ok': True, 'status': 'complete', 'counts': {'old_subset_new': 86},
+                 'highlights': []}
+        cleaned = {'ok': True, 'status': 'complete',
+                   'counts': {'candidates': 86, 'verified': 86, 'deleted': 85,
+                              'verify_failed': 1, 'delete_failed': 0}}
+        with patch('tool.gal_old_audit.audit_old_year', return_value=audit), \
+             patch('tool.gal_old_audit.clean_old_year', return_value=cleaned) as clean:
+            result = agent_jobs._run_old_audit(job)
+        clean.assert_called_once()
+        self.assertTrue(clean.call_args.kwargs['execute'])
+        self.assertEqual(result['counts']['clean_deleted'], 85)
+        self.assertEqual(result['counts']['clean_verify_failed'], 1)
+        self.assertTrue(result['ok'])
+
+    def test_old_audit_execute_skips_delete_when_audit_partial(self):
+        """没审完不删：partial 时只落盘结果，等下次接着审。"""
+        job = {'job_id': 'j-audit3', 'action': 'old_audit', 'label': '核对旧库',
+               'year': 2020, 'year_end': 2020, 'dry_run': False}
+        audit = {'ok': False, 'status': 'partial', 'counts': {'total': 10}, 'highlights': []}
+        with patch('tool.gal_old_audit.audit_old_year', return_value=audit), \
+             patch('tool.gal_old_audit.clean_old_year') as clean:
+            result = agent_jobs._run_old_audit(job)
+        clean.assert_not_called()
+        self.assertFalse(result['ok'])
+
     def test_timeout_defaults_per_action(self):
         self.assertEqual(agent_jobs.timeout_for('old_audit'), agent_jobs.DEFAULT_TIMEOUTS['old_audit'])
         self.assertEqual(agent_jobs.timeout_for('crawl'), agent_jobs.FALLBACK_TIMEOUT)
@@ -312,6 +379,79 @@ class GalOldCleanTests(unittest.TestCase):
                                                   write_manifest=False, state_path=self.state)
         self.assertEqual(result['counts']['delete_failed'], 1)
         self.assertEqual(result['counts']['deleted'], 0)
+
+
+class PruneTests(unittest.TestCase):
+    """维护清理：默认只预览；保留最新 N 个 + 最近 N 天；inbox 永不删。"""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        base = Path(self.temp.name)
+        self.root = base / 'agent_jobs'
+        for sub in ('inbox', 'working', 'outbox'):
+            (self.root / sub).mkdir(parents=True)
+        self.db_dir = base / 'db_backups'
+        self.db_dir.mkdir()
+        self.history = base / 'history.jsonl'
+        now = time.time()
+        # outbox：3 个任务，越新越靠前
+        for idx in range(3):
+            path = self.root / 'outbox' / f'job{idx}.json'
+            path.write_text('{}', encoding='utf-8')
+            os.utime(path, (now - idx * 20 * 86400, now - idx * 20 * 86400))
+        # db_backups：5 个快照
+        for idx in range(5):
+            path = self.db_dir / f'egs.before_test_{idx}.db'
+            path.write_bytes(b'x' * 100)
+            os.utime(path, (now - idx * 10 * 86400, now - idx * 10 * 86400))
+        # inbox 里永远不能被删
+        inbox = self.root / 'inbox' / 'pending.json'
+        inbox.write_text('{}', encoding='utf-8')
+        os.utime(inbox, (now - 100 * 86400, now - 100 * 86400))
+        self.inbox = inbox
+
+    def _prune(self, execute):
+        return agent_jobs.prune(keep=1, days=1, db_keep=1, db_days=1, execute=execute,
+                                root=self.root, db_dir=self.db_dir,
+                                history_path=self.history)
+
+    def test_preview_reports_but_deletes_nothing(self):
+        result = self._prune(execute=False)
+        self.assertFalse(result['execute'])
+        self.assertEqual(result['spool']['delete'], 2)
+        self.assertEqual(result['db_backups']['delete'], 4)
+        self.assertGreater(result['db_backups']['delete_bytes'], 0)
+        self.assertEqual(len(list((self.root / 'outbox').glob('*.json'))), 3)
+        self.assertEqual(len(list(self.db_dir.glob('*.db'))), 5)
+        self.assertFalse(self.history.exists())          # 预览不写履历
+
+    def test_execute_keeps_newest_and_writes_history(self):
+        result = self._prune(execute=True)
+        self.assertTrue(result['execute'])
+        self.assertEqual(result['deleted'], 6)
+        self.assertGreater(result['freed_bytes'], 0)
+        self.assertEqual([p.name for p in (self.root / 'outbox').glob('*.json')], ['job0.json'])
+        self.assertEqual([p.name for p in self.db_dir.glob('*.db')], ['egs.before_test_0.db'])
+        self.assertTrue(self.inbox.exists())             # inbox 永不删
+        lines = self.history.read_text(encoding='utf-8').strip().split('\n')
+        self.assertEqual(len(lines), 1)
+        entry = json.loads(lines[0])
+        self.assertEqual(entry['mode'], 'execute')
+        self.assertEqual(entry['deleted'], 6)
+
+    def test_keeps_anything_inside_recent_days(self):
+        now = time.time()
+        recent = self.root / 'outbox' / 'recent.json'
+        recent.write_text('{}', encoding='utf-8')
+        os.utime(recent, (now - 3600, now - 3600))       # 1 小时前
+        result = agent_jobs.prune(keep=0, days=3, db_keep=0, db_days=0,
+                                  execute=False, root=self.root, db_dir=self.db_dir,
+                                  history_path=self.history)
+        # job0（刚刚）与 recent（1 小时前）都在「最近 3 天」里 → 只删 job1/job2 两条老任务
+        self.assertEqual(result['spool']['delete'], 2)
+        self.assertTrue(recent.exists())
+        self.assertTrue((self.root / 'outbox' / 'job0.json').exists())
 
 
 if __name__ == '__main__':

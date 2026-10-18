@@ -281,7 +281,7 @@ def audit_old_year(year: int, write_manifest: bool = True, max_pages: int = 90,
         f"有交集 {counts.get('has_common', 0)}、无交集 {counts.get('no_overlap', 0)}、"
         f"单文件 {counts.get('single_file', 0)}、超时 {counts.get('timeout', 0)}、"
         f"核实不到 {counts.get('unmatched', 0)}",
-        '旧⊆新 仅表示“旧库没有 /GAL 之外的东西”，可作冗余候选；**删除前仍需人工确认**。',
+        '旧⊆新 仅表示“旧库没有 /GAL 之外的东西”，可作冗余候选；删除在任务总线选「真正执行」（级联 clean_old_year：删前现场复验、进 115 回收站）。',
     ]
     if result.get('partial'):
         result['status'] = 'partial'
