@@ -87,10 +87,25 @@ def locked(blocking=False):
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-def status():
+def status(persist=False):
+    """读取任务状态；发现 worker 已退出时自愈。
+
+    persist=True 时把自愈结果写回状态文件——网页直接读文件，若不回写，
+    worker 异常死亡（如 115 登录瞬时失效）会让页面永远显示「运行中」。
+    start()/stop() 内部调用必须保持 persist=False：它们已在 locked() 里持锁，
+    再进 locked() 拿不到锁（LOCK_NB）。
+    """
     state = read_json(str(paths()[0]), {'running': False})
     if state.get('running') and state.get('pid') and not pid_is_running(int(state['pid'])):
-        state.update(running=False, message='任务进程已退出，请查看日志', outcome='error')
+        state.update(running=False, current='',
+                     message='任务进程已退出，请查看日志', outcome='error', updated_at=now_ts())
+        if persist:
+            try:
+                with locked():
+                    write_json_atomic(str(paths()[0]), state)
+            except (BlockingIOError, OSError):
+                # 有 worker 正持锁写状态时放弃回写，下一次 status 会再自愈。
+                pass
     return state
 
 
@@ -583,7 +598,8 @@ def main():
         elif args.command == 'stop':
             result = stop(args.job_id)
         else:
-            result = status()
+            # CLI/网页查询状态时顺带把「worker 已死」的自愈结果落盘，避免页面卡在「运行中」。
+            result = status(persist=True)
         print(json.dumps(result, ensure_ascii=False))
     except Exception as exc:
         print(json.dumps({'status': 'error', 'message': str(exc)}, ensure_ascii=False))
