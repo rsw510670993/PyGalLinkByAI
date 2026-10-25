@@ -84,7 +84,7 @@ Web 请求只负责入队、停止和读取事件，不同步等待模型执行�
 
 ## 5. Driver 策略
 
-默认 driver 使用 Responses API function calling，把 115 实时清单、离线任务、EGS 查询、整理预览与安全执行作为明确函数工具暴露。Provider、Base URL、模型和 Key 沿用 phpAiAPI 的分离配置方式；Key 只在 worker 内存中读取，不进入页面、数据库或 Git。
+默认 driver 使用 Responses API function calling，把 115 实时清单、离线任务、EGS 查询、整理预览与安全执行作为明确函数工具暴露。Provider、Base URL、模型和 Key 使用 pyGal 自己的分离配置（tool/config/ai_provider.ini + tool/config/key/）；Key 只在 worker 内存中读取，不进入页面、数据库或 Git。
 
 本地 Codex CLI 保留为管理员后备，不再作为 Web 年度入口的运行前提。dsh 只用于调试和紧急接管，不作为业务状态来源。
 
@@ -113,7 +113,7 @@ Web 请求只负责入队、停止和读取事件，不同步等待模型执行�
 
 1. 后台任务、审计表和结构化输出；
 2. Web 工作台的任务输入、状态和事件时间线；
-3. Responses API function-calling driver 与 phpAiAPI Provider/Key 配置；
+3. Responses API function-calling driver 与 pyGal 本地 Provider/Key 配置；
 4. 115/EGS 只读工具及带前置状态的限权整理工具；
 5. 扩充合集、重复目录等 AI 决策后的原子业务操作；
 6. 将旧的逐条整理待办 UI 最终移除。

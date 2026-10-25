@@ -33,12 +33,12 @@ def _unquote(value) -> str:
 
 
 def provider_settings(*, include_key=False) -> dict:
-    """Load Provider/Key using the same split config pattern as phpAiAPI."""
+    """Load Provider/Key from pyGal's own split config (tool/config/ai_provider.ini + tool/config/key/<provider>.key)."""
     local = read_config()
     configured = (
         os.environ.get("PYGAL_AI_PROVIDER_CONFIG")
         or local.get("ai_provider_config")
-        or str(Path(repo_root()).parent / "phpAiAPI" / "config" / "global.ini")
+        or str(Path(repo_root()) / "tool" / "config" / "ai_provider.ini")
     )
     config_path = Path(configured)
     if not config_path.is_absolute():

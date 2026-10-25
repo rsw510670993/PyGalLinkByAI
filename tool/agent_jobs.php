@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>任务总线 · pyGal</title>
-    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.1/css/bootstrap.min.css" rel="stylesheet">
+    <link href="../assets/vendor/bootstrap/bootstrap.min.css" rel="stylesheet">
     <style>
         .job-card { cursor: pointer; }
         .job-card:hover { border-color: var(--bs-primary); }

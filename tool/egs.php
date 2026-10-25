@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>EGS 数据 · pyGal</title>
-    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.1/css/bootstrap.min.css" rel="stylesheet">
+    <link href="../assets/vendor/bootstrap/bootstrap.min.css" rel="stylesheet">
     <style>
         .egs-filter-card .card-body { padding: .75rem; }
         .egs-filter-scroll { overflow-x: auto; }
@@ -331,7 +331,7 @@
     </div>
 </div>
 
-<script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.1/js/bootstrap.bundle.min.js"></script>
+<script src="../assets/vendor/bootstrap/bootstrap.bundle.min.js"></script>
 <script>
 (function () {
     let currentPage = 1;

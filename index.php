@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>年历与控制 · pyGal</title>
-    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.1/css/bootstrap.min.css" rel="stylesheet">
+    <link href="assets/vendor/bootstrap/bootstrap.min.css" rel="stylesheet">
     <style>
         .calendar-table td { min-width: 155px; vertical-align: top; }
         .calendar-table .counts { font-size: .8rem; margin-top: .25rem; white-space: nowrap; }
@@ -106,7 +106,7 @@
     </section>
 </main>
 <script>const basePath = <?= json_encode($base, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?>;</script>
-<script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.1/js/bootstrap.bundle.min.js"></script>
+<script src="assets/vendor/bootstrap/bootstrap.bundle.min.js"></script>
 <script src="<?= htmlspecialchars($base, ENT_QUOTES, 'UTF-8') ?>/assets/dashboard.js?v=<?= rawurlencode((string) filemtime(__DIR__ . '/assets/dashboard.js')) ?>"></script>
 </body>
 </html>

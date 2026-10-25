@@ -179,3 +179,4 @@ tool/115-cookies.txt
 *.db-shm
 *.db-wal
 /tool/config/key/
+/tool/config/ai_provider.ini

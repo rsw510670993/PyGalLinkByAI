@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>维护 · pyGal</title>
-    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.1/css/bootstrap.min.css" rel="stylesheet">
+    <link href="../assets/vendor/bootstrap/bootstrap.min.css" rel="stylesheet">
     <style>
         .mono { font-variant-numeric: tabular-nums; }
         .oldest-names { max-height: 7rem; overflow: auto; }
