@@ -39,6 +39,8 @@ from tool.egs_match import (
 )
 from tool.runtime import read_config
 
+logger = logging.getLogger(__name__)
+
 SUKEBEI_URL = "https://sukebei.nyaa.si/"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
@@ -56,6 +58,14 @@ MAX_PER_QUERY = 10
 REQUEST_TIMEOUT = 15
 MAX_ATTEMPTS = 2          # 原始请求 + 重试 1 次
 TIMEOUT_ABORT_LIMIT = 20  # 累计超时达到该值则终止本轮
+READER_PROXY_DEFAULT = "https://r.jina.ai/"  # 直连被封锁时的只读代理（返回原始 HTML）
+READER_INTERVAL = 3.2     # 走 reader 代理时的最小间隔（免费档约 20 req/min）
+READER_HEADERS = {
+    # reader 代理会 403 拒绝完整 Chrome UA；固定用最简 UA，且不复用站点 session 的 header。
+    "User-Agent": "Mozilla/5.0",
+    "X-Return-Format": "html",
+    "X-No-Cache": "true",
+}
 
 
 def pacing_config():
@@ -101,6 +111,72 @@ class TimeoutLimitExceeded(Exception):
 
 
 _timeout_count = 0
+
+# 直连 sukebei 是否已被判定为不可用（IP 层封锁时整轮任务只付一次超时代价）
+_net = {"direct_failed": False, "via_reader": False}
+
+
+def reader_proxy() -> str:
+    """直连失败后使用的 reader 代理前缀；config.json 的 magnet_reader_proxy 可改。"""
+    raw = read_config() or {}
+    value = raw.get("magnet_reader_proxy", READER_PROXY_DEFAULT)
+    if value is None:
+        value = READER_PROXY_DEFAULT
+    return str(value).strip()
+
+
+def reader_interval() -> float:
+    raw = read_config() or {}
+    try:
+        return max(1.0, float(raw.get("magnet_reader_interval", READER_INTERVAL)))
+    except (TypeError, ValueError):
+        return float(READER_INTERVAL)
+
+
+def reset_network_mode() -> None:
+    """每轮任务开始时重新判定直连是否可用。"""
+    _net["direct_failed"] = False
+    _net["via_reader"] = False
+
+
+def network_mode() -> str:
+    return "reader" if _net["via_reader"] else "direct"
+
+
+def _use_reader(pacer) -> None:
+    """切到 reader 代理：抬高节流间隔，避免触发代理侧限流。"""
+    target = reader_interval()
+    if pacer is None:
+        return
+    pacer.interval = max(pacer.interval, target)
+    pacer.min_interval = max(pacer.min_interval, target)
+    pacer.next_request_at = max(pacer.next_request_at, time.monotonic() + 1.0)
+
+
+def _fetch_via_reader(session, url: str, timeout: int):
+    prefix = reader_proxy()
+    if not prefix:
+        raise RuntimeError("sukebei 直连不可用，且未配置 magnet_reader_proxy")
+    # 单发请求、不继承 session 的浏览器 UA：reader 代理会拒绝完整 Chrome UA（403）。
+    return requests.get(prefix + url, timeout=max(int(timeout), 30),
+                        headers=READER_HEADERS)
+
+
+def fetch_page(session, url: str, timeout: int = REQUEST_TIMEOUT):
+    """取 sukebei 页面：优先直连；直连不通则本进程内全部改走 reader 代理。"""
+    if _net["via_reader"]:
+        return _fetch_via_reader(session, url, timeout)
+    try:
+        return session.get(url, timeout=timeout)
+    except (requests.ConnectionError, requests.Timeout) as exc:
+        if not reader_proxy():
+            raise
+        logger.warning("sukebei 直连失败(%s)，改用 reader 代理 %s",
+                       type(exc).__name__, reader_proxy())
+        _net["direct_failed"] = True
+        _net["via_reader"] = True
+        _use_reader(getattr(session, "_egs_pacer", None))
+        return _fetch_via_reader(session, url, timeout)
 
 
 def ensure_egs_magnet_schema(conn: sqlite3.Connection) -> None:
@@ -420,7 +496,7 @@ def _search_once(session: requests.Session, query: str, logger: logging.Logger):
         started = time.monotonic()
         try:
             try:
-                resp = session.get(url, timeout=REQUEST_TIMEOUT)
+                resp = fetch_page(session, url)
             finally:
                 pacer.metrics["network_seconds"] += time.monotonic() - started
             pacer.check_stop()
@@ -851,6 +927,7 @@ def run_magnet(year: int, month: int | None = None, force: bool = False,
         logger = logging.getLogger("egs_magnet")
 
     _timeout_count = 0
+    reset_network_mode()
     started = time.monotonic()
     pacer = pacer or RequestPacer(should_stop)
     pacer.should_stop = should_stop
@@ -928,6 +1005,7 @@ def run_magnet(year: int, month: int | None = None, force: bool = False,
         status["metrics"] = {key: round(value - baseline[key], 3)
                              for key, value in pacer.metrics.items()}
         status["final_interval"] = round(pacer.interval, 3)
+        status["network_mode"] = network_mode()
         status["elapsed_seconds"] = round(time.monotonic() - started, 3)
         logger.info("NYAA_SUMMARY %s", json.dumps({key: value for key, value in status.items() if key != "results"}, ensure_ascii=False))
         return status

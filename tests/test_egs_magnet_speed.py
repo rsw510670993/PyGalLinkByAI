@@ -31,6 +31,7 @@ def response(code=200, headers=None):
 class MagnetSpeedTests(unittest.TestCase):
     def setUp(self):
         magnet._timeout_count = 0
+        magnet.reset_network_mode()
 
     def test_request_interval_shared_across_searches_without_final_sleep(self):
         clock = Clock()
@@ -294,10 +295,37 @@ class MagnetSpeedTests(unittest.TestCase):
     def test_stop_interrupts_retry_wait(self):
         clock=Clock();session=requests.Session()
         session._egs_pacer=magnet.RequestPacer(lambda:clock.now >= .4)
-        with patch.object(magnet.time,'monotonic',clock.monotonic),patch.object(magnet.time,'sleep',clock.sleep),patch.object(session,'get',side_effect=requests.Timeout()) as get:
+        with patch.object(magnet.time,'monotonic',clock.monotonic),patch.object(magnet.time,'sleep',clock.sleep),patch.object(magnet,'reader_proxy',return_value=''),patch.object(session,'get',side_effect=requests.Timeout()) as get:
             with self.assertRaises(magnet.SearchStopped):magnet._search_once(session,'Game',LOG)
         self.assertEqual(get.call_count,1)
         self.assertLess(clock.now,1)
+
+    def test_direct_failure_switches_to_reader_proxy(self):
+        clock=Clock();session=requests.Session()
+        session._egs_pacer=magnet.RequestPacer(interval=1.0,min_interval=1.0,max_interval=15.0,torrent_interval=0.6)
+        calls=[]
+        def fetch(url,**kwargs):
+            calls.append((url,kwargs.get('headers') or {}))
+            if len(calls)==1:raise requests.ConnectionError('blocked')
+            return response()
+        with patch.object(magnet.time,'monotonic',clock.monotonic),patch.object(magnet.time,'sleep',clock.sleep),patch.object(magnet,'reader_proxy',return_value='https://r.jina.ai/'),patch.object(magnet,'reader_interval',return_value=3.2),patch.object(session,'get',side_effect=fetch),patch.object(magnet.requests,'get',side_effect=fetch),patch.object(magnet,'_parse_result_page',return_value=[]):
+            self.assertEqual(magnet._search_once(session,'Game',LOG),[])
+        self.assertEqual(len(calls),2)
+        self.assertTrue(calls[1][0].startswith('https://r.jina.ai/https://sukebei.nyaa.si/'))
+        self.assertEqual(calls[1][1].get('X-Return-Format'),'html')
+        self.assertEqual(calls[1][1].get('User-Agent'),'Mozilla/5.0')
+        self.assertAlmostEqual(session._egs_pacer.interval,3.2)
+        self.assertAlmostEqual(session._egs_pacer.min_interval,3.2)
+        self.assertEqual(magnet.network_mode(),'reader')
+        self.assertEqual(magnet._timeout_count,0)
+
+    def test_reader_proxy_disabled_keeps_direct_failure(self):
+        session=requests.Session()
+        session._egs_pacer=magnet.RequestPacer()
+        with patch.object(magnet,'reader_proxy',return_value=''),patch.object(session,'get',side_effect=requests.ConnectionError('blocked')) as get:
+            with self.assertRaises(RuntimeError):magnet._search_once(session,'Game',LOG)
+        self.assertEqual(get.call_count,2)
+        self.assertEqual(magnet.network_mode(),'direct')
 
     def test_429_respects_retry_after_and_does_not_sleep_after_final_failure(self):
         clock=Clock();session=requests.Session()
