@@ -412,6 +412,68 @@ def search_files(keyword, cid=0):
         return []
 
 
+def list_directory(path=None, cid=None, offset=0, limit=200):
+    """Return one normalized page from a live 115 directory.
+
+    This is intentionally a read-only, pagination-aware surface for the AI
+    organizer. Callers get stable field names instead of the provider's
+    overloaded ``cid``/``fid`` representation.
+    """
+    client = load_client()
+    if client is None:
+        return {"success": False, "message": "115 未登录", "items": []}
+    if cid in (None, ""):
+        cid = _resolve_path_to_cid(str(path or ""))
+    try:
+        cid = int(cid)
+        offset = max(0, int(offset))
+        limit = max(1, min(int(limit), 200))
+    except (TypeError, ValueError):
+        return {"success": False, "message": "目录或分页参数无效", "items": []}
+    if cid <= 0:
+        return {"success": False, "message": f"115 目录不存在: {path or cid}", "items": []}
+    try:
+        _, check_response = _import_p115client()
+        resp = check_response(client.fs_files({
+            "cid": str(cid), "limit": limit, "offset": offset, "show_dir": 1,
+        }))
+        raw_items = resp.get("data") or []
+        items = []
+        for raw in raw_items:
+            if not isinstance(raw, dict):
+                continue
+            fid = raw.get("fid")
+            is_dir = not fid and str(raw.get("fc", "")) != "1"
+            item_id = raw.get("cid") if is_dir else fid
+            parent_id = raw.get("pid") if is_dir else (raw.get("pid") or raw.get("cid"))
+            items.append({
+                "id": str(item_id or ""),
+                "parent_id": str(parent_id or ""),
+                "name": raw.get("n") or raw.get("file_name") or "",
+                "is_dir": bool(is_dir),
+                "size": int(raw.get("s") or raw.get("size") or 0),
+                "sha1": raw.get("sha") or raw.get("sha1"),
+                "pick_code": raw.get("pc"),
+                "modified_at": raw.get("te") or raw.get("tu") or raw.get("t"),
+            })
+        try:
+            total = int(resp.get("count") or resp.get("total") or len(items))
+        except (TypeError, ValueError):
+            total = len(items)
+        return {
+            "success": True,
+            "cid": str(cid),
+            "path": _crumbs_to_path(resp.get("path")) or str(path or ""),
+            "offset": offset,
+            "limit": limit,
+            "total": total,
+            "has_more": offset + len(items) < total,
+            "items": items,
+        }
+    except Exception as exc:
+        return {"success": False, "message": str(exc), "items": []}
+
+
 def _get_default_save_path():
     config_path = os.path.join(_tool_dir(), "config.json")
     try:

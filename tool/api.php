@@ -39,9 +39,13 @@ function run_cli($args, $entry = 'cli.py') {
         2 => ['pipe', 'w'],
     ];
 
-    $env = array_merge($_SERVER, [
-        'HOME' => $root,
-    ]);
+    $env = [];
+    foreach ($_SERVER as $key => $value) {
+        if (is_string($key) && is_scalar($value)) {
+            $env[$key] = strval($value);
+        }
+    }
+    $env['HOME'] = $root;
     if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
         $env['USERPROFILE'] = $root;
         if (preg_match('/^[A-Za-z]:/', $root)) {
@@ -67,6 +71,73 @@ function run_cli($args, $entry = 'cli.py') {
 }
 
 $action = isset($_GET['action']) ? $_GET['action'] : '';
+
+if ($action === 'ai_organizer_status') {
+    [$code, $data] = run_cli(['status'], 'ai_organizer_entry.py');
+    json_response($data);
+}
+
+
+if ($action === 'ai_job_detail') {
+    $jobId = trim(strval($_GET['job_id'] ?? ''));
+    $after = max(0, as_int($_GET['after_event_id'] ?? 0, 0));
+    if ($jobId === '') {
+        json_response(['success' => false, 'message' => '缺少 job_id']);
+    }
+    [$code, $data] = run_cli(
+        ['detail', '--job-id', $jobId, '--after-event-id', strval($after)],
+        'ai_organizer_entry.py'
+    );
+    json_response($data);
+}
+
+if ($action === 'ai_job_start') {
+    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+        json_response(['success' => false, 'message' => '请使用 POST 请求']);
+    }
+    $body = read_json_body();
+    $prompt = trim(strval($body['prompt'] ?? ''));
+    $year = as_int($body['year'] ?? null, null);
+    if ($prompt === '') {
+        json_response(['success' => false, 'message' => '任务说明不能为空']);
+    }
+    $args = ['start', '--driver', 'responses', '--prompt', $prompt];
+    if ($year !== null) {
+        $args[] = '--year';
+        $args[] = strval($year);
+    }
+    [$code, $data] = run_cli($args, 'ai_organizer_entry.py');
+    json_response($data);
+}
+
+if ($action === 'ai_job_stop') {
+    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+        json_response(['success' => false, 'message' => '请使用 POST 请求']);
+    }
+    $body = read_json_body();
+    $jobId = trim(strval($body['job_id'] ?? ''));
+    if ($jobId === '') {
+        json_response(['success' => false, 'message' => '缺少 job_id']);
+    }
+    [$code, $data] = run_cli(['stop', '--job-id', $jobId], 'ai_organizer_entry.py');
+    json_response($data);
+}
+
+if ($action === 'ai_job_retry') {
+    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+        json_response(['success' => false, 'message' => '请使用 POST 请求']);
+    }
+    $body = read_json_body();
+    $jobId = trim(strval($body['job_id'] ?? ''));
+    if ($jobId === '') {
+        json_response(['success' => false, 'message' => '缺少 job_id']);
+    }
+    [$code, $data] = run_cli(
+        ['retry', '--job-id', $jobId],
+        'ai_organizer_entry.py'
+    );
+    json_response($data);
+}
 
 if ($action === 'pipeline_preflight') {
     $actionName = strval($_GET['pipeline_action'] ?? 'check');
@@ -95,6 +166,67 @@ if (in_array($action, ['pipeline_start', 'pipeline_status', 'pipeline_stop'], tr
         if (($body['execute'] ?? false) === true) $args[] = '--execute';
     }
     [$code, $data] = run_cli($args, 'pipeline_entry.py');
+    json_response($data);
+}
+
+// 任务信箱（agent_jobs）：web 手动启动确定性流程；organize 例外——只入队，
+// 由 TUI 侧领取执行（见 tool/agent_jobs.py:QUEUE_ONLY_ACTIONS）。
+// 契约见 tool/agent_jobs.py —— 入队写 inbox/<job_id>.json，结果读 outbox/<job_id>.json。
+if ($action === 'agent_job_start') {
+    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+        json_response(['status' => 'error', 'message' => '请使用 POST 请求']);
+    }
+    $body = read_json_body();
+    $year = as_int($body['year'] ?? null, 0);
+    $args = ['start',
+             '--action', strval($body['action'] ?? ''),
+             '--year', strval($year),
+             '--year-end', strval(as_int($body['year_end'] ?? null, $year)),
+             '--requested-by', 'web'];
+    if (($body['execute'] ?? false) === true) $args[] = '--execute';
+    $timeout = as_int($body['timeout'] ?? null, 0);
+    if ($timeout > 0) {
+        $args[] = '--timeout';
+        $args[] = strval($timeout);
+    }
+    [$code, $data] = run_cli($args, 'agent_jobs_entry.py');
+    json_response($data);
+}
+
+if ($action === 'agent_job_stop') {
+    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+        json_response(['status' => 'error', 'message' => '请使用 POST 请求']);
+    }
+    $body = read_json_body();
+    [$code, $data] = run_cli(['stop', '--job-id', strval($body['job_id'] ?? '')], 'agent_jobs_entry.py');
+    json_response($data);
+}
+
+if ($action === 'agent_job_status') {
+    [$code, $data] = run_cli(['status', '--job-id', strval($_GET['job_id'] ?? '')], 'agent_jobs_entry.py');
+    json_response($data);
+}
+
+if ($action === 'agent_job_list') {
+    $args = ['list', '--limit', strval(as_int($_GET['limit'] ?? null, 20))];
+    [$code, $data] = run_cli($args, 'agent_jobs_entry.py');
+    json_response($data);
+}
+
+// 维护：清理任务记录与 db 快照（默认预览，execute=true 才真删；删 db 快照前必弹确认）
+if ($action === 'agent_job_prune') {
+    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+        json_response(['status' => 'error', 'message' => '请使用 POST 请求']);
+    }
+    $body = read_json_body();
+    $args = ['prune',
+             '--keep', strval(as_int($body['keep'] ?? null, 50)),
+             '--days', strval(as_int($body['days'] ?? null, 14)),
+             '--db-keep', strval(as_int($body['db_keep'] ?? null, 3)),
+             '--db-days', strval(as_int($body['db_days'] ?? null, 7)),
+             '--requested-by', 'web'];
+    if (($body['execute'] ?? false) === true) $args[] = '--execute';
+    [$code, $data] = run_cli($args, 'agent_jobs_entry.py');
     json_response($data);
 }
 

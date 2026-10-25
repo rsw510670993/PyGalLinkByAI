@@ -12,10 +12,25 @@ import re
 import time
 from urllib.parse import urlparse
 
+import requests
+
 SUKEBEI_BASE = "https://sukebei.nyaa.si"
 REQUEST_TIMEOUT = 25
 
+# sukebei 直连不通时的 .torrent 来源：公共 torrent 缓存，按 infohash 直接取（离线缓存，不依赖种子站）。
+# 取回的种子会重算 info_hash 校验，不一致即丢弃。
+TORRENT_MIRRORS = ("https://itorrents.org/torrent/{}.torrent",)
+MIRROR_HEADERS = {"User-Agent": "Mozilla/5.0"}
+_HEX40 = re.compile(r"^[0-9a-fA-F]{40}$")
+
 logger = logging.getLogger(__name__)
+
+# sukebei 直连是否已判定为不可用（整轮任务只付一次超时代价）
+_net = {"direct_failed": False}
+
+
+def reset_network_mode() -> None:
+    _net["direct_failed"] = False
 
 
 def bdecode(data: bytes):
@@ -136,6 +151,34 @@ def _notify(pacer, method, *args):
         callback(*args)
 
 
+def _fetch_from_mirrors(session, expected_infohash, pacer, timeout):
+    """sukebei 直连不可用时，按 infohash 从公共 torrent 缓存取种子（重算 hash 校验）。"""
+    infohash = str(expected_infohash or "").strip()
+    if not _HEX40.match(infohash):
+        return None
+    for template in TORRENT_MIRRORS:
+        url = template.format(infohash.upper())
+        started = time.monotonic()
+        try:
+            resp = requests.get(url, headers=MIRROR_HEADERS, timeout=timeout)
+        except requests.RequestException as exc:
+            logger.debug("torrent 缓存不可用 %s: %s", url, exc)
+            continue
+        finally:
+            if pacer is not None:
+                pacer.metrics["network_seconds"] += time.monotonic() - started
+        if resp.status_code != 200 or not resp.content:
+            logger.debug("torrent 缓存失败 %s status=%s", url, resp.status_code)
+            continue
+        meta = parse_torrent(resp.content, expected_infohash=infohash)
+        if meta is None:
+            continue
+        _notify(pacer, "on_success")
+        logger.info("TORRENT_META(mirror) %s | info.name=%s", infohash, meta["name"][:60])
+        return meta
+    return None
+
+
 def fetch_torrent_meta(session, view_url: str | None, expected_infohash: str | None = None,
                        pacer=None, timeout: int = REQUEST_TIMEOUT) -> dict | None:
     """从 sukebei 下载 .torrent 并解析 info 元数据；任何失败返回 None（调用方降级）。"""
@@ -148,13 +191,20 @@ def fetch_torrent_meta(session, view_url: str | None, expected_infohash: str | N
         step = getattr(pacer, "torrent_step", None)
         pacer.before_request(step() if callable(step) else None)
     started = time.monotonic()
-    try:
-        resp = session.get(url, timeout=timeout)
-    finally:
-        if pacer is not None:
-            pacer.metrics["network_seconds"] += time.monotonic() - started
+    resp = None
+    if not _net["direct_failed"]:
+        try:
+            resp = session.get(url, timeout=timeout)
+        except requests.RequestException as exc:
+            _net["direct_failed"] = True
+            logger.info("sukebei 直连不可用(%s)，.torrent 改用公共缓存", type(exc).__name__)
+        finally:
+            if pacer is not None:
+                pacer.metrics["network_seconds"] += time.monotonic() - started
     if pacer is not None:
         pacer.check_stop()
+    if resp is None:
+        return _fetch_from_mirrors(session, expected_infohash, pacer, timeout)
     if resp.status_code == 429:
         logger.warning("sukebei torrent 429: %s", url)
         retry_after = 15.0
@@ -170,10 +220,10 @@ def fetch_torrent_meta(session, view_url: str | None, expected_infohash: str | N
     if resp.status_code != 200 or not resp.content:
         logger.debug("sukebei torrent download failed: %s status=%s", url, resp.status_code)
         _notify(pacer, "note_failure")
-        return None
+        return _fetch_from_mirrors(session, expected_infohash, pacer, timeout)
     meta = parse_torrent(resp.content, expected_infohash=expected_infohash)
     if meta is None:
-        return None
+        return _fetch_from_mirrors(session, expected_infohash, pacer, timeout)
     _notify(pacer, "on_success")
     logger.info("TORRENT_META %s | info.name=%s", expected_infohash or "", meta["name"][:60])
     return meta

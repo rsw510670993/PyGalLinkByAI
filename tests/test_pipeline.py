@@ -50,6 +50,18 @@ class PipelineTests(unittest.TestCase):
             '[20260529][Brand]Game',
         )
 
+    def test_compute_target_name_sanitizes_115_forbidden_chars(self):
+        # 115 会以 errno 2000 拒绝 <>:"/\|?* —— EGS 标题里的副标题尖括号必须换全角
+        self.assertEqual(
+            organize.compute_target_name('2020-02-24', 'テイル・アキ',
+                                         'DESIRE EATER<デザイアイーター>'),
+            '[20200224][テイル・アキ]DESIRE EATER＜デザイアイーター＞',
+        )
+        self.assertEqual(
+            organize.compute_target_name('2020-02-24', 'Brand', 'A:B/C?D*E"F|G\\H'),
+            '[20200224][Brand]A：B／C？D＊E”F｜G＼H',
+        )
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

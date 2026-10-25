@@ -52,7 +52,10 @@
     "magnet_max_request_interval": 15,
     "magnet_torrent_interval": 0.6,
     "magnet_early_stop_score": 60,
+    "magnet_reader_proxy": "https://r.jina.ai/",
+    "magnet_reader_interval": 3.2,
     "organize_name_format": "[{compact_date}][{company}]{name}",
     "115_save_path": "/GAL",
-    "115_cookies_path": "115-cookies.txt"
+    "115_cookies_path": "115-cookies.txt",
+    "ai_provider_config": "tool/config/ai_provider.ini"
 }

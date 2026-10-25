@@ -328,6 +328,23 @@ def resolve_dn_timestamp(link, release_ts=None, torrent_name=None):
     return None, None
 
 
+# 115/Windows 文件名禁用字符 → 全角等价字符。
+# 不消毒时 fs_rename 会返回 errno 2000「文件名不能包含以下任意字符之一"<>"」，
+# 典型来源是 EGS 标题里的副标题尖括号（如 DESIRE EATER<デザイアイーター>）。
+_INVALID_NAME_CHARS = str.maketrans({
+    '<': '＜', '>': '＞', ':': '：', '"': '”', '|': '｜',
+    '?': '？', '*': '＊', '/': '／', '\\': '＼',
+})
+
+
+def sanitize_115_name(name):
+    """把 115 禁止的 ASCII 字符替换为全角等价字符，并去掉控制字符。"""
+    if not name:
+        return name
+    cleaned = "".join(ch for ch in str(name) if ord(ch) >= 32)
+    return cleaned.translate(_INVALID_NAME_CHARS)
+
+
 def compute_target_name(dn_date, company, name, config=None, date_code=None):
     """目标文件夹名: [{compact_date}][{company}]{name}，如 [20260116][みなとそふと]真剣…S
 
@@ -354,7 +371,7 @@ def compute_target_name(dn_date, company, name, config=None, date_code=None):
                               date=date_code or compact_date,
                               date_code=date_code or compact_date,
                               name=name)
-    return re.sub(r"^\[(\d{4})-(\d{2})-(\d{2})\]", r"[\1\2\3]", rendered)
+    return sanitize_115_name(re.sub(r"^\[(\d{4})-(\d{2})-(\d{2})\]", r"[\1\2\3]", rendered))
 
 
 def target_year_dir(dn_date):

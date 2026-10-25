@@ -10,7 +10,7 @@
 - 支持按年份和月份筛选游戏
 - 重复下载链接会以红色标注，用户需手动取消勾选来避免复制重复链接
 - 游戏名称下方的小字显示的是不匹配但疑似有下载链接的游戏
-- 磁链校验测试页：从数据页选择磁链，尝试获取元数据并展示预计下载的文件列表（需要 aria2c）
+- 任务总线（`tool/agent_jobs.php`）：网页启动 crawl / magnet / submit / 核对旧库（执行方式选「真正执行」时会级联清掉「旧⊆新」的冗余）；整理115（organize）只入队，由 TUI 侧领取执行
 
 ## 安装步骤
 1. 克隆项目仓库
@@ -56,11 +56,6 @@
 ```cron
 0 0 * * 0 cd /path/to/repo && /path/to/repo/.venv/bin/python tool/cli.py auto idle_run >> logs/idle_run.log 2>&1
 ```
-
-## 磁链校验测试页
-
-- 入口：数据展示页每条含磁链记录的“校验”按钮，会打开 `tool/magnet_check.php`
-- 依赖：为了展示“预计下载内容物（文件列表）”，服务器需安装 aria2c：`sudo apt-get update && sudo apt-get install -y aria2`
 
 ## Nginx安全建议
 
