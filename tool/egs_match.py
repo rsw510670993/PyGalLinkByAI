@@ -129,15 +129,31 @@ def _parse_dt(s):
 
 
 def _company_in_title(company, nt):
-    """公司名命中标题：支持多语种公司名（如 WorkNite Games/沃兔奈遊戲）任一段命中。"""
-    comp = _norm(company or "")
-    if len(comp) >= 3 and comp in nt:
+    """公司名命中标题：支持多语种名与别名（WorkNite Games/沃兔奈遊戲、ノアールソフト(NOIR)）。
+
+    两字厂牌（戯画、Key 等）过去被 >=3 的长度门槛挡掉，导致标题逐字一致的候选
+    也拿不到公司分、被 short_name_requires_company 封顶到阈值以下。这里降到 2 字，
+    但对两字纯英文厂牌要求词边界，避免 key 命中 monkey 之类的误配。
+    """
+    raw = str(company or "")
+    parts: list[str] = []
+    for seg in re.split(r"[/／]", raw):
+        seg = seg.strip()
+        if not seg:
+            continue
+        parts.append(seg)
+        alias = re.match(r"^(.+?)[（(](.+?)[)）]$", seg)
+        if alias:
+            parts.extend([alias.group(1), alias.group(2)])
+    for part in parts:
+        p = _norm(part)
+        if len(p) < 2 or p not in nt:
+            continue
+        if len(p) == 2 and p.isascii() and not re.search(
+            r"(?<![a-z0-9])" + re.escape(p) + r"(?![a-z0-9])", nt
+        ):
+            continue
         return True
-    if "/" in (company or ""):
-        for part in str(company).split("/"):
-            p = _norm(part)
-            if len(p) >= 3 and p in nt:
-                return True
     return False
 
 
