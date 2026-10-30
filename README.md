@@ -1,84 +1,94 @@
 # PyGalLinkByAI
 
-## 项目概述
-这是一个基于 Python 3.10 的爬虫项目，用于从 Getchu 网站获取游戏信息并关联 Nyaa 的下载链接。网页部分使用 PHP 提供页面与接口，Python 作为任务执行器被 PHP 触发运行。
+EGS / Nyaa / 115 资源流水线的**机械执行内核** + **只读 Web 面板**。
 
-## 功能特性
-- 从Getchu网站爬取游戏数据
-- 自动关联Nyaa的磁力链接
-- 提供Web界面查看和搜索游戏数据
-- 支持按年份和月份筛选游戏
-- 重复下载链接会以红色标注，用户需手动取消勾选来避免复制重复链接
-- 游戏名称下方的小字显示的是不匹配但疑似有下载链接的游戏
-- 任务总线（`tool/agent_jobs.php`）：网页启动 crawl / magnet / submit / 核对旧库（执行方式选「真正执行」时会级联清掉「旧⊆新」的冗余）；整理115（organize）只入队，由 TUI 侧领取执行
+- 抓 EGS 清单 → 关联 Nyaa 磁链 → 提交 115 → 校对下载 → 按 `[YYYYMMDD][公司]游戏名` 归入 `/GAL/GAL-{年}`
+- **所有需要判断的环节（低分磁链审核、记录修正、整理 issue、`/GAL.old` 清理）由 AI agent（如 DSH）通过 CLI 在会话中完成**，网页不承担判定
+- 网页只做两件事：展示状态、启动可以盲跑的机械任务
 
-## 安装步骤
-1. 克隆项目仓库
-2. 初回部署（Ubuntu 24.04）：`bash scripts/first_deploy_ubuntu24.sh`
-3. 配置`tool/config.json`文件
-4. 配置 Web 服务器站点根目录指向仓库根目录（nginx+php-fpm）
-5. 访问站点打开 Web 界面（首页：`/index.php`，数据页：`/tool/data.php`）
+## 页面（两页）
 
-## 配置说明
-编辑`tool/config.json`文件：
-- `skip`: 跳过包含这些关键词的游戏
-- `delete`: 从游戏名中删除这些关键词
-- `per_page`: 每页显示的游戏数量
-- `db_path`: SQLite 路径（可选，默认 `getchu.db`）
-- `status_dir`: 状态文件目录（可选，默认 `status`）
-- `log_path`: 日志文件路径（可选，默认 `logs/app.log`）
+| 页面 | 内容 |
+|---|---|
+| `index.php` 总控 | 四段流水线状态、控制器（同步 / 提交并校对两个按钮）、当前任务进度、年历、维护（清理记录与 db 快照） |
+| `tool/egs.php` 数据 | 只读卡片网格：封面、名称、公司、日期、阶段（已下载 / 已提交 / 有磁链 / 无资源 / 下载失败 / 重复）、备注 |
 
-## 使用示例
-1. 访问站点打开 Web 界面
-2. 选择年份和月份
-3. 点击"获取下载链接"按钮
-4. 查看游戏列表和对应的下载链接
+## 流水线（四段）
 
-## 闲时自动任务（Getchu入库 / 磁链入库 / 115已下载校验）
+1. **同步（sync）**：EGS 清单增量 + 磁链搜索。磁链阶段带分层重扫——无结果的记录按作品年龄 30 / 90 / 180 / 365 天重新搜索，兼顾同人社团多年后才发种的情况。
+2. **DSH 审核**：低分磁链由 AI agent 用 `egs review_detail / review_decide` 逐条确认；未清零时网页锁定提交按钮。
+3. **提交并校对**：提交未提交的磁链到 115，完成后等 10 分钟自动校对下载结果（`check` 只校对提交满 10 分钟的记录）。
+4. **最终核查**：整理 issue 与 `/GAL.old` 历史残留由 AI agent 处理，网页只显示积压数量。
 
-项目新增 CLI：`python tool/cli.py auto idle_run`，用于在“闲时”自动执行：
-- 当年 Getchu 游戏入库（已存在的记录会跳过）
-- 当年 Nyaa 磁链获取入库（已存在 link 的记录会跳过）
-- 115 登录有效时：对“有磁链且未标记已下载”的记录进行 115 已下载校验（不会自动发起 115 云下载）
+## CLI（机械动作，AI agent 与运维共用）
 
-### 配置项
-在 `tool/config.json` 可选增加：
-- `idle_timezone`：闲时判断时区（默认 `Asia/Tokyo`）
-- `idle_start_hour`：闲时开始小时（默认 `0`）
-- `idle_end_hour`：闲时结束小时（默认 `9`，按 `[start, end)` 判断）
+```bash
+# 同步（清单 + 磁链）
+python -m tool.cli egs crawl --start-year 2026 [--month 9]
+python -m tool.cli egs magnet --year 2026 [--rescan] [--limit N]
 
-### cron 示例
-由你在服务器上自行配置 cron。命令本身会判断是否在闲时，不在闲时会自动退出（输出 JSON 便于日志排查）。
+# 提交 / 校对
+python -m tool.cli 115 submit --egs-id 12345 --magnet 'magnet:?xt=...' --dir /GAL/GAL-2026
+python -m tool.cli 115 check  --magnet 'magnet:?xt=...' --dir /GAL/GAL-2026
 
-另外，`idle_run` 会记录“本周是否已运行”，同一自然周内重复触发会自动跳过（除非加 `--force`）。
+# 审核（DSH 会话内使用）
+python -m tool.cli egs review_detail --egs-id 12345
+python -m tool.cli egs review_decide --egs-id 12345 --decision approve --candidate-id 7
+python -m tool.cli egs review_blacklist list
 
-例如每周执行一次（周日 00:00 执行）：
-```cron
-0 0 * * 0 cd /path/to/repo && /path/to/repo/.venv/bin/python tool/cli.py auto idle_run >> logs/idle_run.log 2>&1
+# 记录修正 / 整理
+python -m tool.cli egs update --egs-id 12345 --new-name '...'
+python -m tool.cli egs organize_issues
+python -m tool.cli egs organize_issue_resolve --id 42
+
+# 统计 / 查询
+python -m tool.cli egs overview
+python -m tool.cli egs games --year 2026 --stage linked
 ```
 
-## Nginx安全建议
+流水线任务由 `tool/pipeline.py` 串行执行（状态文件 `status/pipeline.json`，支持停止与断点续跑）；网页接口在 `tool/api.php`，只暴露只读查询与机械任务开关。
 
-如果 nginx root 指向仓库根目录，建议拒绝访问以下路径：
+## 安装
+
+1. 克隆项目
+2. 初回部署（Ubuntu 24.04）：`bash scripts/first_deploy_ubuntu24.sh`
+3. 配置 `tool/config.json`
+4. Web 服务器站点根目录指向仓库根目录（nginx + php-fpm），访问 `/index.php`
+
+## 配置（`tool/config.json`）
+
+| 键 | 说明 |
+|---|---|
+| `skip` / `delete` | 游戏名过滤与后缀剔除关键词 |
+| `per_page` | 数据页每页卡片数（默认 24） |
+| `magnet_*` | 磁链搜索的速率、提前结束阈值、reader 代理 |
+| `magnet_rescan_limit` | 每轮分层重扫的条数上限（默认 50） |
+| `115_save_path` / `115_cookies_path` | 115 保存根与 Cookie 路径 |
+| `organize_name_format` | 归位命名模板 |
+
+## 目录
+
+```
+index.php              总控
+tool/egs.php           数据（只读）
+tool/api.php           只读查询 + 机械任务开关的接口
+tool/cli.py            CLI 统一入口（输出 JSON）
+tool/pipeline.py       流水线（sync / submit / check / organize）
+tool/egs_core.py       EGS 抓取与 schema
+tool/egs_magnet.py     磁链搜索 / 分层重扫 / 候选
+tool/egs_organize.py   命名、归位、整理 issue
+tool/p115_client.py    115 API 封装
+tool/agent_jobs.py     文件信箱任务总线（old_audit / prune 等）
+tool/gal_old_audit.py  旧库审计
+assets/app.css         设计系统（两页共用，深色模式跟随系统）
+assets/app.js          前端逻辑
+```
+
+## Nginx 安全建议
+
+站点根目录指向仓库时，建议拒绝访问：
 
 - `/.venv/`
-- `/getchu.db`
-- `/status/`
-- `/logs/`
-- `/tool/*.py`
-- `/tool/config.json`
-- `/tool/requirements.txt`
-
-## 项目结构
-- `index.php`: 首页（根目录）
-- `tool/`: PHP 页面与接口 + Python 代码（同时也是 Python 包）
-- `tool/api.php`: PHP API 入口
-- `tool/data.php`: 数据展示页
-- `tool/cli.py`: PHP 调用的 Python 统一入口（输出 JSON）
-- `tool/core.py`: 核心爬虫和数据处理逻辑
-- `tool/spider_worker.py`: 爬虫后台任务（写入状态文件）
-- `tool/download_worker.py`: 下载链接后台任务（写入状态文件）
-- `tool/runtime.py`: 运行时配置/状态文件工具
-- `tool/config.json`: 配置文件
-- `tool/requirements.txt`: Python 顶层依赖
-- `scripts/first_deploy_ubuntu24.sh`: 初回部署脚本（删除既存 db/.venv 并重建）
+- `/getchu.db`、`/egs.db`（含 `-wal` / `-shm`）
+- `/status/`、`/logs/`、`/db_backups/`
+- `/tool/*.py`、`/tool/config.json`、`/tool/115-cookies.txt`

@@ -1,112 +1,91 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>年历与控制 · pyGal</title>
-    <link href="assets/vendor/bootstrap/bootstrap.min.css" rel="stylesheet">
-    <style>
-        .calendar-table td { min-width: 155px; vertical-align: top; }
-        .calendar-table .counts { font-size: .8rem; margin-top: .25rem; white-space: nowrap; }
-        .calendar-table .month-link { display: block; color: inherit; text-decoration: none; }
-        .calendar-table .month-select { border: 0; background: none; padding: 0; color: inherit; font: inherit; font-weight: 700; cursor: pointer; }
-        .calendar-table .month-select:hover { text-decoration: underline; }
-        .calendar-table .month-select:focus-visible { outline: 2px solid #0d6efd; outline-offset: 3px; border-radius: 2px; }
-        #task-details { max-height: 360px; overflow: auto; }
-        .task-result-group > summary { cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
-        .task-result-group > summary:hover { background: rgba(0, 0, 0, .035); }
-        .task-result-group[open] > summary { border-bottom: 1px solid var(--bs-border-color); }
-        .scope-form .form-control, .scope-form .form-select { min-width: 0; }
-        @media (max-width: 575.98px) {
-            .scope-actions { width: 100%; }
-            .scope-actions .btn-group { width: 100%; }
-            .scope-actions .btn-group > .btn { flex: 1 1 auto; }
-        }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>总控 · pyGal</title>
+<link rel="stylesheet" href="assets/app.css?v=<?= rawurlencode((string) filemtime(__DIR__ . '/assets/app.css')) ?>">
 </head>
-<body class="bg-light">
+<body>
 <?php require __DIR__ . '/includes/header.php'; ?>
-<main class="container my-4">
-    <h1 class="h3 mb-3">年历与控制</h1>
-    <section class="card mb-3" aria-label="任务控制">
-        <div class="card-body">
-            <form id="scope-form" class="scope-form">
-                <div class="row g-3 align-items-end">
-                    <div class="col-12 col-xl-5">
-                        <div class="form-label mb-1">任务范围</div>
-                        <div class="input-group">
-                            <span class="input-group-text">起始</span>
-                            <input id="start-year" type="number" class="form-control" min="1980" max="3000" required aria-label="起始年份">
-                            <span class="input-group-text">至</span>
-                            <input id="end-year" type="number" class="form-control" min="1980" max="3000" required aria-label="结束年份">
-                            <select id="task-month" class="form-select" aria-label="月份" style="max-width:110px">
-                                <option value="0">全年</option>
-                                <?php for ($m = 1; $m <= 12; $m++): ?><option value="<?= $m ?>"><?= $m ?>月</option><?php endfor; ?>
-                            </select>
-                        </div>
-                    </div>
-                    <div class="col-12 col-xl-7">
-                        <div class="form-label mb-1">任务操作</div>
-                        <div class="scope-actions d-flex flex-wrap gap-2">
-                            <div class="btn-group" role="group" aria-label="数据准备">
-                                <button type="button" data-action="crawl" class="btn btn-primary" title="从 EGS 获取所选范围内的游戏清单">获取清单</button>
-                                <button type="button" data-action="magnet" class="btn btn-outline-primary" title="为缺失磁链的游戏获取下载链接">获取磁链</button>
-                            </div>
-                            <div class="btn-group" role="group" aria-label="115 操作">
-                                <button type="button" data-action="check" class="btn btn-outline-info" title="检查尚未确认下载的作品">校对115</button>
-                                <button type="button" data-action="submit" class="btn btn-outline-success" title="提交尚未提交且未下载的作品到 115">提交115</button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                <div class="small text-muted mt-3">
-                    以上操作均使用所选年月范围。清单来自 EGS；磁链仅补充未匹配项目；校对检查尚未确认下载的作品；提交会跳过已提交或已下载作品。提交后的下载核验与目录整理走「任务总线」：整理115 只入队（默认预演），由 TUI 侧领取执行。
-                </div>
-            </form>
-            <div id="control-message" class="mt-2" role="status"></div>
-        </div>
+<main>
+  <div class="grid">
+
+    <section class="card" aria-label="流水线">
+      <div class="card-h">流水线 <span class="muted small" id="pipeline-updated" style="font-weight:400"></span></div>
+      <div class="card-b"><div class="steps" id="steps"></div></div>
     </section>
-    <section id="task-card" class="card mb-3" hidden aria-label="任务进度">
-        <div class="card-body">
-            <div class="d-flex justify-content-between align-items-center gap-2">
-                <h2 id="task-title" class="h6 mb-0"></h2>
-                <button type="button" id="stop-task" class="btn btn-sm btn-outline-danger" hidden>停止任务</button>
-            </div>
-            <div id="task-message" class="small my-2" role="status"></div>
-            <div class="progress" style="height: 12px;"><div id="task-progress" class="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" style="width: 0%"></div></div>
-            <div id="task-counts" class="small text-muted mt-2"></div>
-            <details class="mt-2"><summary>查看处理结果</summary><div id="task-details" class="small mt-2"></div></details>
+
+    <section class="card" aria-label="控制器">
+      <div class="card-h">控制器</div>
+      <div class="card-b">
+        <div class="control">
+          <div class="field"><label for="start-year">起始年</label><input id="start-year" class="inp num" type="number" min="1980" max="3000"></div>
+          <div class="field"><label for="end-year">结束年</label><input id="end-year" class="inp num" type="number" min="1980" max="3000"></div>
+          <div class="field"><label for="task-month">月份</label>
+            <select id="task-month" class="inp">
+              <option value="0">全年</option>
+              <?php for ($m = 1; $m <= 12; $m++): ?><option value="<?= $m ?>"><?= $m ?>月</option><?php endfor; ?>
+            </select>
+          </div>
+          <button id="btn-sync" class="btn primary" type="button">同步 <span class="sub">清单 + 磁链</span></button>
+          <button id="btn-submit" class="btn" type="button">提交并校对 <span class="sub" id="submit-sub"></span></button>
+          <div class="spacer"></div>
+          <button id="btn-stop" class="btn" type="button" hidden>停止</button>
         </div>
+        <div class="gate" id="gate" hidden></div>
+        <div class="hint" id="control-msg" role="status"></div>
+      </div>
     </section>
-    <div class="modal fade" id="pendingReviewModal" tabindex="-1" aria-hidden="true">
-        <div class="modal-dialog modal-dialog-centered">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title">存在待审核记录</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                </div>
-                <div class="modal-body">
-                    当前范围内还有 <span id="pending-review-count" class="fw-semibold">0</span> 条待审核记录。<br>
-                    请先完成审核，再批量校对115。
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">知道了</button>
-                    <a id="pending-review-link" class="btn btn-primary btn-sm" href="#">去审核</a>
-                </div>
-            </div>
+
+    <section class="card" aria-label="当前任务">
+      <div class="card-h">当前任务 <span class="pill p-mute" id="task-state">空闲</span></div>
+      <div class="card-b">
+        <div class="bar"><i id="bar" style="width:0%"></i></div>
+        <div class="kv" style="margin-top:12px">
+          <div><span>已完成</span> <b class="num" id="k-done">0 / 0</b></div>
+          <div><span>成功</span> <b class="num" id="k-success">0</b></div>
+          <div><span>失败</span> <b class="num" id="k-failed">0</b></div>
+          <div><span>跳过</span> <b class="num" id="k-skipped">0</b></div>
+          <div><span>当前</span> <b id="k-current">—</b></div>
         </div>
-    </div>
-    <section class="card" aria-label="EGS 年历">
-        <div class="card-header d-flex flex-wrap gap-2 align-items-center justify-content-between">
-            <label for="calendar-year" class="fw-semibold">年历（所选年及前两年）</label>
-            <div class="d-flex gap-2"><input id="calendar-year" type="number" class="form-control form-control-sm" min="1980" max="3000" aria-label="年历年份" style="width:110px"><button id="refresh-calendar" class="btn btn-sm btn-outline-secondary">刷新</button></div>
-        </div>
-        <div class="card-body py-2 small text-muted">点击年份设置整年任务范围；点击月份设置当月任务范围，点击数量查看 EGS 明细。绿色：有磁链作品全部校对已下载；蓝色：全部已提交；黄色：尚未全部完成；灰色：无数据。</div>
-        <div class="table-responsive"><table class="table table-bordered calendar-table mb-0"><thead><tr><th>年份</th><?php for ($m = 1; $m <= 6; $m++): ?><th><?= $m ?> / <?= $m + 6 ?>月</th><?php endfor; ?></tr></thead><tbody id="calendar-body"></tbody></table></div>
+        <div id="task-results" style="margin-top:14px"></div>
+      </div>
     </section>
+
+    <section class="card" aria-label="年历">
+      <div class="card-h">年历</div>
+      <div class="card-b" style="padding:0 18px 0">
+        <table class="cal">
+          <thead>
+            <tr><th rowspan="2" style="width:72px">年份</th><th>1月</th><th>2月</th><th>3月</th><th>4月</th><th>5月</th><th>6月</th></tr>
+            <tr><th>7月</th><th>8月</th><th>9月</th><th>10月</th><th>11月</th><th>12月</th></tr>
+          </thead>
+          <tbody id="cal-body"><tr><td colspan="7" class="empty">加载中…</td></tr></tbody>
+        </table>
+      </div>
+      <div class="legend"><span><i style="background:var(--ok-soft)"></i>下载齐</span><span><i style="background:var(--warn-soft)"></i>有缺口</span><span><i style="background:var(--surface-2)"></i>无数据</span></div>
+    </section>
+
+    <section class="card" aria-label="维护">
+      <details class="fold">
+        <summary>维护 · 清理任务记录与 db 快照</summary>
+        <div class="fold-b">
+          <div class="control">
+            <div class="field"><label for="m-keep">任务记录保留个数</label><input id="m-keep" class="inp num" type="number" value="50" min="0"></div>
+            <div class="field"><label for="m-days">保留天数</label><input id="m-days" class="inp num" type="number" value="14" min="0"></div>
+            <div class="field"><label for="m-dbkeep">db 快照保留个数</label><input id="m-dbkeep" class="inp num" type="number" value="3" min="0"></div>
+            <button id="btn-prune-preview" class="btn" type="button">预览清理</button>
+            <button id="btn-prune-run" class="btn" type="button">执行清理</button>
+          </div>
+          <div class="hint" id="prune-msg"></div>
+        </div>
+      </details>
+    </section>
+
+  </div>
 </main>
-<script>const basePath = <?= json_encode($base, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?>;</script>
-<script src="assets/vendor/bootstrap/bootstrap.bundle.min.js"></script>
-<script src="<?= htmlspecialchars($base, ENT_QUOTES, 'UTF-8') ?>/assets/dashboard.js?v=<?= rawurlencode((string) filemtime(__DIR__ . '/assets/dashboard.js')) ?>"></script>
+<script src="assets/app.js?v=<?= rawurlencode((string) filemtime(__DIR__ . '/assets/app.js')) ?>"></script>
+<script>pyGal.initDashboard();</script>
 </body>
 </html>

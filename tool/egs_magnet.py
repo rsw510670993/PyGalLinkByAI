@@ -884,8 +884,15 @@ def process_game(conn: sqlite3.Connection, session: requests.Session, row,
 
 
 def pending_rows(conn: sqlite3.Connection, year: int, month: int | None = None,
-                 force: bool = False, limit: int = 0) -> list[sqlite3.Row]:
-    """取待搜索的 EGS 行，默认跳过搜索历史。"""
+                 force: bool = False, limit: int = 0,
+                 rescan: bool = False, rescan_limit: int = 0) -> list[sqlite3.Row]:
+    """取待搜索的 EGS 行。
+
+    默认只取「从没搜过」的记录；rescan=True 时额外补入到期重扫的记录：
+    上次结果为空、未被采用，且距上次搜索超过按作品年龄决定的间隔
+    （≤1 年 30 天 / ≤3 年 90 天 / ≤5 年 180 天 / 更久 365 天）。
+    同人社团的作品往往几年后才有人发种，靠这一层把重跑价值兜住。
+    """
     if month:
         date_filter = "date = ?"
         params: list = [f"{int(year):04d}-{int(month):02d}"]
@@ -910,13 +917,54 @@ def pending_rows(conn: sqlite3.Connection, year: int, month: int | None = None,
            ))
         """
     sql += " ORDER BY date, release_ts, egs_id"
+    rows = conn.execute(sql, params).fetchall()
+
+    if rescan:
+        cap = int(limit or 0)
+        remaining = 0 if cap <= 0 else max(cap - len(rows), 0)
+        if cap <= 0 or remaining > 0:
+            order = " ORDER BY g.date, g.release_ts, g.egs_id"
+            rsql = f"""
+                SELECT g.egs_id, g.date, g.name, g.company, g.release_ts, g.link,
+                       g.infohash_hex, g.download_failed
+                  FROM egs_games g
+                 WHERE {date_filter.replace('date', 'g.date')}
+                   AND (g.link IS NULL OR g.link='')
+                   AND COALESCE(g.download_failed,0)=0
+                   AND COALESCE(g.magnet_duplicate,0)=0
+                   AND (g.release_ts IS NULL OR g.release_ts <= date('now','localtime'))
+                   AND EXISTS (
+                       SELECT 1 FROM egs_nyaa_search_log l
+                        WHERE l.egs_id = g.egs_id
+                          AND COALESCE(l.result_count,0)=0
+                          AND l.selected_infohash IS NULL
+                          AND COALESCE(l.review_status,'none') IN ('none','')
+                          AND (l.tried_at IS NULL OR l.tried_at <= datetime('now','-' ||
+                               CASE
+                                 WHEN julianday('now') - julianday(COALESCE(g.release_ts, g.date)) <= 365 THEN '30'
+                                 WHEN julianday('now') - julianday(COALESCE(g.release_ts, g.date)) <= 1095 THEN '90'
+                                 WHEN julianday('now') - julianday(COALESCE(g.release_ts, g.date)) <= 1825 THEN '180'
+                                 ELSE '365'
+                               END || ' days'))
+                   )
+                   AND NOT EXISTS (
+                       SELECT 1 FROM egs_nyaa_search_log b
+                        WHERE b.egs_id = g.egs_id
+                          AND COALESCE(b.result_count,0) > 0
+                   )
+            """
+            if cap > 0:
+                rsql += f" LIMIT {remaining}"
+            rows = list(rows) + list(conn.execute(rsql + order, params).fetchall())
+
     if limit:
-        sql += f" LIMIT {int(limit)}"
-    return conn.execute(sql, params).fetchall()
+        rows = rows[:int(limit)]
+    return rows
 
 
 def run_magnet(year: int, month: int | None = None, force: bool = False,
                limit: int = 0, db_path: str | None = None,
+               rescan: bool = False, rescan_limit: int = 0,
                logger: logging.Logger | None = None, should_stop=None, progress=None, pacer=None) -> dict:
     """同步执行一轮 EGS 磁链搜索。"""
     global _timeout_count
@@ -942,7 +990,8 @@ def run_magnet(year: int, month: int | None = None, force: bool = False,
         finally:
             conn.rollback()
         ensure_egs_magnet_schema(conn)
-        rows = pending_rows(conn, year, month=month, force=force, limit=limit)
+        rows = pending_rows(conn, year, month=month, force=force, limit=limit,
+                             rescan=rescan, rescan_limit=rescan_limit)
         scope_sql = "SELECT COUNT(*) AS total, SUM(link IS NOT NULL AND link != '') AS linked, SUM((link IS NULL OR link = '') AND release_ts > date('now','localtime')) AS unreleased, SUM((link IS NULL OR link = '') AND (release_ts IS NULL OR release_ts <= date('now','localtime')) AND EXISTS(SELECT 1 FROM egs_nyaa_search_log l WHERE l.egs_id=g.egs_id)) AS cached FROM egs_games g WHERE "
         if month:
             scope_sql += "date = ?"
@@ -953,6 +1002,7 @@ def run_magnet(year: int, month: int | None = None, force: bool = False,
         scope = conn.execute(scope_sql, scope_params).fetchone()
         status = {
             "year": year, "month": month, "force": force, "limit": limit,
+            "rescan": bool(rescan), "rescan_limit": int(rescan_limit or 0),
             "scope_total": int(scope["total"] or 0),
             "skip_linked": int(scope["linked"] or 0),
             "skip_unreleased": int(scope["unreleased"] or 0),
