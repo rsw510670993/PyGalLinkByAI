@@ -124,7 +124,7 @@
       const n = Number(pending || 0);
       if (n > 0) {
         gate.hidden = false;
-        gate.innerHTML = `⚠ <div>第 2 步有 <b>${n} 条低分磁链</b>待 DSH 审核，提交已锁定。在会话里处理完、待审清零后自动解锁。`
+        gate.innerHTML = `⚠ <div>第 2 步有 <b>${n} 条低分磁链</b>待 DSH 审核。点「提交并校对」时按所选年份范围检查，范围内有待审才锁定。`
           + `<span class="muted">（egs review_detail / review_decide）</span></div>`;
       } else {
         gate.hidden = true;
@@ -154,9 +154,8 @@
     function renderTask() {
       const running = !!(task && task.running);
       $('btn-sync').disabled = busy || running || !ov;
-      const blocked = ov && Number(ov.pending_review || 0) > 0;
       const left = submitAt ? Math.max(0, 600 - Math.floor((Date.now() - submitAt) / 1000)) : 0;
-      $('btn-submit').disabled = busy || running || !ov || blocked || left > 0;
+      $('btn-submit').disabled = busy || running || !ov || left > 0;
       $('btn-stop').hidden = !running;
       $('btn-stop').disabled = false;
 
