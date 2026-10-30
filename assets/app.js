@@ -353,11 +353,11 @@
         const note = r.comment ? `<div class="note">${esc(r.comment)}</div>` : '';
         const coverId = r.getchu_id ? String(r.getchu_id) : '';
         const open = coverId ? ` data-cover="${esc(coverId)}"` : '';
-        return `<a class="game" data-stage="${stage}" href="${basePath}/tool/egs.php?year=${esc((r.date || '').slice(0, 4))}&month=${Number((r.date || '').slice(5, 7)) || ''}"${open}>`
+        return `<div class="game" data-stage="${stage}"${open}>`
           + cover(r)
           + `<div class="meta"><div class="t">${esc(r.name)}</div>`
           + `<div class="s">${sub}</div>`
-          + `<div class="badges"><span class="pill ${cls}">${label}</span></div>${note}</div></a>`;
+          + `<div class="badges"><span class="pill ${cls}">${label}</span></div>${note}</div></div>`;
       }).join('') : '<div class="empty">没有符合条件的记录</div>';
 
       const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
