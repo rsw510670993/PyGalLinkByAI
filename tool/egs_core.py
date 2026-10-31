@@ -105,6 +105,7 @@ def ensure_egs_schema(conn: sqlite3.Connection) -> None:
             submitted_115   INTEGER NOT NULL DEFAULT 0,
             submitted_pick_code TEXT,
             submitted_at     TEXT,
+            checked_at       TEXT,
             -- 种子真实 info 信息（来自 .torrent，与 115 产物目录精确对应）
             torrent_name    TEXT,
             torrent_files   TEXT,
@@ -156,6 +157,7 @@ def ensure_egs_schema(conn: sqlite3.Connection) -> None:
         ("submission_excluded", "INTEGER NOT NULL DEFAULT 0"),
         ("submission_excluded_reason", "TEXT"),
         ("resource_kind", "TEXT NOT NULL DEFAULT ''"),
+        ("checked_at", "TEXT"),
     ):
         if column not in cols:
             conn.execute(f"ALTER TABLE egs_games ADD COLUMN {column} {decl}")

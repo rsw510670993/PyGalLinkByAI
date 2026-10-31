@@ -1099,6 +1099,15 @@ def cmd_egs_games(args):
                      WHERE l.egs_id = egs_games.egs_id
                 ), 'pending') = 'pending'
             """)
+        stage = getattr(args, "stage", "")
+        if stage == "downloaded":
+            conditions.append("downloaded = 1")
+        elif stage == "linked":
+            conditions.append("link IS NOT NULL AND link != '' AND downloaded = 0")
+        elif stage == "none":
+            conditions.append("(link IS NULL OR link = '')")
+        elif stage == "failed":
+            conditions.append("COALESCE(download_failed,0) = 1")
         if args.q:
             q = str(args.q).strip()
             if q:
@@ -1142,7 +1151,8 @@ def cmd_egs_games(args):
         rows = cur.execute(
             f"""
             SELECT egs_id, date, name, company, release_ts, egs_date, actual_release_ts, brand_kind,
-                   link, nyaa_name, comment, downloaded, submitted_115, submitted_pick_code,
+                   getchu_id, dlsite_id, link, nyaa_name, comment, downloaded, submitted_115, submitted_pick_code,
+                   submitted_at, checked_at,
                    download_failed, download_failed_at,
                    COALESCE(magnet_duplicate,0) AS magnet_duplicate, duplicate_of_egs_id,
                    duplicate_reason,
@@ -1174,6 +1184,71 @@ def cmd_egs_games(args):
         conn.close()
 
 
+def cmd_egs_overview(args):
+    import sqlite3 as _sqlite3
+    from tool.egs_core import open_egs_db, ensure_egs_schema
+    from tool.pipeline import pending_review_summary
+    conn = open_egs_db(args.db)
+    try:
+        ensure_egs_schema(conn)
+        row = conn.execute(
+            """SELECT COUNT(*) AS total,
+                      SUM(CASE WHEN link IS NOT NULL AND link != '' THEN 1 ELSE 0 END) AS linked,
+                      SUM(CASE WHEN downloaded = 1 THEN 1 ELSE 0 END) AS downloaded,
+                      SUM(CASE WHEN submitted_115 = 1 THEN 1 ELSE 0 END) AS submitted,
+                      SUM(CASE WHEN link IS NULL OR link = '' THEN 1 ELSE 0 END) AS no_link,
+                      SUM(CASE WHEN link IS NOT NULL AND link != '' AND submitted_115 = 0 AND downloaded = 0
+                               THEN 1 ELSE 0 END) AS pending_submit
+                 FROM egs_games"""
+        ).fetchone()
+        try:
+            issues = conn.execute(
+                "SELECT COUNT(*) FROM egs_organize_issues WHERE COALESCE(resolved,0)=0"
+            ).fetchone()[0]
+        except _sqlite3.OperationalError:
+            issues = 0
+    finally:
+        conn.close()
+    pending = pending_review_summary(1980, 3000, 0)
+    _print({
+        "status": "success",
+        "total": int(row["total"] or 0),
+        "linked": int(row["linked"] or 0),
+        "downloaded": int(row["downloaded"] or 0),
+        "submitted": int(row["submitted"] or 0),
+        "no_link": int(row["no_link"] or 0),
+        "pending_submit": int(row["pending_submit"] or 0),
+        "pending_review": int(pending["count"] or 0),
+        "pending_years": pending["years"],
+        "issues": int(issues or 0),
+    })
+
+
+def cmd_egs_thumbs(args):
+    from tool.egs_thumb import coverage, dlsite_coverage, run_dlsite, run_thumbs
+    source = getattr(args, "source", "getchu") or "getchu"
+    if getattr(args, "optimize", False):
+        from tool.thumb_optimize import run_optimize
+        stats = run_optimize(delete_originals=bool(getattr(args, "delete_originals", False)),
+                             limit=args.limit, force=bool(getattr(args, "force", False)))
+        _print(stats)
+        return
+    if getattr(args, "coverage", False):
+        data = dlsite_coverage() if source == "dlsite" else coverage()
+        _print({"status": "success", "source": source, **data})
+        return
+    interval = args.interval or (1.5 if source == "dlsite" else 1.0)
+    if source == "dlsite":
+        stats = run_dlsite(year=args.year, month=args.month, limit=args.limit,
+                           interval=interval)
+        stats["coverage"] = dlsite_coverage()
+    else:
+        stats = run_thumbs(year=args.year, month=args.month, limit=args.limit,
+                           interval=interval)
+        stats["coverage"] = coverage()
+    _print(stats)
+
+
 def cmd_egs_magnet(args):
     from tool.egs_magnet import run_magnet
     stats = run_magnet(
@@ -1182,6 +1257,8 @@ def cmd_egs_magnet(args):
         force=bool(args.force),
         limit=int(args.limit or 0),
         db_path=args.db,
+        rescan=bool(getattr(args, "rescan", False)),
+        rescan_limit=int(getattr(args, "rescan_limit", 0) or 0),
     )
     _print(stats)
 
@@ -1537,6 +1614,25 @@ def build_parser():
     p_egs_crawl.add_argument("--db", type=str, dest="db")
     p_egs_crawl.set_defaults(func=cmd_egs_crawl)
 
+    p_egs_thumbs = egs_sub.add_parser("thumbs")
+    p_egs_thumbs.add_argument("--year", type=int)
+    p_egs_thumbs.add_argument("--month", type=int)
+    p_egs_thumbs.add_argument("--limit", type=int, default=0)
+    p_egs_thumbs.add_argument("--source", choices=["getchu", "dlsite"], default="getchu")
+    p_egs_thumbs.add_argument("--optimize", action="store_true",
+                              help="把已下载的原图转成 280/96 两档 webp")
+    p_egs_thumbs.add_argument("--force", action="store_true",
+                              help="optimize 时已存在的 webp 也重新生成")
+    p_egs_thumbs.add_argument("--delete-originals", action="store_true",
+                              help="转换成功后删除原图（可重新下载）")
+    p_egs_thumbs.add_argument("--interval", type=float, default=0.0)
+    p_egs_thumbs.add_argument("--coverage", action="store_true")
+    p_egs_thumbs.set_defaults(func=cmd_egs_thumbs)
+
+    p_egs_overview = egs_sub.add_parser("overview")
+    p_egs_overview.add_argument("--db", type=str)
+    p_egs_overview.set_defaults(func=cmd_egs_overview)
+
     p_egs_status = egs_sub.add_parser("status")
     p_egs_status.add_argument("--db", type=str, dest="db")
     p_egs_status.set_defaults(func=cmd_egs_status)
@@ -1549,12 +1645,18 @@ def build_parser():
     p_egs_games.add_argument("--q", type=str, default="")
     p_egs_games.add_argument("--brand-kind", type=str, dest="brand_kind", default="")
     p_egs_games.add_argument("--review", type=str, choices=["", "pending"], default="")
+    p_egs_games.add_argument("--stage", type=str,
+                             choices=["", "downloaded", "linked", "none", "failed"], default="")
     p_egs_games.add_argument("--db", type=str)
     p_egs_games.set_defaults(func=cmd_egs_games)
 
     p_egs_magnet = egs_sub.add_parser("magnet")
     p_egs_magnet.add_argument("--year", type=int, required=True)
     p_egs_magnet.add_argument("--month", type=int)
+    p_egs_magnet.add_argument("--rescan", action="store_true",
+                              help="额外重扫到期记录（按作品年龄 30/90/180/365 天）")
+    p_egs_magnet.add_argument("--rescan-limit", type=int, default=0, dest="rescan_limit",
+                              help="本次最多重扫多少条（0=不限）")
     p_egs_magnet.add_argument("--force", action="store_true",
                               help="忽略搜索历史强制重搜")
     p_egs_magnet.add_argument("--limit", type=int, default=0,

@@ -1,4 +1,7 @@
 <?php
+// pyGal 接口层：只读面板 + 机械任务开关。
+// 判定 / 审核 / 修正 / 整理全部由 AI agent（DSH）通过 tool/cli.py 完成，
+// 这里不再提供写记录、审核候选、AI 整理的入口。
 
 function json_response($data) {
     header('Content-Type: application/json; charset=utf-8');
@@ -34,25 +37,12 @@ function run_cli($args, $entry = 'cli.py') {
         $cmd .= ' ' . escapeshellarg($a);
     }
 
-    $spec = [
-        1 => ['pipe', 'w'],
-        2 => ['pipe', 'w'],
-    ];
-
+    $spec = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
     $env = [];
     foreach ($_SERVER as $key => $value) {
-        if (is_string($key) && is_scalar($value)) {
-            $env[$key] = strval($value);
-        }
+        if (is_string($key) && is_scalar($value)) $env[$key] = strval($value);
     }
     $env['HOME'] = $root;
-    if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
-        $env['USERPROFILE'] = $root;
-        if (preg_match('/^[A-Za-z]:/', $root)) {
-            $env['HOMEDRIVE'] = substr($root, 0, 2);
-            $env['HOMEPATH'] = substr($root, 2);
-        }
-    }
 
     $proc = proc_open($cmd, $spec, $pipes, $root, $env);
     if (!is_resource($proc)) {
@@ -66,76 +56,48 @@ function run_cli($args, $entry = 'cli.py') {
 
     $decoded = json_decode($out, true);
     if (is_array($decoded)) return [$code, $decoded];
-
     return [$code, ['status' => 'error', 'message' => 'Python返回非JSON', 'stderr' => $err]];
 }
 
 $action = isset($_GET['action']) ? $_GET['action'] : '';
 
-if ($action === 'ai_organizer_status') {
-    [$code, $data] = run_cli(['status'], 'ai_organizer_entry.py');
+if ($action === 'overview') {
+    [$code, $data] = run_cli(['egs', 'overview']);
     json_response($data);
 }
 
-
-if ($action === 'ai_job_detail') {
-    $jobId = trim(strval($_GET['job_id'] ?? ''));
-    $after = max(0, as_int($_GET['after_event_id'] ?? 0, 0));
-    if ($jobId === '') {
-        json_response(['success' => false, 'message' => '缺少 job_id']);
-    }
-    [$code, $data] = run_cli(
-        ['detail', '--job-id', $jobId, '--after-event-id', strval($after)],
-        'ai_organizer_entry.py'
-    );
+if ($action === 'years') {
+    [$code, $data] = run_cli(['years', '--source', ($_GET['source'] ?? '') === 'egs' ? 'egs' : 'getchu']);
     json_response($data);
 }
 
-if ($action === 'ai_job_start') {
-    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
-        json_response(['success' => false, 'message' => '请使用 POST 请求']);
-    }
-    $body = read_json_body();
-    $prompt = trim(strval($body['prompt'] ?? ''));
-    $year = as_int($body['year'] ?? null, null);
-    if ($prompt === '') {
-        json_response(['success' => false, 'message' => '任务说明不能为空']);
-    }
-    $args = ['start', '--driver', 'responses', '--prompt', $prompt];
-    if ($year !== null) {
-        $args[] = '--year';
-        $args[] = strval($year);
-    }
-    [$code, $data] = run_cli($args, 'ai_organizer_entry.py');
+if ($action === 'calendar') {
+    $year = as_int($_GET['year'] ?? null, null);
+    $args = ['calendar'];
+    if ($year !== null) { $args[] = '--year'; $args[] = strval($year); }
+    [$code, $data] = run_cli($args);
     json_response($data);
 }
 
-if ($action === 'ai_job_stop') {
-    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
-        json_response(['success' => false, 'message' => '请使用 POST 请求']);
-    }
-    $body = read_json_body();
-    $jobId = trim(strval($body['job_id'] ?? ''));
-    if ($jobId === '') {
-        json_response(['success' => false, 'message' => '缺少 job_id']);
-    }
-    [$code, $data] = run_cli(['stop', '--job-id', $jobId], 'ai_organizer_entry.py');
-    json_response($data);
-}
+if ($action === 'egs_games') {
+    $page = as_int($_GET['page'] ?? 1, 1);
+    $perPage = as_int($_GET['per_page'] ?? 24, 24);
+    $year = as_int($_GET['year'] ?? null, null);
+    $month = as_int($_GET['month'] ?? null, null);
+    $q = isset($_GET['q']) ? trim((string)$_GET['q']) : '';
+    $brandKind = strtoupper(trim(strval($_GET['brand_kind'] ?? '')));
+    if (!in_array($brandKind, ['CIRCLE', 'CORPORATION'], true)) $brandKind = '';
+    $stage = trim(strval($_GET['stage'] ?? ''));
+    if (!in_array($stage, ['downloaded', 'linked', 'none', 'failed'], true)) $stage = '';
 
-if ($action === 'ai_job_retry') {
-    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
-        json_response(['success' => false, 'message' => '请使用 POST 请求']);
-    }
-    $body = read_json_body();
-    $jobId = trim(strval($body['job_id'] ?? ''));
-    if ($jobId === '') {
-        json_response(['success' => false, 'message' => '缺少 job_id']);
-    }
-    [$code, $data] = run_cli(
-        ['retry', '--job-id', $jobId],
-        'ai_organizer_entry.py'
-    );
+    $args = ['egs', 'games', '--page', strval(max(1, $page)), '--per-page', strval(max(1, $perPage))];
+    if ($year !== null) { $args[] = '--year'; $args[] = strval($year); }
+    if ($month !== null) { $args[] = '--month'; $args[] = strval($month); }
+    if ($q !== '') { $args[] = '--q'; $args[] = $q; }
+    if ($brandKind !== '') { $args[] = '--brand-kind'; $args[] = $brandKind; }
+    if ($stage !== '') { $args[] = '--stage'; $args[] = $stage; }
+
+    [$code, $data] = run_cli($args);
     json_response($data);
 }
 
@@ -169,51 +131,12 @@ if (in_array($action, ['pipeline_start', 'pipeline_status', 'pipeline_stop'], tr
     json_response($data);
 }
 
-// 任务信箱（agent_jobs）：web 手动启动确定性流程；organize 例外——只入队，
-// 由 TUI 侧领取执行（见 tool/agent_jobs.py:QUEUE_ONLY_ACTIONS）。
-// 契约见 tool/agent_jobs.py —— 入队写 inbox/<job_id>.json，结果读 outbox/<job_id>.json。
-if ($action === 'agent_job_start') {
-    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
-        json_response(['status' => 'error', 'message' => '请使用 POST 请求']);
-    }
-    $body = read_json_body();
-    $year = as_int($body['year'] ?? null, 0);
-    $args = ['start',
-             '--action', strval($body['action'] ?? ''),
-             '--year', strval($year),
-             '--year-end', strval(as_int($body['year_end'] ?? null, $year)),
-             '--requested-by', 'web'];
-    if (($body['execute'] ?? false) === true) $args[] = '--execute';
-    $timeout = as_int($body['timeout'] ?? null, 0);
-    if ($timeout > 0) {
-        $args[] = '--timeout';
-        $args[] = strval($timeout);
-    }
-    [$code, $data] = run_cli($args, 'agent_jobs_entry.py');
+if ($action === '115_login_status') {
+    [$code, $data] = run_cli(['115', 'login_status']);
     json_response($data);
 }
 
-if ($action === 'agent_job_stop') {
-    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
-        json_response(['status' => 'error', 'message' => '请使用 POST 请求']);
-    }
-    $body = read_json_body();
-    [$code, $data] = run_cli(['stop', '--job-id', strval($body['job_id'] ?? '')], 'agent_jobs_entry.py');
-    json_response($data);
-}
-
-if ($action === 'agent_job_status') {
-    [$code, $data] = run_cli(['status', '--job-id', strval($_GET['job_id'] ?? '')], 'agent_jobs_entry.py');
-    json_response($data);
-}
-
-if ($action === 'agent_job_list') {
-    $args = ['list', '--limit', strval(as_int($_GET['limit'] ?? null, 20))];
-    [$code, $data] = run_cli($args, 'agent_jobs_entry.py');
-    json_response($data);
-}
-
-// 维护：清理任务记录与 db 快照（默认预览，execute=true 才真删；删 db 快照前必弹确认）
+// 维护：清理任务记录与 db 快照（默认预览，execute=true 才真删）
 if ($action === 'agent_job_prune') {
     if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
         json_response(['status' => 'error', 'message' => '请使用 POST 请求']);
@@ -230,398 +153,4 @@ if ($action === 'agent_job_prune') {
     json_response($data);
 }
 
-if ($action === 'years') {
-    [$code, $data] = run_cli(['years', '--source', ($_GET['source'] ?? '') === 'egs' ? 'egs' : 'getchu']);
-    json_response($data);
-}
-
-if ($action === 'latest_month') {
-    [$code, $data] = run_cli(['latest_month']);
-    json_response($data);
-}
-
-if ($action === 'games') {
-    $page = as_int($_GET['page'] ?? 1, 1);
-    $year = as_int($_GET['year'] ?? null, null);
-    $month = as_int($_GET['month'] ?? null, null);
-
-    $args = ['games', '--page', strval(max(1, $page))];
-    if ($year !== null) $args[] = '--year';
-    if ($year !== null) $args[] = strval($year);
-    if ($month !== null) $args[] = '--month';
-    if ($month !== null) $args[] = strval($month);
-
-    [$code, $data] = run_cli($args);
-    json_response($data);
-}
-
-if ($action === 'egs_games') {
-    $page = as_int($_GET['page'] ?? 1, 1);
-    $perPage = as_int($_GET['per_page'] ?? 50, 50);
-    $year = as_int($_GET['year'] ?? null, null);
-    $month = as_int($_GET['month'] ?? null, null);
-    $q = isset($_GET['q']) ? trim((string)$_GET['q']) : '';
-    $brandKind = strtoupper(trim(strval($_GET['brand_kind'] ?? '')));
-    if (!in_array($brandKind, ['CIRCLE', 'CORPORATION'], true)) {
-        $brandKind = '';
-    }
-    $review = trim(strval($_GET['review'] ?? ''));
-    if (!in_array($review, ['pending'], true)) {
-        $review = '';
-    }
-
-    $args = ['egs', 'games', '--page', strval(max(1, $page)), '--per-page', strval(max(1, $perPage))];
-    if ($year !== null) { $args[] = '--year'; $args[] = strval($year); }
-    if ($month !== null) { $args[] = '--month'; $args[] = strval($month); }
-    if ($q !== '') { $args[] = '--q'; $args[] = $q; }
-    if ($brandKind !== '') { $args[] = '--brand-kind'; $args[] = $brandKind; }
-    if ($review !== '') { $args[] = '--review'; $args[] = $review; }
-
-    [$code, $data] = run_cli($args);
-    json_response($data);
-}
-
-if ($action === 'egs_update') {
-    $body = read_json_body();
-    $egsId = as_int($body['egs_id'] ?? null, null);
-    if (!$egsId) {
-        json_response(['success' => false, 'message' => '缺少 egs_id']);
-    }
-
-    $args = ['egs', 'update', '--egs-id', strval($egsId)];
-    if (!empty($body['new_date'])) { $args[] = '--new-date'; $args[] = strval($body['new_date']); }
-    if (!empty($body['new_name'])) { $args[] = '--new-name'; $args[] = strval($body['new_name']); }
-    if (!empty($body['new_company'])) { $args[] = '--new-company'; $args[] = strval($body['new_company']); }
-    if (array_key_exists('new_link', $body)) { $args[] = '--new-link'; $args[] = strval($body['new_link']); }
-    if (array_key_exists('new_nyaa_name', $body)) { $args[] = '--new-nyaa-name'; $args[] = strval($body['new_nyaa_name']); }
-    if (array_key_exists('new_downloaded', $body) && $body['new_downloaded'] !== null) {
-        $args[] = '--new-downloaded';
-        $args[] = strval(intval($body['new_downloaded']));
-    }
-    if (array_key_exists('new_submitted_115', $body) && $body['new_submitted_115'] !== null) {
-        $args[] = '--new-submitted-115';
-        $args[] = strval(intval($body['new_submitted_115']));
-    }
-    if (array_key_exists('new_submitted_pick_code', $body) && $body['new_submitted_pick_code'] !== null) {
-        $args[] = '--new-submitted-pick-code';
-        $args[] = strval($body['new_submitted_pick_code']);
-    }
-    if (array_key_exists('new_resource_kind', $body) && $body['new_resource_kind'] !== null) {
-        $args[] = '--new-resource-kind';
-        $args[] = strval($body['new_resource_kind']);
-    }
-
-    [$code, $data] = run_cli($args);
-    json_response($data);
-}
-
-if ($action === 'egs_delete') {
-    $body = read_json_body();
-    $egsId = as_int($body['egs_id'] ?? null, null);
-    if (!$egsId) {
-        json_response(['success' => false, 'message' => '缺少 egs_id']);
-    }
-    [$code, $data] = run_cli(['egs', 'delete', '--egs-id', strval($egsId)]);
-    json_response($data);
-}
-
-if ($action === 'egs_review_detail') {
-    $egsId = as_int($_GET['egs_id'] ?? null, null);
-    if (!$egsId) {
-        json_response(['success' => false, 'message' => '缺少 egs_id']);
-    }
-    [$code, $data] = run_cli(['egs', 'review_detail', '--egs-id', strval($egsId)]);
-    json_response($data);
-}
-
-if ($action === 'egs_review_decide') {
-    $body = read_json_body();
-    $egsId = as_int($body['egs_id'] ?? null, null);
-    $decision = strval($body['decision'] ?? '');
-    if (!$egsId || !in_array($decision, ['approve', 'reject', 'reopen'], true)) {
-        json_response(['success' => false, 'message' => '参数错误']);
-    }
-    $args = ['egs', 'review_decide', '--egs-id', strval($egsId), '--decision', $decision];
-    if (!empty($body['candidate_id'])) {
-        $args[] = '--candidate-id';
-        $args[] = strval(intval($body['candidate_id']));
-    }
-    if (array_key_exists('manual_magnet', $body) && $body['manual_magnet'] !== null && $body['manual_magnet'] !== '') {
-        $args[] = '--manual-magnet';
-        $args[] = strval($body['manual_magnet']);
-    }
-    if (array_key_exists('manual_nyaa_name', $body) && $body['manual_nyaa_name'] !== null && $body['manual_nyaa_name'] !== '') {
-        $args[] = '--manual-nyaa-name';
-        $args[] = strval($body['manual_nyaa_name']);
-    }
-    if (array_key_exists('resource_kind', $body) && $body['resource_kind'] !== null) {
-        $args[] = '--resource-kind';
-        $args[] = strval($body['resource_kind']);
-    }
-    if (array_key_exists('note', $body) && $body['note'] !== null && $body['note'] !== '') {
-        $args[] = '--note';
-        $args[] = strval($body['note']);
-    }
-    [$code, $data] = run_cli($args);
-    json_response($data);
-}
-
-if ($action === 'egs_review_blacklist') {
-    [$code, $data] = run_cli(['egs', 'review_blacklist', 'list']);
-    json_response($data);
-}
-
-if ($action === 'egs_review_blacklist_add') {
-    $body = read_json_body();
-    $company = trim(strval($body['company'] ?? ''));
-    if ($company === '') {
-        json_response(['success' => false, 'message' => '公司名不能为空']);
-    }
-    $args = ['egs', 'review_blacklist', 'add', '--company', $company];
-    if (!empty($body['note'])) { $args[] = '--note'; $args[] = strval($body['note']); }
-    [$code, $data] = run_cli($args);
-    json_response($data);
-}
-
-if ($action === 'egs_review_blacklist_remove') {
-    $body = read_json_body();
-    $company = trim(strval($body['company'] ?? ''));
-    if ($company === '') {
-        json_response(['success' => false, 'message' => '公司名不能为空']);
-    }
-    [$code, $data] = run_cli(['egs', 'review_blacklist', 'remove', '--company', $company]);
-    json_response($data);
-}
-
-if ($action === 'calendar') {
-    $year = as_int($_GET['year'] ?? null, null);
-    $args = ['calendar'];
-    if ($year !== null) { $args[] = '--year'; $args[] = strval($year); }
-    [$code, $data] = run_cli($args);
-    json_response($data);
-}
-
-if ($action === 'get_status') {
-    [$code, $data] = run_cli(['spider', 'status']);
-    json_response($data);
-}
-
-if ($action === 'start_spider') {
-    $body = read_json_body();
-    $startYear = as_int($body['start_year'] ?? null, null);
-    $endYear = as_int($body['end_year'] ?? null, null);
-    if ($startYear === null || $endYear === null) {
-        json_response(['status' => 'error', 'message' => '参数错误']);
-    }
-    [$code, $data] = run_cli(['spider', 'start', '--start-year', strval($startYear), '--end-year', strval($endYear)]);
-    json_response($data);
-}
-
-if ($action === 'stop_spider') {
-    [$code, $data] = run_cli(['spider', 'stop']);
-    json_response($data);
-}
-
-if ($action === 'start_download') {
-    $body = read_json_body();
-    $year = as_int($body['year'] ?? null, null);
-    $month = as_int($body['month'] ?? 0, 0);
-    if ($year === null) {
-        json_response(['status' => 'error', 'message' => '参数错误']);
-    }
-    [$code, $data] = run_cli(['download', 'start', '--year', strval($year), '--month', strval($month), '--source', ($body['source'] ?? '') === 'egs' ? 'egs' : 'getchu']);
-    json_response($data);
-}
-
-if ($action === 'download_status') {
-    [$code, $data] = run_cli(['download', 'status']);
-    json_response($data);
-}
-
-if ($action === 'stop_download') {
-    [$code, $data] = run_cli(['download', 'stop']);
-    json_response($data);
-}
-
-if ($action === '115_login_qrcode') {
-    [$code, $data] = run_cli(['115', 'login_qrcode']);
-    json_response($data);
-}
-
-if ($action === '115_login_qrcode_status') {
-    $uid = $_GET['uid'] ?? '';
-    $time = $_GET['time'] ?? '';
-    $sign = $_GET['sign'] ?? '';
-    [$code, $data] = run_cli(['115', 'login_qrcode_status', '--uid', $uid, '--time', $time, '--sign', $sign]);
-    json_response($data);
-}
-
-if ($action === '115_login_confirm') {
-    $body = read_json_body();
-    $uid = $body['uid'] ?? '';
-    $app = $body['app'] ?? 'alipaymini';
-    [$code, $data] = run_cli(['115', 'login_confirm', '--uid', $uid, '--app', $app]);
-    json_response($data);
-}
-
-if ($action === '115_logout') {
-    [$code, $data] = run_cli(['115', 'logout']);
-    json_response($data);
-}
-
-if ($action === '115_login_status') {
-    [$code, $data] = run_cli(['115', 'login_status']);
-    json_response($data);
-}
-
-if ($action === '115_check') {
-    $body = read_json_body();
-    $magnet = $body['magnet'] ?? '';
-    $dir = rtrim(strval($body['dir'] ?? ''), '/');
-    if (!preg_match('#^/GAL/GAL-[0-9]{4}$#', $dir)) {
-        json_response([
-            'success' => false,
-            'exists' => false,
-            'message' => '校对目录仅允许 /GAL/GAL-YYYY',
-        ]);
-    }
-    $debug = $body['debug'] ?? null;
-    $args = ['115', 'check', '--magnet', $magnet, '--dir', $dir];
-    if ($debug) { $args[] = '--debug'; }
-    [$code, $data] = run_cli($args);
-    json_response($data);
-}
-
-if ($action === '115_submit') {
-    $body = read_json_body();
-    $egsId = as_int($body['egs_id'] ?? null, null);
-    if (!$egsId) {
-        json_response(['success' => false, 'status' => 'error', 'message' => '缺少 egs_id']);
-    }
-    $magnet = $body['magnet'] ?? '';
-    $dir = $body['dir'] ?? '';
-    [$code, $data] = run_cli(['115', 'submit', '--egs-id', strval($egsId), '--magnet', $magnet, '--dir', $dir]);
-    json_response($data);
-}
-
-if ($action === '115_check_all_start') {
-    $body = read_json_body();
-    $year = $body['year'] ?? '';
-    $month = $body['month'] ?? '';
-    $args = ['115', 'check_all', 'start', '--source', ($body['source'] ?? '') === 'egs' ? 'egs' : 'getchu'];
-    if ($year) { $args[] = '--year'; $args[] = strval($year); }
-    if ($month) { $args[] = '--month'; $args[] = strval($month); }
-    [$code, $data] = run_cli($args);
-    json_response($data);
-}
-
-if ($action === '115_check_all_status') {
-    [$code, $data] = run_cli(['115', 'check_all', 'status']);
-    json_response($data);
-}
-
-if ($action === '115_check_all_stop') {
-    [$code, $data] = run_cli(['115', 'check_all', 'stop']);
-    json_response($data);
-}
-
-if ($action === 'update_game') {
-    $body = read_json_body();
-    $date = $body['date'] ?? '';
-    $old_name = $body['old_name'] ?? '';
-    $new_date = $body['new_date'] ?? '';
-    $new_name = $body['new_name'] ?? '';
-    $new_company = $body['new_company'] ?? '';
-    $new_link = $body['new_link'] ?? null;
-    $new_downloaded = $body['new_downloaded'] ?? null;
-    $new_nyaa_name = $body['new_nyaa_name'] ?? null;
-    $new_submitted_115 = $body['new_submitted_115'] ?? null;
-    $new_submitted_pick_code = $body['new_submitted_pick_code'] ?? null;
-    if (!$date || !$old_name) {
-        json_response(['success' => false, 'message' => '缺少必填字段 date/old_name']);
-    }
-    $args = ['update_game', '--date', $date, '--old-name', $old_name];
-    if ($new_date) { $args[] = '--new-date'; $args[] = $new_date; }
-    if ($new_name) { $args[] = '--new-name'; $args[] = $new_name; }
-    if ($new_company) { $args[] = '--new-company'; $args[] = $new_company; }
-    if ($new_link !== null) { $args[] = '--new-link'; $args[] = $new_link; }
-    if ($new_downloaded !== null) { $args[] = '--new-downloaded'; $args[] = strval($new_downloaded); }
-    if ($new_nyaa_name !== null) { $args[] = '--new-nyaa-name'; $args[] = $new_nyaa_name; }
-    if ($new_submitted_115 !== null) { $args[] = '--new-submitted-115'; $args[] = strval($new_submitted_115); }
-    if ($new_submitted_pick_code !== null) { $args[] = '--new-submitted-pick-code'; $args[] = strval($new_submitted_pick_code); }
-    [$code, $data] = run_cli($args);
-    json_response($data);
-}
-
-if ($action === 'delete_game') {
-    $body = read_json_body();
-    $date = $body['date'] ?? '';
-    $name = $body['name'] ?? '';
-    if (!$date || !$name) {
-        json_response(['success' => false, 'message' => '缺少必填字段 date/name']);
-    }
-    [$code, $data] = run_cli(['delete_game', '--date', $date, '--name', $name]);
-    json_response($data);
-}
-
-if ($action === 'egs_organize_confirm') {
-    $body = read_json_body();
-    $date = trim(strval($body['date'] ?? ''));
-    $name = trim(strval($body['name'] ?? ''));
-    if (!$date || !$name) {
-        json_response(['success' => false, 'message' => '缺少必填字段 date/name']);
-    }
-    [$code, $data] = run_cli(['egs', 'organize_confirm', '--date', $date, '--name', $name]);
-    json_response($data);
-}
-
-if ($action === 'egs_retry_magnet') {
-    $body = read_json_body();
-    $egsId = as_int($body['egs_id'] ?? null, null);
-    if (!$egsId) {
-        json_response(['success' => false, 'message' => '缺少 egs_id']);
-    }
-    [$code, $data] = run_cli(['egs', 'retry_magnet', '--egs-id', strval($egsId)]);
-    json_response($data);
-}
-
-if ($action === 'organize_issues') {
-    $args = ['egs', 'organize_issues'];
-    if (($_GET['all'] ?? '') === '1') {
-        $args[] = '--all';
-    }
-    [$code, $data] = run_cli($args);
-    json_response($data);
-}
-
-if ($action === 'organize_issue_resolve') {
-    $body = read_json_body();
-    $id = intval($body['id'] ?? 0);
-    if (!$id) {
-        json_response(['success' => false, 'message' => '缺少必填字段 id']);
-    }
-    [$code, $data] = run_cli(['egs', 'organize_issue_resolve', '--id', strval($id)]);
-    json_response($data);
-}
-
-if ($action === 'organize_issue_reject') {
-    $body = read_json_body();
-    $id = intval($body['id'] ?? 0);
-    if (!$id) {
-        json_response(['success' => false, 'message' => '缺少必填字段 id']);
-    }
-    [$code, $data] = run_cli(['egs', 'organize_issue_reject', '--id', strval($id)]);
-    json_response($data);
-}
-
-if ($action === 'organize_issue_reject_month') {
-    $body = read_json_body();
-    $id = intval($body['id'] ?? 0);
-    if (!$id) {
-        json_response(['success' => false, 'message' => '缺少必填字段 id']);
-    }
-    [$code, $data] = run_cli(['egs', 'organize_issue_reject_month', '--id', strval($id)]);
-    json_response($data);
-}
-
-json_response(['status' => 'error', 'message' => 'unknown action']);
+json_response(['status' => 'error', 'code' => 404, 'message' => '未知接口']);

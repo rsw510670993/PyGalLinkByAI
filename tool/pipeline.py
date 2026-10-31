@@ -14,8 +14,8 @@ from pathlib import Path
 
 from .runtime import daily_log_path, now_ts, pid_is_running, read_json, repo_root, runtime_paths, write_json_atomic
 
-ACTIONS = ('crawl', 'magnet', 'check', 'submit', 'organize')
-LABELS = dict(zip(ACTIONS, ('获取游戏清单', '获取下载用磁链', '校对115', '提交115', '整理115')))
+ACTIONS = ('crawl', 'magnet', 'check', 'submit', 'sync', 'organize')
+LABELS = dict(zip(ACTIONS, ('获取游戏清单', '获取下载用磁链', '校对115', '提交115', '同步（清单+磁链）', '整理115')))
 SUBMISSION_TIMEOUT_SECONDS = 72 * 60 * 60
 
 
@@ -49,9 +49,9 @@ def _mark_download_failed(conn, row, failed_at, reason):
                   downloaded=0, submitted_115=0, submitted_pick_code=NULL,
                   link=NULL, nyaa_name=NULL, infohash_hex=?,
                   torrent_name=NULL, torrent_files=NULL, torrent_size=NULL, resource_kind='',
-                  updated_at=?
+                  checked_at=?, updated_at=?
             WHERE egs_id=?""",
-        (failed_at, infohash, now_ts(), row['egs_id']),
+        (failed_at, infohash, failed_at, now_ts(), row['egs_id']),
     )
     if infohash:
         conn.execute(
@@ -136,7 +136,7 @@ def pending_review_summary(start_year: int, end_year: int, month: int = 0) -> di
                AND (g.link IS NULL OR g.link = '')
                AND COALESCE(l.result_count, 0) > 0
                AND l.selected_infohash IS NULL
-               AND COALESCE(l.review_status, 'pending') = 'pending'
+               AND COALESCE(l.review_status, 'none') IN ('none', '')
                AND NOT EXISTS (
                    SELECT 1 FROM egs_review_company_blacklist b
                     WHERE b.company IN (g.company, g.egs_company)
@@ -159,13 +159,15 @@ def pending_review_count(start_year: int, end_year: int, month: int = 0) -> int:
 
 def start(action, start_year, end_year, month=0, execute=False):
     validate(action, start_year, end_year, month)
-    if action == 'check':
+    if action in ('check', 'submit'):
         pending = pending_review_count(start_year, end_year, month)
         if pending:
+            kind = '提交' if action == 'submit' else '校对'
             return {
                 'status': 'error',
-                'message': f'当前范围还有 {pending} 条待审核记录，请先完成审核再批量校对115',
+                'message': f'当前范围还有 {pending} 条低分磁链待 DSH 审核，请先完成审核再{kind}115',
                 'pending_review_count': pending,
+                'blocked': True,
             }
     try:
         with locked():
@@ -249,50 +251,63 @@ def execute_job(state, save, should_stop):
         save()
 
     try:
-        if action in ('crawl', 'magnet'):
-            if action == 'magnet':
+        if action in ('crawl', 'magnet', 'sync'):
+            phases = ('crawl', 'magnet') if action == 'sync' else (action,)
+            pacer = None
+            rescan_limit = 0
+            if 'magnet' in phases:
                 from .egs_magnet import RequestPacer, run_magnet
+                from .runtime import read_config
                 pacer = RequestPacer(should_stop)
-            state['total'] = len(years) * len(months)
+                rescan_limit = int(read_config().get('magnet_rescan_limit', 50) or 50)
+            state['total'] = len(years) * len(months) * len(phases)
             save()
-            for year in years:
-                for month in months:
-                    if should_stop():
-                        return
-                    name = f'{year}-{month:02d}'
-                    state['current'] = name
-                    save()
-                    try:
-                        if action == 'crawl':
-                            rows = fetch_egs_month(year, month)
-                            result = upsert_egs_rows(conn, rows)
-                            message = f"获取 {len(rows)}，新增 {result['inserted']}，更新 {result['updated']}，未变 {result['unchanged']}"
-                            report(name, 'success', message)
-                        else:
-                            def progress(current, done, total):
-                                state['current'] = f'{name} · {current} ({done}/{total})'
-                                save()
-                            result = run_magnet(year, month=month, should_stop=should_stop, progress=progress, pacer=pacer)
-                            metrics = result.get('metrics', {})
-                            summary = (f"待搜索 {result['total']}，匹配 {result['selected']}，无结果 {result['no_result']}，低分 {result['low_score']}，错误 {result['error']}；"
-                                       f"跳过：已有磁链 {result.get('skip_linked', 0)}，搜索历史 {result.get('skip_history', 0)}，未发售 {result.get('skip_unreleased', 0)}；"
-                                       f"请求 {metrics.get('requests', 0)} 次，网络 {metrics.get('network_seconds', 0):.1f}s，等待 {metrics.get('wait_seconds', 0):.1f}s，满分提前结束 {metrics.get('early_stops', 0)} 部；"
-                                       f"末段间隔 {result.get('final_interval', 0):.2f}s，429退避 {metrics.get('backoffs', 0)} 次，提前结束省 {metrics.get('queries_saved', 0)} 次查询")
-                            if result.get('stopped'):
-                                state['results'].append(dict(name=name, outcome='skipped', message='已停止（本月未完成）；' + summary, detail=result))
-                                save()
-                                return
-                            report(name, 'failed' if result['error'] else 'success', summary, detail=result)
-                            if result.get('timeout_aborted'):
-                                return
+            for phase in phases:
+                state['phase'] = phase
+                state['current'] = ''
+                save()
+                for year in years:
+                    for month in months:
+                        if should_stop():
+                            return
+                        name = f'{year}-{month:02d}'
+                        state['current'] = name if phase == 'crawl' else f'{name} · 磁链'
+                        save()
+                        try:
+                            if phase == 'crawl':
+                                rows = fetch_egs_month(year, month)
+                                result = upsert_egs_rows(conn, rows)
+                                message = f"获取 {len(rows)}，新增 {result['inserted']}，更新 {result['updated']}，未变 {result['unchanged']}"
+                                report(name, 'success', message)
+                            else:
+                                def progress(current, done, total):
+                                    state['current'] = f'{name} · {current} ({done}/{total})'
+                                    save()
+                                result = run_magnet(
+                                    year, month=month, should_stop=should_stop,
+                                    progress=progress, pacer=pacer,
+                                    rescan=True, rescan_limit=rescan_limit,
+                                )
+                                metrics = result.get('metrics', {})
+                                summary = (f"待搜索 {result['total']}，匹配 {result['selected']}，无结果 {result['no_result']}，低分 {result['low_score']}，错误 {result['error']}；"
+                                           f"跳过：已有磁链 {result.get('skip_linked', 0)}，搜索历史 {result.get('skip_history', 0)}，未发售 {result.get('skip_unreleased', 0)}；"
+                                           f"请求 {metrics.get('requests', 0)} 次，网络 {metrics.get('network_seconds', 0):.1f}s，等待 {metrics.get('wait_seconds', 0):.1f}s，满分提前结束 {metrics.get('early_stops', 0)} 部；"
+                                           f"末段间隔 {result.get('final_interval', 0):.2f}s，429退避 {metrics.get('backoffs', 0)} 次，提前结束省 {metrics.get('queries_saved', 0)} 次查询")
+                                if result.get('stopped'):
+                                    state['results'].append(dict(name=name, outcome='skipped', message='已停止（本月未完成）；' + summary, detail=result))
+                                    save()
+                                    return
+                                report(name, 'failed' if result['error'] else 'success', summary, detail=result)
+                                if result.get('timeout_aborted'):
+                                    return
 
-                    except sqlite3.DatabaseError:
-                        # Shared storage failures affect all remaining games/months.
-                        raise
-                    except Exception as exc:
-                        report(name, 'failed', str(exc))
-                    if action == 'crawl':
-                        time.sleep(1)
+                        except sqlite3.DatabaseError:
+                            # Shared storage failures affect all remaining games/months.
+                            raise
+                        except Exception as exc:
+                            report(name, 'failed', str(exc))
+                        if phase == 'crawl':
+                            time.sleep(1)
             return
 
         from .p115_client import get_login_status
@@ -331,7 +346,7 @@ def execute_job(state, save, should_stop):
                     WHERE l.egs_id = egs_games.egs_id
                       AND COALESCE(l.result_count, 0) > 0
                       AND l.selected_infohash IS NULL
-                      AND COALESCE(l.review_status, 'pending') = 'pending'
+                      AND COALESCE(l.review_status, 'none') IN ('none', '')
                )
         """
         if action in ('check', 'submit'):
@@ -362,6 +377,10 @@ def execute_job(state, save, should_stop):
             save()
             try:
                 if action == 'check':
+                    _submitted = _parse_local_timestamp(row['submitted_at'])
+                    if _submitted is not None and time.time() - _submitted < 600:
+                        report(name, 'skipped', '提交未满 10 分钟，等待 115 离线下载')
+                        continue
                     from .egs_organize import (
                         adopt_downloaded_folder_by_infohash,
                         adopt_downloaded_folder_by_torrent_name,
@@ -444,12 +463,15 @@ def execute_job(state, save, should_stop):
                         conn.execute(
                             '''UPDATE egs_games
                                   SET downloaded=1, submitted_115=1, download_failed=0,
-                                      infohash_hex=?, updated_at=?
+                                      infohash_hex=?, checked_at=?, updated_at=?
                                 WHERE egs_id=? AND link=?''',
-                            (result.get('infohash_hex'), now_ts(), row['egs_id'], row['link']))
+                            (result.get('infohash_hex'), now_ts(), now_ts(), row['egs_id'], row['link']))
                         conn.commit()
                         report(name, 'success', '校对确认已下载')
                     else:
+                        conn.execute('UPDATE egs_games SET checked_at=? WHERE egs_id=?',
+                                     (now_ts(), row['egs_id']))
+                        conn.commit()
                         report(name, 'skipped', result.get('message') or '尚未找到已下载内容')
                 elif action == 'submit':
                     from .p115_client import offline_submit, _magnet_info_hash
@@ -583,7 +605,7 @@ def main():
         if args.command == 'preflight':
             action = args.action or 'check'
             validate(action, args.start_year or 1980, args.end_year or 3000, args.month or 0)
-            summary = pending_review_summary(args.start_year, args.end_year, args.month) if action == 'check' else {'count': 0, 'years': []}
+            summary = pending_review_summary(args.start_year, args.end_year, args.month) if action in ('check', 'submit') else {'count': 0, 'years': []}
             review_year = summary['years'][0]['year'] if summary['years'] else None
             print(json.dumps({
                 'status': 'success',
