@@ -342,8 +342,8 @@
       const did = r.dlsite_id ? String(r.dlsite_id) : '';
       if (!gid && !did) return '<div class="cov ph">无封面</div>';
       const primary = gid
-        ? `${basePath}/thumbnails/web/small/${esc(gid)}.webp`
-        : `${basePath}/thumbnails/web/small/dlsite/${esc(did)}.webp`;
+        ? `${basePath}/thumbnails/web/${esc(gid)}.webp`
+        : `${basePath}/thumbnails/web/dlsite/${esc(did)}.webp`;
       const fb = gid
         ? `${basePath}/thumbnails/${esc(gid)}.jpg`
         : `${basePath}/thumbnails/dlsite/${esc(did)}.jpg`;

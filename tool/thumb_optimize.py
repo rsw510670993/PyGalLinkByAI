@@ -16,10 +16,8 @@ from PIL import Image
 from .egs_thumb import thumb_dir
 from .runtime import now_ts, repo_root, write_json_atomic
 
-MAIN_WIDTH = 280
-SMALL_WIDTH = 96
+MAIN_WIDTH = 384
 MAIN_QUALITY = 82
-SMALL_QUALITY = 78
 STATE_NAME = 'thumbs_optimize_state.json'
 
 
@@ -39,9 +37,8 @@ def source_files() -> list[Path]:
     return [f for f in files if f.is_file()]
 
 
-def pending(files: list[Path], limit: int = 0) -> list[Path]:
-    out = [f for f in files
-           if not web_path(f).is_file() or not web_path(f, small=True).is_file()]
+def pending(files: list[Path], limit: int = 0, force: bool = False) -> list[Path]:
+    out = files if force else [f for f in files if not web_path(f).is_file()]
     return out[:limit] if limit else out
 
 
@@ -52,29 +49,27 @@ def convert(src: Path) -> tuple[bool, str]:
         return False, f'打开失败: {exc}'
     width, height = im.size
     try:
-        for target_w, quality, small in ((MAIN_WIDTH, MAIN_QUALITY, False),
-                                         (SMALL_WIDTH, SMALL_QUALITY, True)):
-            nh = max(1, round(height * target_w / width))
-            out = im if width <= target_w else im.resize((target_w, nh), Image.LANCZOS)
-            target = web_path(src, small=small)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            tmp = target.with_name(target.name + '.part')
-            out.save(tmp, 'WEBP', quality=quality, method=6)
-            try:
-                os.chmod(tmp, 0o644)
-            except OSError:
-                pass
-            tmp.replace(target)
+        nh = max(1, round(height * MAIN_WIDTH / width))
+        out = im if width <= MAIN_WIDTH else im.resize((MAIN_WIDTH, nh), Image.LANCZOS)
+        target = web_path(src)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(target.name + '.part')
+        out.save(tmp, 'WEBP', quality=MAIN_QUALITY, method=6)
+        try:
+            os.chmod(tmp, 0o644)
+        except OSError:
+            pass
+        tmp.replace(target)
     except OSError as exc:
         return False, f'写入失败: {exc}'
     return True, f'{width}x{height}'
 
 
-def run_optimize(delete_originals: bool = False, limit: int = 0,
+def run_optimize(delete_originals: bool = False, limit: int = 0, force: bool = False,
                  should_stop=None, logger=None) -> dict:
     log = logger or (lambda msg: None)
     files = source_files()
-    todo = pending(files, limit)
+    todo = pending(files, limit, force=force)
     stats = {
         'status': 'success',
         'mode': 'optimize',
@@ -85,6 +80,7 @@ def run_optimize(delete_originals: bool = False, limit: int = 0,
         'failed_files': [],
         'deleted': 0,
         'delete_originals': delete_originals,
+        'force': force,
         'started_at': now_ts(),
         'finished_at': None,
         'last_error': '',
@@ -113,7 +109,7 @@ def run_optimize(delete_originals: bool = False, limit: int = 0,
     if delete_originals:
         # 删除所有「两档 webp 都已存在」的原图（含本轮之前已转换的）。
         for src in source_files():
-            if web_path(src).is_file() and web_path(src, small=True).is_file():
+            if web_path(src).is_file():
                 try:
                     src.unlink()
                     stats['deleted'] += 1

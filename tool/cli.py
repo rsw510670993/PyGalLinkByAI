@@ -1230,7 +1230,7 @@ def cmd_egs_thumbs(args):
     if getattr(args, "optimize", False):
         from tool.thumb_optimize import run_optimize
         stats = run_optimize(delete_originals=bool(getattr(args, "delete_originals", False)),
-                             limit=args.limit)
+                             limit=args.limit, force=bool(getattr(args, "force", False)))
         _print(stats)
         return
     if getattr(args, "coverage", False):
@@ -1621,6 +1621,8 @@ def build_parser():
     p_egs_thumbs.add_argument("--source", choices=["getchu", "dlsite"], default="getchu")
     p_egs_thumbs.add_argument("--optimize", action="store_true",
                               help="把已下载的原图转成 280/96 两档 webp")
+    p_egs_thumbs.add_argument("--force", action="store_true",
+                              help="optimize 时已存在的 webp 也重新生成")
     p_egs_thumbs.add_argument("--delete-originals", action="store_true",
                               help="转换成功后删除原图（可重新下载）")
     p_egs_thumbs.add_argument("--interval", type=float, default=0.0)
