@@ -338,9 +338,19 @@
     }
 
     function cover(r) {
-      const id = r.getchu_id ? String(r.getchu_id) : '';
-      if (!id) return '<div class="cov ph">无封面</div>';
-      return `<div class="cov"><img loading="lazy" alt="" src="${basePath}/thumbnails/${esc(id)}.jpg" onerror="this.parentNode.classList.add('ph');this.parentNode.textContent='无封面'"></div>`;
+      const gid = r.getchu_id ? String(r.getchu_id) : '';
+      const did = r.dlsite_id ? String(r.dlsite_id) : '';
+      if (!gid && !did) return '<div class="cov ph">无封面</div>';
+      const primary = gid
+        ? `${basePath}/thumbnails/web/small/${esc(gid)}.webp`
+        : `${basePath}/thumbnails/web/small/dlsite/${esc(did)}.webp`;
+      const fb = gid
+        ? `${basePath}/thumbnails/${esc(gid)}.jpg`
+        : `${basePath}/thumbnails/dlsite/${esc(did)}.jpg`;
+      const onerr = fb
+        ? `onerror="if(this.dataset.fb){this.src=this.dataset.fb;delete this.dataset.fb}else{this.parentNode.classList.add('ph');this.parentNode.textContent='无封面'}"`
+        : `onerror="this.parentNode.classList.add('ph');this.parentNode.textContent='无封面'"`;
+      return `<div class="cov"><img loading="lazy" alt="" src="${primary}"${fb ? ` data-fb="${esc(fb)}"` : ''} ${onerr}></div>`;
     }
 
     function render(data) {
@@ -350,8 +360,10 @@
         const [stage, label, cls] = stageOf(r);
         const sub = [r.company, r.date].filter(Boolean).map(esc).join(' · ');
         const note = r.comment ? `<div class="note">${esc(r.comment)}</div>` : '';
-        const coverId = r.getchu_id ? String(r.getchu_id) : '';
-        const open = coverId ? ` data-cover="${esc(coverId)}"` : '';
+        const coverUrl = r.getchu_id
+          ? `${basePath}/thumbnails/web/${esc(String(r.getchu_id))}.webp`
+          : (r.dlsite_id ? `${basePath}/thumbnails/web/dlsite/${esc(String(r.dlsite_id))}.webp` : '');
+        const open = coverUrl ? ` data-cover="${esc(coverUrl)}"` : '';
         return `<div class="game" data-stage="${stage}"${open}>`
           + cover(r)
           + `<div class="meta"><div class="t">${esc(r.name)}</div>`
@@ -367,10 +379,10 @@
 
       $('cards').querySelectorAll('[data-cover]').forEach((el) => {
         el.addEventListener('click', (ev) => {
-          const id = el.getAttribute('data-cover');
-          if (!id) return;
+          const url = el.getAttribute('data-cover');
+          if (!url) return;
           ev.preventDefault();
-          $('lb-img').src = `${basePath}/thumbnails/${id}.jpg`;
+          $('lb-img').src = url;
           $('lightbox').classList.add('on');
         });
       });

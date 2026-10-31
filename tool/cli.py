@@ -1151,7 +1151,7 @@ def cmd_egs_games(args):
         rows = cur.execute(
             f"""
             SELECT egs_id, date, name, company, release_ts, egs_date, actual_release_ts, brand_kind,
-                   getchu_id, link, nyaa_name, comment, downloaded, submitted_115, submitted_pick_code,
+                   getchu_id, dlsite_id, link, nyaa_name, comment, downloaded, submitted_115, submitted_pick_code,
                    submitted_at, checked_at,
                    download_failed, download_failed_at,
                    COALESCE(magnet_duplicate,0) AS magnet_duplicate, duplicate_of_egs_id,
@@ -1222,6 +1222,31 @@ def cmd_egs_overview(args):
         "pending_years": pending["years"],
         "issues": int(issues or 0),
     })
+
+
+def cmd_egs_thumbs(args):
+    from tool.egs_thumb import coverage, dlsite_coverage, run_dlsite, run_thumbs
+    source = getattr(args, "source", "getchu") or "getchu"
+    if getattr(args, "optimize", False):
+        from tool.thumb_optimize import run_optimize
+        stats = run_optimize(delete_originals=bool(getattr(args, "delete_originals", False)),
+                             limit=args.limit)
+        _print(stats)
+        return
+    if getattr(args, "coverage", False):
+        data = dlsite_coverage() if source == "dlsite" else coverage()
+        _print({"status": "success", "source": source, **data})
+        return
+    interval = args.interval or (1.5 if source == "dlsite" else 1.0)
+    if source == "dlsite":
+        stats = run_dlsite(year=args.year, month=args.month, limit=args.limit,
+                           interval=interval)
+        stats["coverage"] = dlsite_coverage()
+    else:
+        stats = run_thumbs(year=args.year, month=args.month, limit=args.limit,
+                           interval=interval)
+        stats["coverage"] = coverage()
+    _print(stats)
 
 
 def cmd_egs_magnet(args):
@@ -1588,6 +1613,19 @@ def build_parser():
     p_egs_crawl.add_argument("--month", type=int, dest="month")
     p_egs_crawl.add_argument("--db", type=str, dest="db")
     p_egs_crawl.set_defaults(func=cmd_egs_crawl)
+
+    p_egs_thumbs = egs_sub.add_parser("thumbs")
+    p_egs_thumbs.add_argument("--year", type=int)
+    p_egs_thumbs.add_argument("--month", type=int)
+    p_egs_thumbs.add_argument("--limit", type=int, default=0)
+    p_egs_thumbs.add_argument("--source", choices=["getchu", "dlsite"], default="getchu")
+    p_egs_thumbs.add_argument("--optimize", action="store_true",
+                              help="把已下载的原图转成 280/96 两档 webp")
+    p_egs_thumbs.add_argument("--delete-originals", action="store_true",
+                              help="转换成功后删除原图（可重新下载）")
+    p_egs_thumbs.add_argument("--interval", type=float, default=0.0)
+    p_egs_thumbs.add_argument("--coverage", action="store_true")
+    p_egs_thumbs.set_defaults(func=cmd_egs_thumbs)
 
     p_egs_overview = egs_sub.add_parser("overview")
     p_egs_overview.add_argument("--db", type=str)
