@@ -136,7 +136,7 @@ def pending_review_summary(start_year: int, end_year: int, month: int = 0) -> di
                AND (g.link IS NULL OR g.link = '')
                AND COALESCE(l.result_count, 0) > 0
                AND l.selected_infohash IS NULL
-               AND COALESCE(l.review_status, 'none') IN ('none', '')
+               AND COALESCE(l.review_status, 'pending') = 'pending'
                AND NOT EXISTS (
                    SELECT 1 FROM egs_review_company_blacklist b
                     WHERE b.company IN (g.company, g.egs_company)
@@ -346,11 +346,14 @@ def execute_job(state, save, should_stop):
                     WHERE l.egs_id = egs_games.egs_id
                       AND COALESCE(l.result_count, 0) > 0
                       AND l.selected_infohash IS NULL
-                      AND COALESCE(l.review_status, 'none') IN ('none', '')
+                      AND COALESCE(l.review_status, 'pending') = 'pending'
                )
         """
         if action in ('check', 'submit'):
             sql += ' AND downloaded = 0'
+        if action == 'check':
+            # 只校对已提交到 115 的记录；有磁链但从未提交的（等配额）校对必然空转。
+            sql += ' AND submitted_115 = 1'
         if action == 'submit':
             sql += ' AND submitted_115 = 0'
         rows = conn.execute(sql + ' ORDER BY date, egs_id', params).fetchall()

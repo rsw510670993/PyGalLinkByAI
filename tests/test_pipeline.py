@@ -160,6 +160,9 @@ class PipelineTests(unittest.TestCase):
 
     def test_check_prefers_exact_torrent_name_before_infohash_lookup(self):
         by_name = {'source': 'torrent_name', 'cid': 'folder-1'}
+        with sqlite3.connect(self.db) as conn:
+            conn.execute('UPDATE egs_games SET submitted_115=1 WHERE egs_id IN (1,2)')
+            conn.commit()
         with patch.object(organize, 'resolve_cid', return_value='year-1'), \
              patch.object(organize, 'list_dir_children', return_value=[]), \
              patch.object(organize, 'adopt_downloaded_folder_by_torrent_name',
@@ -173,7 +176,21 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(by_hash.call_count, 1)
         self.assertEqual(check.call_count, 1)
 
+    def test_check_skips_records_never_submitted(self):
+        # egs_id=1/4 有磁链但从未提交 115，check 不应拉它们空转
+        with sqlite3.connect(self.db) as conn:
+            conn.execute('UPDATE egs_games SET submitted_115=1 WHERE egs_id=2')
+            conn.commit()
+        with patch('tool.cli._check_magnet_exists_with_timeout',
+                   return_value=({'exists': True, 'infohash_hex': 'a'*40}, None)) as check:
+            state = self.run_job('check')
+        self.assertEqual(state['total'], 1)
+        self.assertEqual(state['success'], 1)
+
     def test_check_scope_and_idempotency(self):
+        with sqlite3.connect(self.db) as conn:
+            conn.execute('UPDATE egs_games SET submitted_115=1 WHERE egs_id IN (1,2)')
+            conn.commit()
         with patch('tool.cli._check_magnet_exists_with_timeout',return_value=({'exists':True,'infohash_hex':'a'*40},None)) as check:
             self.assertEqual(self.run_job('check')['success'],2)
             self.assertEqual(check.call_count,2)
@@ -787,7 +804,8 @@ class PipelineTests(unittest.TestCase):
         future = 'magnet:?xt=urn:btih:' + 'a' * 40 + '&dn=[280101]Complete'
         with sqlite3.connect(self.db) as conn:
             conn.execute(
-                "UPDATE egs_games SET link=?,torrent_name='Complete',resource_kind='collection_dlc' WHERE egs_id=1",
+                "UPDATE egs_games SET link=?,torrent_name='Complete',resource_kind='collection_dlc',"
+                "submitted_115=1 WHERE egs_id=1",
                 (future,),
             )
             conn.execute('UPDATE egs_games SET downloaded=1 WHERE egs_id=2')
