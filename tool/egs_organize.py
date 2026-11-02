@@ -553,9 +553,31 @@ def locate_in_year_dir(year_dir_cid, dn, name, torrent_name=None):
             "is_dir": str(it.get("fc", "")) == "0", "pick_code": it.get("pc")}
 
 
+_OFFLINE_TASKS_CACHE = {"ts": 0.0, "tasks": None}
+_OFFLINE_TASKS_TTL = 120.0
+
+
+def _offline_tasks_cached():
+    """进程内缓存 115 离线任务列表。
+
+    offline_list 每次要翻 30+ 页（3000+ 任务），单次约 10 秒；批量整理时逐条拉
+    会把整体拖到十几秒一条。整理场景对 2 分钟内的任务状态变化不敏感。
+    """
+    now = time.time()
+    cached = _OFFLINE_TASKS_CACHE
+    if cached["tasks"] is not None and now - cached["ts"] < _OFFLINE_TASKS_TTL:
+        return cached["tasks"]
+    from .p115_client import offline_list
+
+    ol = offline_list()
+    if ol.get("success"):
+        cached.update(ts=now, tasks=ol.get("tasks") or [])
+    return cached["tasks"] or []
+
+
 def _find_offline_task(magnet, infohash_hex=None):
     """按 infohash 查找 115 离线任务；找不到返回 None。"""
-    from .p115_client import offline_list, parse_magnet_simple
+    from .p115_client import parse_magnet_simple
 
     if not infohash_hex:
         try:
@@ -565,10 +587,7 @@ def _find_offline_task(magnet, infohash_hex=None):
     infohash_hex = str(infohash_hex or "").lower()
     if not infohash_hex:
         return None
-    ol = offline_list()
-    if not ol.get("success"):
-        return None
-    for task in (ol.get("tasks") or []):
+    for task in _offline_tasks_cached():
         if not isinstance(task, dict):
             continue
         task_hash = str(task.get("info_hash") or task.get("infohash") or "").lower()

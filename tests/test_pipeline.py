@@ -78,6 +78,8 @@ class PipelineTests(unittest.TestCase):
         self.addCleanup(self.stack.close)
         self.stack.enter_context(patch.object(egs_core, 'open_egs_db', side_effect=lambda *args, **kwargs: original(args[0] if args and args[0] else self.db)))
         self.stack.enter_context(patch('tool.p115_client.get_login_status', return_value={'logged_in':True}))
+        # 整理流程会在进程内缓存离线任务列表，测试之间必须清掉，否则桩数据串场
+        organize._OFFLINE_TASKS_CACHE.update(ts=0.0, tasks=None)
         self.stack.enter_context(patch('tool.p115_client.offline_list', return_value={'success':True,'tasks':[]}))
         self.stack.enter_context(patch('time.sleep'))
 
