@@ -1218,7 +1218,8 @@ def decide_review(egs_id: int, decision: str, candidate_id: int | None = None,
             conn.execute(
                 """
                 UPDATE egs_games
-                   SET link=?, nyaa_name=?, size=?, infohash_hex=?, resource_kind=?, updated_at=?
+                   SET link=?, nyaa_name=?, size=?, infohash_hex=?, resource_kind=?,
+                       download_failed=0, download_failed_at=NULL, updated_at=?
                  WHERE egs_id=?
                 """,
                 (magnet, nyaa_name or None, size, infohash, resource_kind, now_str, egs_id),
