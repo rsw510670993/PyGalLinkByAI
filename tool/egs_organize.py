@@ -445,24 +445,33 @@ def list_dir_children(cid, max_pages=30):
 
         _, check_response = _import_p115client()
         items, offset = [], 0
+        seen = set()
         for _ in range(max_pages):
             resp = check_response(
                 client.fs_files({"cid": str(cid), "limit": 200, "offset": offset, "show_dir": 1})
             )
             data = resp.get("data") or []
+            fresh = 0
             for it in data:
                 if isinstance(it, dict) and it.get("n"):
                     fid = it.get("fid")
                     is_dir = not fid and str(it.get("fc", "")) != "1"
                     item_id = it.get("cid") if is_dir else fid
                     parent_id = it.get("pid") if is_dir else (it.get("pid") or it.get("cid") or cid)
+                    key = (it["n"], str(item_id or fid or ""))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    fresh += 1
                     items.append({
                         "n": it["n"], "cid": str(item_id) if item_id else None,
                         "pid": str(parent_id) if parent_id not in (None, "") else None,
                         "fc": 0 if is_dir else 1, "pc": it.get("pc"),
                         "fid": str(fid) if fid else None, "is_dir": is_dir,
                     })
-            if len(data) < 200:
+            # 115 的 fs_files 对目录型目录（如 GAL-2022 全是目录）翻页时会重复返回同一批，
+            # offset 推进不生效；不加去重与「本页无新项」判据会把 400 条目录累成 6000 条。
+            if len(data) < 200 or fresh == 0:
                 break
             offset += len(data)
         return items
