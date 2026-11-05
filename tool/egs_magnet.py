@@ -906,6 +906,9 @@ def pending_rows(conn: sqlite3.Connection, year: int, month: int | None = None,
          WHERE {date_filter}
            AND ((link IS NULL OR link='') OR download_failed=1
                 OR magnet_duplicate=1)
+           -- 已下载的普通记录不再重扫（手动搬入/已确认的画已在库里）；
+           -- 但共链项例外：它可能是错配，必须继续找不同 infohash 才能恢复。
+           AND (COALESCE(downloaded,0)=0 OR COALESCE(magnet_duplicate,0)=1)
            AND (release_ts IS NULL OR release_ts <= date('now','localtime'))
     """
     if not force:
