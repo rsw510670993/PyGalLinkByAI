@@ -126,8 +126,11 @@ def ensure_egs_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # 注意：(date, name) 不设唯一索引——EGS 允许同月同名但不同 egs_id 的作品，
+    # 唯一约束会让整月 upsert 失败（2026-11-11 2019-12 实测 UNIQUE constraint）。
     conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_egs_games_date_name ON egs_games(date, name)"
+        "CREATE INDEX IF NOT EXISTS idx_egs_games_date_name "
+        "ON egs_games(date, name)"
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_egs_games_release_ts ON egs_games(release_ts)"
@@ -364,7 +367,7 @@ def remove_review_company_blacklist(company: str,
         conn.close()
 
 
-def build_month_sql(year: int, month: int) -> str:
+def build_month_sql(year: int, month: int, include_non_eroge: bool = False) -> str:
     if not (1 <= month <= 12):
         raise ValueError("month must be 1..12")
     start = f"{year:04d}-{month:02d}-01"
@@ -372,6 +375,9 @@ def build_month_sql(year: int, month: int) -> str:
         end = f"{year + 1:04d}-01-01"
     else:
         end = f"{year:04d}-{month + 1:02d}-01"
+    # 默认只抓 R18（erogame=true，网页 sync/日常任务口径）；
+    # 补全年龄清单时显式 include_non_eroge=True，入库标 is_eroge=0，不进磁链队列。
+    erogame_clause = "" if include_non_eroge else "  AND g.erogame = true\n"
     return f"""
 SELECT
 {EGS_SELECT_COLUMNS}
@@ -380,8 +386,7 @@ LEFT JOIN brandlist b ON g.brandname = b.id
 WHERE g.sellday >= '{start}'
   AND g.sellday <  '{end}'
   AND g.model = 'PC'
-  AND g.erogame = true
-ORDER BY g.sellday, g.id
+{erogame_clause}ORDER BY g.sellday, g.id
 """
 
 
@@ -412,9 +417,10 @@ def _parse_result_table(html: str) -> list[dict[str, str]]:
     return out
 
 
-def fetch_egs_month(year: int, month: int, timeout: int = 30) -> list[dict[str, str]]:
-    """拉取 EGS 某月 PC+18禁 清单，返回原始字典行。"""
-    sql = build_month_sql(year, month)
+def fetch_egs_month(year: int, month: int, timeout: int = 30,
+                    include_non_eroge: bool = False) -> list[dict[str, str]]:
+    """拉取 EGS 某月 PC 清单（默认只要 R18），返回原始字典行。"""
+    sql = build_month_sql(year, month, include_non_eroge)
     resp = requests.post(EGS_SQL_URL, data={"sql": sql}, headers=HEADERS, timeout=timeout)
     resp.raise_for_status()
     return _parse_result_table(resp.text)
@@ -444,7 +450,7 @@ def _normalize_row(raw: dict[str, str], fetched_at: str) -> dict:
         "name_kana": (raw.get("name_kana") or "").strip() or None,
         "brand_id": _int_or_none(raw.get("brand_id")),
         "brand_kind": (raw.get("brand_kind") or "").strip() or None,
-        "is_eroge": 1 if (raw.get("erogame") or "").strip() == "t" else 1,
+        "is_eroge": 1 if (raw.get("erogame") or "").strip() == "t" else 0,
         "getchu_id": (raw.get("getchu_id") or "").strip() or None,
         "dmm": (raw.get("dmm") or "").strip() or None,
         "dlsite_id": (raw.get("dlsite_id") or "").strip() or None,
@@ -530,10 +536,12 @@ def upsert_egs_rows(conn: sqlite3.Connection, rows: list[dict]) -> dict:
 
 
 def crawl_egs_range(start_year: int, end_year: int, month: int | None = None,
-                    db_path: str | None = None) -> dict:
-    """逐月抓取 PC+18禁 并写入 egs_games。
+                    db_path: str | None = None,
+                    include_non_eroge: bool = False) -> dict:
+    """逐月抓取 PC 清单并写入 egs_games（默认只要 R18）。
 
     month 指定时只抓该月；否则抓 start_year..end_year 全部月份。
+    include_non_eroge=True 时把全年龄也入库（is_eroge=0），供清单/封面/归位使用。
     """
     if end_year < start_year:
         raise ValueError("end_year must be >= start_year")
@@ -547,7 +555,7 @@ def crawl_egs_range(start_year: int, end_year: int, month: int | None = None,
             months = [month] if month else range(1, 13)
             for m in months:
                 try:
-                    rows = fetch_egs_month(year, m)
+                    rows = fetch_egs_month(year, m, include_non_eroge=include_non_eroge)
                     stats["months"] += 1
                     stats["fetched_rows"] += len(rows)
                     if rows:

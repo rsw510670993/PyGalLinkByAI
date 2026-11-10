@@ -926,6 +926,7 @@ def pending_rows(conn: sqlite3.Connection, year: int, month: int | None = None,
                download_failed
           FROM egs_games
          WHERE {date_filter}
+           AND COALESCE(is_eroge,1)=1
            AND ((link IS NULL OR link='') OR download_failed=1
                 OR magnet_duplicate=1)
            -- 已下载的普通记录不再重扫（手动搬入/已确认的画已在库里）；
@@ -954,6 +955,7 @@ def pending_rows(conn: sqlite3.Connection, year: int, month: int | None = None,
                        g.infohash_hex, g.download_failed
                   FROM egs_games g
                  WHERE {date_filter.replace('date', 'g.date')}
+                   AND COALESCE(g.is_eroge,1)=1
                    AND (g.link IS NULL OR g.link='')
                    AND COALESCE(g.download_failed,0)=0
                    AND COALESCE(g.magnet_duplicate,0)=0
@@ -1017,7 +1019,7 @@ def run_magnet(year: int, month: int | None = None, force: bool = False,
         ensure_egs_magnet_schema(conn)
         rows = pending_rows(conn, year, month=month, force=force, limit=limit,
                              rescan=rescan, rescan_limit=rescan_limit)
-        scope_sql = "SELECT COUNT(*) AS total, SUM(link IS NOT NULL AND link != '') AS linked, SUM((link IS NULL OR link = '') AND release_ts > date('now','localtime')) AS unreleased, SUM((link IS NULL OR link = '') AND (release_ts IS NULL OR release_ts <= date('now','localtime')) AND EXISTS(SELECT 1 FROM egs_nyaa_search_log l WHERE l.egs_id=g.egs_id)) AS cached FROM egs_games g WHERE "
+        scope_sql = "SELECT COUNT(*) AS total, SUM(link IS NOT NULL AND link != '') AS linked, SUM((link IS NULL OR link = '') AND release_ts > date('now','localtime')) AS unreleased, SUM((link IS NULL OR link = '') AND (release_ts IS NULL OR release_ts <= date('now','localtime')) AND EXISTS(SELECT 1 FROM egs_nyaa_search_log l WHERE l.egs_id=g.egs_id)) AS cached FROM egs_games g WHERE COALESCE(is_eroge,1)=1 AND "
         if month:
             scope_sql += "date = ?"
             scope_params = [f"{int(year):04d}-{int(month):02d}"]
