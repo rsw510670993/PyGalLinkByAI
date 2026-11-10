@@ -77,6 +77,55 @@ def paths():
     return root / 'pipeline.json', root / 'pipeline.lock', root / 'pipeline.stop'
 
 
+# 用户 2026-11-02 规则：115 离线任务卡在队列超过 30 分钟基本可判无资源死种。
+OFFLINE_STALL_SECONDS = 30 * 60
+
+
+def _offline_progress_path():
+    return Path(runtime_paths()['status_dir']) / 'offline_progress.json'
+
+
+def _load_offline_progress():
+    data = read_json(str(_offline_progress_path()), {})
+    return data if isinstance(data, dict) else {}
+
+
+def _save_offline_progress(data):
+    try:
+        write_json_atomic(str(_offline_progress_path()), data)
+    except OSError:
+        pass
+
+
+def _offline_stall_decision(prev, percent, add_time, now_epoch):
+    """One check observation → (stalled, new_entry)。
+
+    percent 首次见到或有增长时只更新快照；percent 连续不变、且任务进队已满
+    30 分钟、观察窗也满 30 分钟，才判死种。entry=None 表示 percent 不可解析。
+    """
+    try:
+        p = float(percent)
+    except (TypeError, ValueError):
+        return False, None
+    prev_p = None
+    first_seen = now_epoch
+    if isinstance(prev, dict):
+        try:
+            prev_p = float(prev.get('percent'))
+        except (TypeError, ValueError):
+            prev_p = None
+        try:
+            first_seen = float(prev.get('seen_at') or now_epoch)
+        except (TypeError, ValueError):
+            first_seen = now_epoch
+    if prev_p is None or p > prev_p:
+        return False, {'percent': p, 'seen_at': now_epoch}
+    waited = now_epoch - first_seen
+    in_queue = (now_epoch - add_time) if add_time else waited
+    entry = {'percent': p, 'seen_at': first_seen}
+    return (in_queue >= OFFLINE_STALL_SECONDS and waited >= OFFLINE_STALL_SECONDS), entry
+
+
 @contextmanager
 def locked(blocking=False):
     with paths()[1].open('a') as handle:
@@ -453,7 +502,36 @@ def execute_job(state, save, should_stop):
                                 (submitted_at, row['egs_id']),
                             )
                             conn.commit()
-                        if now_epoch - started >= SUBMISSION_TIMEOUT_SECONDS:
+                        # 30 分钟死种判定：任务进队超 30 分钟且 percent 连续无增长 → 判死种回滚。
+                        infohash_key = (row['infohash_hex'] or result.get('infohash_hex') or '').strip().lower()
+                        stalled = False
+                        progress = _load_offline_progress()
+                        if infohash_key:
+                            try:
+                                add_time = float(result.get('offline_task_add_time') or 0)
+                            except (TypeError, ValueError):
+                                add_time = 0.0
+                            stalled, entry = _offline_stall_decision(
+                                progress.get(infohash_key),
+                                result.get('offline_percent'),
+                                add_time,
+                                now_epoch,
+                            )
+                            if entry is None:
+                                progress.pop(infohash_key, None)
+                            else:
+                                progress[infohash_key] = entry
+                            _save_offline_progress(progress)
+                        if stalled:
+                            failed_at = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now_epoch))
+                            _mark_download_failed(
+                                conn, row, failed_at,
+                                '115离线任务队列超30分钟无进度，判死种回滚',
+                            )
+                            progress.pop(infohash_key, None)
+                            _save_offline_progress(progress)
+                            report(name, 'failed', '115离线任务30分钟无进度，已判死种并回滚为无磁链')
+                        elif now_epoch - started >= SUBMISSION_TIMEOUT_SECONDS:
                             failed_at = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now_epoch))
                             _mark_download_failed(
                                 conn, row, failed_at,
