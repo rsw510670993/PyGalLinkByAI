@@ -82,7 +82,9 @@ def get_folder_record(conn, date, name):
 
 def save_folder_record(conn, date, name, **kw):
     rec = get_folder_record(conn, date, name) or {}
-    rec.update({k: v for k, v in kw.items() if v is not None or k in kw})
+    # None 表示"本次不更新该列"，只覆盖显式传入的非 None 值；否则会把已有的
+    # cid/pid 等定位信息抹掉，令后续整理退化为"找不到目录/未下载"。
+    rec.update({k: v for k, v in kw.items() if v is not None})
     conn.execute(
         """
         INSERT OR REPLACE INTO egs_115_folders

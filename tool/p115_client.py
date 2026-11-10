@@ -503,7 +503,10 @@ def parse_magnet_simple(magnet):
             infohash_hex = btih.lower()
         else:
             try:
-                raw = base64.b32decode(btih.upper() + "====", casefold=True)
+                # 32 字符 base32 已是合法分组长度，补 "====" 会让 b32decode 报
+                # Incorrect padding；按长度补足到 8 的倍数即可。
+                padded = btih.upper() + "=" * ((8 - len(btih) % 8) % 8)
+                raw = base64.b32decode(padded, casefold=True)
                 if len(raw) == 20:
                     infohash_hex = raw.hex()
             except Exception:

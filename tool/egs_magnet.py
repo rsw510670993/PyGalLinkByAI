@@ -693,6 +693,26 @@ def _save_candidates(conn: sqlite3.Connection, egs_id: int, date: str, name: str
         )
 
 
+_HEX_INFOHASH = re.compile(r"[0-9a-f]{40}")
+
+
+def _usable_candidates(cands: list[dict]) -> list[dict]:
+    """只保留能安全回填 egs_games.link 的候选，并把 infohash 归一成 40 位 hex。
+
+    magnet 缺失或 infohash 非 hex 的候选一旦被选中，会写出 link=NULL 但
+    result_count>0 / review_status='none' 的永久排除态（既不再重搜也不进审核），
+    因此必须在评分择优之前剔除；被剔除后若候选归零，状态落 no_result 可等重扫。
+    """
+    usable = []
+    for cand in cands:
+        infohash = extract_infohash(cand.get("magnet"))
+        if not infohash or not _HEX_INFOHASH.fullmatch(str(infohash).lower()):
+            continue
+        cand["infohash_hex"] = str(infohash).lower()
+        usable.append(cand)
+    return usable
+
+
 def process_game(conn: sqlite3.Connection, session: requests.Session, row,
                  logger: logging.Logger, force: bool = False) -> tuple[str, dict | None]:
     """处理单条 EGS 游戏行。row 需含 egs_id,date,name,company,release_ts。"""
@@ -721,6 +741,8 @@ def process_game(conn: sqlite3.Connection, session: requests.Session, row,
     # Defensive filtering for injected/custom search providers as well as the
     # normal search_candidates path.
     cands = [c for c in cands if allows_english_candidate(name, c.get("nyaa_title"))]
+    # 无可用 magnet / 非 hex infohash 的候选不得参与择优（否则会写出永久排除态）。
+    cands = _usable_candidates(cands)
     if old_failed and old_infohash:
         # infohash_hex is retained when a 115 task fails. Do not select that
         # known-unavailable torrent again; only a different hash can recover.
