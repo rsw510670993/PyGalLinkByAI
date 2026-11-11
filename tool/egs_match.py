@@ -13,6 +13,7 @@
 护栏：名字高度相似但作品编号不一致（如「コンチェルト4」→「コンチェルト3」，
       或无编号原作→「睡眠姦シミュレーション9」）时，视为不同版本，禁止自动通过。
 """
+import base64
 import re
 from datetime import datetime
 from difflib import SequenceMatcher
@@ -113,7 +114,16 @@ def extract_infohash(magnet):
     btih = m.group(1)
     if re.fullmatch(r"[A-Fa-f0-9]{40}", btih):
         return btih.lower()
-    return btih  # base32 等形式，原样保留
+    # base32（32 字符）归一成 40 位 hex：下游（_exact_infohash / 共链索引）只认 hex，
+    # 原样保留会让整理与去重整条链路失配。
+    if re.fullmatch(r"[A-Za-z2-7]{32}", btih):
+        try:
+            raw = base64.b32decode(btih.upper(), casefold=True)
+            if len(raw) == 20:
+                return raw.hex()
+        except (ValueError, TypeError):
+            pass
+    return btih  # 其它形态，原样保留
 
 
 def _parse_dt(s):

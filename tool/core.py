@@ -296,27 +296,50 @@ def get_all_getchu_games(start_year, end_year, start_month, end_month, db_path=N
         return False
 
 
+SUKEBEI_READER_PROXY = "https://r.jina.ai/"
+
+
+def _fetch_sukebei_page(url, game_name=""):
+    """直连 sukebei；直连不可用时退回 reader 代理（要求返回原始 HTML）。
+
+    2026-10-24 起 sukebei 直连在服务器上不可用，旧 getchu 流程没有代理降级，
+    idle 每周会有 150-195 个游戏「重试耗尽」失败；这里复用 EGS 侧的代理思路。
+    """
+    try:
+        response = requests.get(url, timeout=15)
+        response.raise_for_status()
+        return response.text
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("sukebei 直连失败，改用 reader 代理: %s (%s)", game_name, exc)
+    try:
+        response = requests.get(
+            SUKEBEI_READER_PROXY + url, timeout=40,
+            headers={"X-Return-Format": "html"},
+        )
+        response.raise_for_status()
+        return response.text
+    except Exception as exc:  # noqa: BLE001
+        logger.error("获取游戏 %s 数据时代理也失败: %s", game_name, exc)
+        return None
+
+
 def get_nyaa_data(game_name, company):
     game_name = re.sub(r"[-]", "", game_name)
-    try:
-        response = requests.get(f"https://sukebei.nyaa.si/?f=0&c=1_3&q={game_name}+{company}")
-        response.raise_for_status()
-    except (requests.exceptions.ConnectTimeout, requests.exceptions.RetryError) as e:
-        logger.error("获取游戏 %s 数据时连接超时或重试次数过多: %s", game_name, str(e))
+    text = _fetch_sukebei_page(
+        f"https://sukebei.nyaa.si/?f=0&c=1_3&q={game_name}+{company}", game_name)
+    if text is None:
         return []
 
-    soup = BeautifulSoup(response.text, "html.parser")
+    soup = BeautifulSoup(text, "html.parser")
     rows = soup.find_all("tr")
     if not rows:
         keyword = re.sub(r"[^\w\s]", "", game_name)
         keyword2 = re.sub(r"[-]", " ", company)
-        try:
-            response = requests.get(f"https://sukebei.nyaa.si/?f=0&c=1_3&q={keyword}+{keyword2}")
-            response.raise_for_status()
-        except (requests.exceptions.ConnectTimeout, requests.exceptions.RetryError) as e:
-            logger.error("使用关键词 %s 获取游戏 %s 数据时连接超时或重试次数过多: %s", keyword, game_name, str(e))
+        text = _fetch_sukebei_page(
+            f"https://sukebei.nyaa.si/?f=0&c=1_3&q={keyword}+{keyword2}", game_name)
+        if text is None:
             return []
-        soup = BeautifulSoup(response.text, "html.parser")
+        soup = BeautifulSoup(text, "html.parser")
         rows = soup.find_all("tr")
 
     nyaa_data_list = []

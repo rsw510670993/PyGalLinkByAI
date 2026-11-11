@@ -108,9 +108,12 @@ def _job_id(year: int | None) -> str:
     return f"{datetime.datetime.now():%Y%m%d-%H%M%S}-{str(year or 0)}-{uuid.uuid4().hex[:6]}"
 
 
-def enqueue(action: str, year: int, year_end: int | None = None, dry_run: bool = False,
+def enqueue(action: str, year: int, year_end: int | None = None, dry_run: bool = True,
             requested_by: str = 'web', root: Path | None = None) -> dict:
-    """把一条任务写进 inbox，返回请求体（含 job_id）。"""
+    """把一条任务写进 inbox，返回请求体（含 job_id）。
+
+    dry_run 默认 True（只预览）；要真改 115 必须由调用方显式传 dry_run=False。
+    """
     if action not in ALL_ACTIONS:
         raise ValueError(f'未知动作 {action}，可选：{", ".join(ALL_ACTIONS)}')
     year = int(year)
@@ -198,7 +201,10 @@ def _run_pipeline_action(job: dict) -> dict:
     from . import pipeline
 
     action = job['action']
-    result = pipeline.start(action, int(job['year']), int(job['year_end']), 0, not job.get('dry_run', False))
+    # 默认按 dry（只预览）传参：只有任务体显式 dry_run=False 才真正执行，
+    # 避免旧任务文件缺字段或调用方忘记传参时对 115 做真实改名/移动。
+    result = pipeline.start(action, int(job['year']), int(job['year_end']), 0,
+                            not bool(job.get('dry_run', True)))
     if not isinstance(result, dict) or result.get('status') == 'error':
         message = (result or {}).get('message') or 'pipeline 启动失败'
         return _result(job, False, 'error', error=message,
@@ -382,11 +388,12 @@ def stop(job_id: str, root: Path | None = None) -> dict:
     return {'status': 'success', 'message': note, 'job_id': job_id}
 
 
-def start(action: str, year: int, year_end: int | None = None, dry_run: bool = False,
+def start(action: str, year: int, year_end: int | None = None, dry_run: bool = True,
           requested_by: str = 'web', timeout_s: int | None = None) -> dict:
     """网页/CLI 手动启动：入队 + 派生后台 worker（不依赖 TUI）。
 
     QUEUE_ONLY_ACTIONS（organize）只入队、不派生 worker —— 由 TUI 侧领取执行。
+    dry_run 默认 True（只预览）；要真改 115 必须显式 dry_run=False（CLI 为 --execute）。
     """
     try:
         job = enqueue(action, year, year_end, dry_run, requested_by)

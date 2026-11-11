@@ -82,7 +82,9 @@ def get_folder_record(conn, date, name):
 
 def save_folder_record(conn, date, name, **kw):
     rec = get_folder_record(conn, date, name) or {}
-    rec.update({k: v for k, v in kw.items() if v is not None or k in kw})
+    # None 表示"本次不更新该列"，只覆盖显式传入的非 None 值；否则会把已有的
+    # cid/pid 等定位信息抹掉，令后续整理退化为"找不到目录/未下载"。
+    rec.update({k: v for k, v in kw.items() if v is not None})
     conn.execute(
         """
         INSERT OR REPLACE INTO egs_115_folders
@@ -445,24 +447,33 @@ def list_dir_children(cid, max_pages=30):
 
         _, check_response = _import_p115client()
         items, offset = [], 0
+        seen = set()
         for _ in range(max_pages):
             resp = check_response(
                 client.fs_files({"cid": str(cid), "limit": 200, "offset": offset, "show_dir": 1})
             )
             data = resp.get("data") or []
+            fresh = 0
             for it in data:
                 if isinstance(it, dict) and it.get("n"):
                     fid = it.get("fid")
                     is_dir = not fid and str(it.get("fc", "")) != "1"
                     item_id = it.get("cid") if is_dir else fid
                     parent_id = it.get("pid") if is_dir else (it.get("pid") or it.get("cid") or cid)
+                    key = (it["n"], str(item_id or fid or ""))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    fresh += 1
                     items.append({
                         "n": it["n"], "cid": str(item_id) if item_id else None,
                         "pid": str(parent_id) if parent_id not in (None, "") else None,
                         "fc": 0 if is_dir else 1, "pc": it.get("pc"),
                         "fid": str(fid) if fid else None, "is_dir": is_dir,
                     })
-            if len(data) < 200:
+            # 115 的 fs_files 对目录型目录（如 GAL-2022 全是目录）翻页时会重复返回同一批，
+            # offset 推进不生效；不加去重与「本页无新项」判据会把 400 条目录累成 6000 条。
+            if len(data) < 200 or fresh == 0:
                 break
             offset += len(data)
         return items
@@ -553,9 +564,31 @@ def locate_in_year_dir(year_dir_cid, dn, name, torrent_name=None):
             "is_dir": str(it.get("fc", "")) == "0", "pick_code": it.get("pc")}
 
 
+_OFFLINE_TASKS_CACHE = {"ts": 0.0, "tasks": None}
+_OFFLINE_TASKS_TTL = 120.0
+
+
+def _offline_tasks_cached():
+    """进程内缓存 115 离线任务列表。
+
+    offline_list 每次要翻 30+ 页（3000+ 任务），单次约 10 秒；批量整理时逐条拉
+    会把整体拖到十几秒一条。整理场景对 2 分钟内的任务状态变化不敏感。
+    """
+    now = time.time()
+    cached = _OFFLINE_TASKS_CACHE
+    if cached["tasks"] is not None and now - cached["ts"] < _OFFLINE_TASKS_TTL:
+        return cached["tasks"]
+    from .p115_client import offline_list
+
+    ol = offline_list()
+    if ol.get("success"):
+        cached.update(ts=now, tasks=ol.get("tasks") or [])
+    return cached["tasks"] or []
+
+
 def _find_offline_task(magnet, infohash_hex=None):
     """按 infohash 查找 115 离线任务；找不到返回 None。"""
-    from .p115_client import offline_list, parse_magnet_simple
+    from .p115_client import parse_magnet_simple
 
     if not infohash_hex:
         try:
@@ -565,10 +598,7 @@ def _find_offline_task(magnet, infohash_hex=None):
     infohash_hex = str(infohash_hex or "").lower()
     if not infohash_hex:
         return None
-    ol = offline_list()
-    if not ol.get("success"):
-        return None
-    for task in (ol.get("tasks") or []):
+    for task in _offline_tasks_cached():
         if not isinstance(task, dict):
             continue
         task_hash = str(task.get("info_hash") or task.get("infohash") or "").lower()

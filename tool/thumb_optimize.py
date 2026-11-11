@@ -33,7 +33,10 @@ def web_path(src: Path, small: bool = False) -> Path:
 
 def source_files() -> list[Path]:
     root = thumb_dir()
-    files = sorted(root.glob('*.jpg')) + sorted((root / 'dlsite').glob('*.jpg'))
+    files = (sorted(root.glob('*.jpg'))
+             + sorted((root / 'dlsite').glob('*.jpg'))
+             + sorted((root / 'dmm').glob('*.jpg'))
+             + sorted((root / 'official').glob('*.jpg')))
     return [f for f in files if f.is_file()]
 
 

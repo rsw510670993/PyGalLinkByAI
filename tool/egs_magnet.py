@@ -693,6 +693,26 @@ def _save_candidates(conn: sqlite3.Connection, egs_id: int, date: str, name: str
         )
 
 
+_HEX_INFOHASH = re.compile(r"[0-9a-f]{40}")
+
+
+def _usable_candidates(cands: list[dict]) -> list[dict]:
+    """只保留能安全回填 egs_games.link 的候选，并把 infohash 归一成 40 位 hex。
+
+    magnet 缺失或 infohash 非 hex 的候选一旦被选中，会写出 link=NULL 但
+    result_count>0 / review_status='none' 的永久排除态（既不再重搜也不进审核），
+    因此必须在评分择优之前剔除；被剔除后若候选归零，状态落 no_result 可等重扫。
+    """
+    usable = []
+    for cand in cands:
+        infohash = extract_infohash(cand.get("magnet"))
+        if not infohash or not _HEX_INFOHASH.fullmatch(str(infohash).lower()):
+            continue
+        cand["infohash_hex"] = str(infohash).lower()
+        usable.append(cand)
+    return usable
+
+
 def process_game(conn: sqlite3.Connection, session: requests.Session, row,
                  logger: logging.Logger, force: bool = False) -> tuple[str, dict | None]:
     """处理单条 EGS 游戏行。row 需含 egs_id,date,name,company,release_ts。"""
@@ -721,6 +741,8 @@ def process_game(conn: sqlite3.Connection, session: requests.Session, row,
     # Defensive filtering for injected/custom search providers as well as the
     # normal search_candidates path.
     cands = [c for c in cands if allows_english_candidate(name, c.get("nyaa_title"))]
+    # 无可用 magnet / 非 hex infohash 的候选不得参与择优（否则会写出永久排除态）。
+    cands = _usable_candidates(cands)
     if old_failed and old_infohash:
         # infohash_hex is retained when a 115 task fails. Do not select that
         # known-unavailable torrent again; only a different hash can recover.
@@ -904,8 +926,12 @@ def pending_rows(conn: sqlite3.Connection, year: int, month: int | None = None,
                download_failed
           FROM egs_games
          WHERE {date_filter}
+           AND COALESCE(is_eroge,1)=1
            AND ((link IS NULL OR link='') OR download_failed=1
                 OR magnet_duplicate=1)
+           -- 已下载的普通记录不再重扫（手动搬入/已确认的画已在库里）；
+           -- 但共链项例外：它可能是错配，必须继续找不同 infohash 才能恢复。
+           AND (COALESCE(downloaded,0)=0 OR COALESCE(magnet_duplicate,0)=1)
            AND (release_ts IS NULL OR release_ts <= date('now','localtime'))
     """
     if not force:
@@ -929,6 +955,7 @@ def pending_rows(conn: sqlite3.Connection, year: int, month: int | None = None,
                        g.infohash_hex, g.download_failed
                   FROM egs_games g
                  WHERE {date_filter.replace('date', 'g.date')}
+                   AND COALESCE(g.is_eroge,1)=1
                    AND (g.link IS NULL OR g.link='')
                    AND COALESCE(g.download_failed,0)=0
                    AND COALESCE(g.magnet_duplicate,0)=0
@@ -992,7 +1019,7 @@ def run_magnet(year: int, month: int | None = None, force: bool = False,
         ensure_egs_magnet_schema(conn)
         rows = pending_rows(conn, year, month=month, force=force, limit=limit,
                              rescan=rescan, rescan_limit=rescan_limit)
-        scope_sql = "SELECT COUNT(*) AS total, SUM(link IS NOT NULL AND link != '') AS linked, SUM((link IS NULL OR link = '') AND release_ts > date('now','localtime')) AS unreleased, SUM((link IS NULL OR link = '') AND (release_ts IS NULL OR release_ts <= date('now','localtime')) AND EXISTS(SELECT 1 FROM egs_nyaa_search_log l WHERE l.egs_id=g.egs_id)) AS cached FROM egs_games g WHERE "
+        scope_sql = "SELECT COUNT(*) AS total, SUM(link IS NOT NULL AND link != '') AS linked, SUM((link IS NULL OR link = '') AND release_ts > date('now','localtime')) AS unreleased, SUM((link IS NULL OR link = '') AND (release_ts IS NULL OR release_ts <= date('now','localtime')) AND EXISTS(SELECT 1 FROM egs_nyaa_search_log l WHERE l.egs_id=g.egs_id)) AS cached FROM egs_games g WHERE COALESCE(is_eroge,1)=1 AND "
         if month:
             scope_sql += "date = ?"
             scope_params = [f"{int(year):04d}-{int(month):02d}"]
@@ -1218,7 +1245,8 @@ def decide_review(egs_id: int, decision: str, candidate_id: int | None = None,
             conn.execute(
                 """
                 UPDATE egs_games
-                   SET link=?, nyaa_name=?, size=?, infohash_hex=?, resource_kind=?, updated_at=?
+                   SET link=?, nyaa_name=?, size=?, infohash_hex=?, resource_kind=?,
+                       download_failed=0, download_failed_at=NULL, updated_at=?
                  WHERE egs_id=?
                 """,
                 (magnet, nyaa_name or None, size, infohash, resource_kind, now_str, egs_id),

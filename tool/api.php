@@ -61,6 +61,17 @@ function run_cli($args, $entry = 'cli.py') {
 
 $action = isset($_GET['action']) ? $_GET['action'] : '';
 
+// 2026-11-10：写操作需要站点登录。注意 pipeline_status 虽是 GET，但内部
+// status(persist=True) 会把 worker 自愈状态写盘，所以也纳入校验；
+// 其余 GET（overview/years/calendar/egs_games/preflight/115_login_status）保持公开只读。
+require_once dirname(__DIR__, 2) . '/auth/config.php';
+$ssoSession = sso_read_cookie(isset($_COOKIE[SSO_COOKIE]) ? (string) $_COOKIE[SSO_COOKIE] : null);
+if (!is_array($ssoSession)
+    && in_array($action, ['pipeline_start', 'pipeline_stop', 'agent_job_prune', 'pipeline_status'], true)) {
+    http_response_code(401);
+    json_response(['status' => 'error', 'message' => '需要登录站点后才能执行该操作']);
+}
+
 if ($action === 'overview') {
     [$code, $data] = run_cli(['egs', 'overview']);
     json_response($data);

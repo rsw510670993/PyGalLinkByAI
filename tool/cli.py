@@ -1018,7 +1018,8 @@ def cmd_egs_crawl(args):
     from tool.egs_core import crawl_egs_range
     start_year = int(args.start_year)
     end_year = int(args.end_year or args.start_year)
-    stats = crawl_egs_range(start_year, end_year, month=args.month, db_path=args.db)
+    stats = crawl_egs_range(start_year, end_year, month=args.month, db_path=args.db,
+                            include_non_eroge=bool(getattr(args, "include_non_eroge", False)))
     _print(stats)
 
 
@@ -1612,6 +1613,9 @@ def build_parser():
     p_egs_crawl.add_argument("--end-year", type=int, dest="end_year")
     p_egs_crawl.add_argument("--month", type=int, dest="month")
     p_egs_crawl.add_argument("--db", type=str, dest="db")
+    p_egs_crawl.add_argument("--include-non-eroge", action="store_true",
+                             dest="include_non_eroge",
+                             help="把全年龄（erogame=false）也抓进清单，标 is_eroge=0，不进磁链队列")
     p_egs_crawl.set_defaults(func=cmd_egs_crawl)
 
     p_egs_thumbs = egs_sub.add_parser("thumbs")
