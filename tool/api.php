@@ -63,11 +63,13 @@ $action = isset($_GET['action']) ? $_GET['action'] : '';
 
 // 2026-11-10：写操作需要站点登录。注意 pipeline_status 虽是 GET，但内部
 // status(persist=True) 会把 worker 自愈状态写盘，所以也纳入校验；
-// 其余 GET（overview/years/calendar/egs_games/preflight/115_login_status）保持公开只读。
+// 2026-11-13：115_login_status 虽为只读，但匿名可访问会代服务器向 webapi.115.com
+// 发请求并回显 115 账号名（信息泄露 + 请求放大器），同样纳入登录校验；
+// 其余 GET（overview/years/calendar/egs_games/preflight）保持公开只读。
 require_once dirname(__DIR__, 2) . '/auth/config.php';
 $ssoSession = sso_read_cookie(isset($_COOKIE[SSO_COOKIE]) ? (string) $_COOKIE[SSO_COOKIE] : null);
 if (!is_array($ssoSession)
-    && in_array($action, ['pipeline_start', 'pipeline_stop', 'agent_job_prune', 'pipeline_status'], true)) {
+    && in_array($action, ['pipeline_start', 'pipeline_stop', 'agent_job_prune', 'pipeline_status', '115_login_status'], true)) {
     http_response_code(401);
     json_response(['status' => 'error', 'message' => '需要登录站点后才能执行该操作']);
 }
@@ -93,6 +95,7 @@ if ($action === 'calendar') {
 if ($action === 'egs_games') {
     $page = as_int($_GET['page'] ?? 1, 1);
     $perPage = as_int($_GET['per_page'] ?? 24, 24);
+    $perPage = max(1, min(100, $perPage));
     $year = as_int($_GET['year'] ?? null, null);
     $month = as_int($_GET['month'] ?? null, null);
     $q = isset($_GET['q']) ? trim((string)$_GET['q']) : '';

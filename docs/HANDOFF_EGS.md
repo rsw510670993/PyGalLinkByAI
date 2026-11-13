@@ -26,7 +26,7 @@
 1. **getchu 是商品视角**：每个特典版/平台版/店铺限定版都是独立行——这是去重困境的根源。AI 判不干净、规则剥字出残片（`Nintendo Switch2版`→`2版`）、补丁式 delete 表越打越补
 2. **批判空间（ErogameScape）是作品视角**：一个游戏一条记录，版本/特典是附属信息——**从源头消除去重问题**（用户裁定方向）
 3. 惯例（继续遵守）：dry-run 优先 + DB 备份；幂等可重跑；AI 有缓存与兜底；feature 分支作业不碰 develop/main；用户中文沟通、表格报告
-4. 环境：`.venv/bin/python`；`HOME=/var/www/html/pyGal`（p115client 缓存）；sukebei 限流 2.5s；115 API sleep 0.5s；bash 单次调用 ≤300s（长任务拆分）；`GIT_CONFIG_GLOBAL=/tmp/gitconfig`（含 safe.directory）
+4. 环境：`.venv/bin/python`；`HOME=/var/www/html/gshelf`（p115client 缓存）；sukebei 限流 2.5s；115 API sleep 0.5s；bash 单次调用 ≤300s（长任务拆分）；`GIT_CONFIG_GLOBAL=/tmp/gitconfig`（含 safe.directory）
 
 ### 基础设施（可直接复用）
 - `tool/p115_client.py`（115 API 封装，含 fs_move web 端点 payload `{fid,pid}`、搜索索引滞后年份目录直读兜底）

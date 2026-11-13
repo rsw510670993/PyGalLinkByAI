@@ -10,7 +10,7 @@ $isData = $page === 'egs.php';
 ?>
 <div class="topbar">
   <div class="topbar-in">
-    <a class="brand" href="<?= htmlspecialchars($base, ENT_QUOTES) ?>/index.php"><i></i>pyGal</a>
+    <a class="brand" href="<?= htmlspecialchars($base, ENT_QUOTES) ?>/index.php"><i></i>gshelf</a>
     <nav class="tabs" aria-label="主导航">
       <a class="tab<?= $isDash ? ' on' : '' ?>" href="<?= htmlspecialchars($base, ENT_QUOTES) ?>/index.php">总控</a>
       <a class="tab<?= $isData ? ' on' : '' ?>" href="<?= htmlspecialchars($base, ENT_QUOTES) ?>/tool/egs.php">数据</a>

@@ -1,4 +1,4 @@
-/* pyGal 前端：总控（index.php）与数据（tool/egs.php）两页共用。
+/* gshelf 前端：总控（index.php）与数据（tool/egs.php）两页共用。
    页面只读 + 机械任务开关；判定 / 审核 / 整理由 AI agent（DSH）在会话里通过 CLI 完成。 */
 (function () {
   'use strict';
@@ -432,5 +432,5 @@
     loadTop().catch(() => {});
   }
 
-  window.pyGal = { initDashboard, initData, api };
+  window.gshelf = { initDashboard, initData, api };
 })();

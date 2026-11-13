@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>总控 · pyGal</title>
+<title>总控 · gshelf</title>
 <link rel="stylesheet" href="assets/app.css?v=<?= rawurlencode((string) filemtime(__DIR__ . '/assets/app.css')) ?>">
 </head>
 <body>
@@ -86,6 +86,6 @@
   </div>
 </main>
 <script src="assets/app.js?v=<?= rawurlencode((string) filemtime(__DIR__ . '/assets/app.js')) ?>"></script>
-<script>pyGal.initDashboard();</script>
+<script>gshelf.initDashboard();</script>
 </body>
 </html>

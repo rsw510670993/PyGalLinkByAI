@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>数据 · pyGal</title>
+<title>数据 · gshelf</title>
 <link rel="stylesheet" href="../assets/app.css?v=<?= rawurlencode((string) filemtime(__DIR__ . '/../assets/app.css')) ?>">
 </head>
 <body>
@@ -58,6 +58,6 @@
 </main>
 <div class="lightbox" id="lightbox"><span class="lb-close" role="button" aria-label="关闭">×</span><img id="lb-img" alt=""></div>
 <script src="../assets/app.js?v=<?= rawurlencode((string) filemtime(__DIR__ . '/../assets/app.js')) ?>"></script>
-<script>pyGal.initData();</script>
+<script>gshelf.initData();</script>
 </body>
 </html>
