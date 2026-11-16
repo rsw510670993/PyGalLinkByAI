@@ -33,7 +33,7 @@
 - `tool/organize_115.py`（Phase4 整理逻辑，dn_date 语义可直接对接新情报源）
 - `tool/review_web.php`/`review_api.php`（审核面板，CLI 桥接模式）
 - `tool/runtime.py`（状态文件/决定记录/原子写）
-- nginx `/pyGal/` + php8.3-fpm；**php-sqlite3 扩展不可用**（apt 被锁），PHP 侧一律走 CLI 桥接
+- nginx `/gshelf/` + php8.3-fpm；**php-sqlite3 扩展不可用**（apt 被锁），PHP 侧一律走 CLI 桥接
 
 ---
 
