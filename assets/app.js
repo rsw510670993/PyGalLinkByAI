@@ -7,6 +7,27 @@
   const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   }[c]));
+  /* 结果状态码 → 中文标签（对应后端 egs_organize 的 detail.status） */
+  const STATUS_LABEL = {
+    already_ok: '已就位', renamed: '已整理', moved: '已整理', renamed_moved: '已整理',
+    would_rename: '待整理', would_move: '待整理', would_rename_moved: '待整理',
+    would_set_downloaded: '待补记', found_set_downloaded: '已补记',
+    cross_year_confirm: '跨年待确认', month_shift_confirm: '搬月待确认',
+    month_shift_rejected: '已拒绝搬动', cross_year_rejected: '已拒绝搬动',
+    in_offline: '离线下载中', missing_in_115: '115 中找不到',
+    not_downloaded: '未下载', wrapped_file: '已包装', would_wrap_file: '待包装',
+    repaired_double_wrap: '已修复双层包装', would_repair_double_wrap: '待修复双层包装',
+    conflict: '冲突', ambiguous: '无法确定', no_dn_date: '缺日期', no_link: '无磁链',
+    duplicate_magnet: '磁链重复', not_submittable: '不可提交', outside_scope: '不在范围',
+    shared_cid: '目录映射冲突',
+    adopted_exact_torrent_name: '已认领', adopted_same_infohash: '已认领',
+    error: '出错',
+  };
+  const STATUS_TONE = {
+    '出错': 'p-err', '冲突': 'p-err', '无法确定': 'p-err', '115 中找不到': 'p-err',
+    '跨年待确认': 'p-warn', '搬月待确认': 'p-warn', '缺日期': 'p-warn', '目录映射冲突': 'p-warn',
+    '已整理': 'p-ok', '已就位': 'p-ok', '已补记': 'p-ok', '已认领': 'p-ok',
+  };
   const scriptEl = document.querySelector('script[src*="app.js"]');
   const basePath = scriptEl
     ? new URL(scriptEl.src).pathname.replace(/\/assets\/app\.js.*$/, '')
@@ -40,7 +61,14 @@
       try {
         const login = await api('115_login_status');
         ok = !!login.logged_in;
-      } catch (e) { ok = false; }
+      } catch (e) {
+        // 401 是「站点 SSO 未登录」，不是 115 失效，必须分开显示
+        if (e.payload && String(e.payload.message || '').includes('登录')) {
+          $('login-state').innerHTML = '<span class="dot bad"></span><span>站点未登录</span>';
+          return ov;
+        }
+        ok = false;
+      }
       $('login-state').innerHTML = `<span class="dot ${ok ? 'ok' : 'bad'}"></span><span>115 ${ok ? '已登录' : '未登录'}</span>`;
       return ov;
     } catch (e) {
@@ -124,8 +152,8 @@
       const n = Number(pending || 0);
       if (n > 0) {
         gate.hidden = false;
-        gate.innerHTML = `⚠ <div>第 2 步有 <b>${n} 条低分磁链</b>待 DSH 审核。点「提交并校对」时按所选年份范围检查，范围内有待审才锁定。`
-          + `<span class="muted">（egs review_detail / review_decide）</span></div>`;
+        gate.innerHTML = `<span>⚠</span><div><b>${n} 条低分磁链</b>待 DSH 审核`
+          + `<div class="hint" style="margin-top:2px">点「提交并校对」时按所选范围检查</div></div>`;
       } else {
         gate.hidden = true;
         gate.innerHTML = '';
@@ -144,10 +172,15 @@
       const badge = { failed: 'p-err', success: 'p-ok', skipped: 'p-mute' };
       return [...groups.values()]
         .sort((a, b) => (priority[a.outcome] ?? 3) - (priority[b.outcome] ?? 3) || a.i - b.i)
-        .map((g) => `<details class="result-group"><summary><span>${esc(g.type)}</span><span class="pill ${badge[g.outcome] || 'p-mute'}">${g.rows.length}</span></summary>`
-          + `<div class="rg-b">${g.rows.map((r) => `<div class="result-row"><strong>${esc(r.name)}</strong>：${esc(r.message)}`
-            + (r.detail && r.detail.target_path ? `<div class="rr-t">${esc(r.detail.old_path || '')} → ${esc(r.detail.target_path)}</div>` : '')
-            + `</div>`).join('')}</div></details>`)
+        .map((g) => {
+          const label = STATUS_LABEL[g.type] || g.type;
+          const tone = STATUS_TONE[label] || badge[g.outcome] || 'p-mute';
+          return `<details class="result-group"><summary><span>${esc(label)}</span>`
+            + `<span class="pill ${tone}">${g.rows.length}</span></summary>`
+            + `<div class="rg-b">${g.rows.map((r) => `<div class="result-row"><strong>${esc(r.name)}</strong>：${esc(r.message)}`
+              + (r.detail && r.detail.target_path ? `<div class="rr-t">${esc(r.detail.old_path || '')} → ${esc(r.detail.target_path)}</div>` : '')
+              + `</div>`).join('')}</div></details>`;
+        })
         .join('');
     }
 
@@ -172,7 +205,8 @@
       if (task && task.job_id) {
         const total = Number(task.total || 0), done = Number(task.done || 0);
         $('bar').style.width = total ? Math.round(done / total * 100) + '%' : '0%';
-        $('k-done').textContent = `${done} / ${total}`;
+        $('k-done').textContent = done;
+        $('k-total').textContent = total;
         $('k-success').textContent = Number(task.success || 0);
         $('k-failed').textContent = Number(task.failed || 0);
         $('k-skipped').textContent = Number(task.skipped || 0);
@@ -180,7 +214,8 @@
         $('task-results').innerHTML = renderTaskResults(task.results);
       } else {
         $('bar').style.width = '0%';
-        $('k-done').textContent = '0 / 0';
+        $('k-done').textContent = '0';
+        $('k-total').textContent = '0';
         $('k-success').textContent = '0';
         $('k-failed').textContent = '0';
         $('k-skipped').textContent = '0';
@@ -205,7 +240,10 @@
         }
         renderTask();
       } catch (e) {
-        $('control-msg').textContent = `状态读取失败：${e.message}`;
+        const needLogin = e.payload && String(e.payload.message || '').includes('登录');
+        $('control-msg').innerHTML = needLogin
+          ? '站点登录已过期 · <a href="/login">重新登录</a>'
+          : `状态读取失败：${esc(e.message)}`;
       }
     }
 
@@ -401,7 +439,7 @@
     }
 
     async function load() {
-      $('cards').innerHTML = '<div class="empty">加载中…</div>';
+      if (!$('cards').querySelector('.game')) $('cards').innerHTML = '<div class="empty">加载中…</div>';
       try {
         const data = await api(`egs_games&${query()}`);
         render(data);
@@ -421,6 +459,15 @@
 
     $('f-apply').addEventListener('click', () => { page = 1; load(); });
     $('f-q').addEventListener('keydown', (e) => { if (e.key === 'Enter') { page = 1; load(); } });
+    // 输入即搜（主流做法，400ms 防抖），下拉改变也即时生效
+    let searchTimer = null;
+    $('f-q').addEventListener('input', () => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => { page = 1; load(); }, 400);
+    });
+    ['f-year', 'f-month', 'f-stage', 'f-brand'].forEach((id) => {
+      $(id).addEventListener('change', () => { page = 1; load(); });
+    });
     $('prev').addEventListener('click', () => { if (page > 1) { page--; load(); } });
     $('next').addEventListener('click', () => { page++; load(); });
     $('lightbox').addEventListener('click', (e) => {
