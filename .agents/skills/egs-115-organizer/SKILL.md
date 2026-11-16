@@ -1,11 +1,11 @@
 ---
 name: egs-115-organizer
-description: Inspect, reconcile, and organize pyGal EGS resources after they are submitted to 115. Use for 115 download checks, directory naming or movement, duplicate and collection ownership, GAL.old reconciliation, and AI organizer jobs. Do not use to approve EGS magnet candidates before submission.
+description: Inspect, reconcile, and organize gshelf（原 pyGal） EGS resources after they are submitted to 115. Use for 115 download checks, directory naming or movement, duplicate and collection ownership, GAL.old reconciliation, and AI organizer jobs. Do not use to approve EGS magnet candidates before submission.
 ---
 
 # EGS 115 Organizer
 
-Handle only the post-submission portion of the pyGal workflow. EGS magnet selection remains a human review step.
+Handle only the post-submission portion of the gshelf workflow. EGS magnet selection remains a human review step.
 
 Read [docs/AI_115_ORGANIZER.md](../../../docs/AI_115_ORGANIZER.md) for the agent contract and [docs/EGS_115_ORGANIZATION_PLAYBOOK.md](../../../docs/EGS_115_ORGANIZATION_PLAYBOOK.md) when historical or collection reconciliation is involved.
 
@@ -13,7 +13,7 @@ Read [docs/AI_115_ORGANIZER.md](../../../docs/AI_115_ORGANIZER.md) for the agent
 
 1. Inspect the current branch and dirty worktree. Preserve unrelated edits.
 2. Identify the exact EGS rows, magnet InfoHash, 115 CID/pick code, current parent path, and intended destination before changing state.
-3. Prefer existing pyGal CLI and organizer functions. Do not write ad-hoc SQL when a domain operation exists.
+3. Prefer existing gshelf CLI and organizer functions. Do not write ad-hoc SQL when a domain operation exists.
 4. Make a database backup before the first mutation in a job. Record the backup and each externally visible action.
 5. Execute routine rename, move, wrapping, downloaded-state reconciliation, and previously documented collection ownership autonomously when evidence is complete.
 6. Verify the resulting CID, parent path, name, database mapping, and database integrity after mutation.

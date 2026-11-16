@@ -1,4 +1,4 @@
-# PyGalLinkByAI
+# gshelf（原 PyGalLinkByAI）
 
 EGS / Nyaa / 115 资源流水线的**机械执行内核** + **只读 Web 面板**。
 

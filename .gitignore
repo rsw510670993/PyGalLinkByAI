@@ -180,3 +180,6 @@ tool/115-cookies.txt
 *.db-wal
 /tool/config/key/
 /tool/config/ai_provider.ini
+
+# p115client 本地缓存
+.p115client.cache.d/

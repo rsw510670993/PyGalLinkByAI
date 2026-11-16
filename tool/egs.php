@@ -1,9 +1,16 @@
+<?php
+require_once dirname(__DIR__, 2) . '/auth/config.php';
+if (!is_array(sso_read_cookie(isset($_COOKIE[SSO_COOKIE]) ? (string) $_COOKIE[SSO_COOKIE] : null))) {
+    header('Location: /login?next=' . rawurlencode((string) ($_SERVER['REQUEST_URI'] ?? '/gshelf/')), true, 302);
+    exit;
+}
+?>
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>数据 · pyGal</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>数据 · gshelf</title>
 <link rel="stylesheet" href="../assets/app.css?v=<?= rawurlencode((string) filemtime(__DIR__ . '/../assets/app.css')) ?>">
 </head>
 <body>
@@ -14,6 +21,10 @@
     <section class="card" aria-label="筛选">
       <div class="card-b" style="padding:14px 16px">
         <div class="filters">
+          <div class="field field-search">
+            <label class="sr-only" for="f-q">搜索</label>
+            <input id="f-q" class="inp" type="search" placeholder="搜索游戏名 / 公司 / 假名" autocomplete="off" enterkeyhint="search">
+          </div>
           <div class="field"><label for="f-year">年份</label><select id="f-year" class="inp"><option value="">全部</option></select></div>
           <div class="field"><label for="f-month">月份</label>
             <select id="f-month" class="inp">
@@ -21,7 +32,6 @@
               <?php for ($m = 1; $m <= 12; $m++): ?><option value="<?= $m ?>"><?= $m ?>月</option><?php endfor; ?>
             </select>
           </div>
-          <div class="field"><label for="f-q">搜索</label><input id="f-q" class="inp" type="search" placeholder="游戏名 / 公司 / 假名"></div>
           <div class="field"><label for="f-stage">阶段</label>
             <select id="f-stage" class="inp">
               <option value="">全部</option>
@@ -58,6 +68,6 @@
 </main>
 <div class="lightbox" id="lightbox"><span class="lb-close" role="button" aria-label="关闭">×</span><img id="lb-img" alt=""></div>
 <script src="../assets/app.js?v=<?= rawurlencode((string) filemtime(__DIR__ . '/../assets/app.js')) ?>"></script>
-<script>pyGal.initData();</script>
+<script>gshelf.initData();</script>
 </body>
 </html>
