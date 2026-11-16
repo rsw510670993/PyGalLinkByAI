@@ -7,7 +7,7 @@ description: Inspect, reconcile, and organize gshelf（原 pyGal） EGS resource
 
 Handle only the post-submission portion of the gshelf workflow. EGS magnet selection remains a human review step.
 
-Read [docs/AI_115_ORGANIZER.md](../../../docs/AI_115_ORGANIZER.md) for the agent contract and [docs/EGS_115_ORGANIZATION_PLAYBOOK.md](../../../docs/EGS_115_ORGANIZATION_PLAYBOOK.md) when historical or collection reconciliation is involved.
+Read [docs/EGS_115_ORGANIZATION_PLAYBOOK.md](../../../docs/EGS_115_ORGANIZATION_PLAYBOOK.md) when historical or collection reconciliation is involved. The agent contract is the "Operating contract" / "Hard boundaries" / "Completion" sections below — the old `docs/AI_115_ORGANIZER.md` was retired together with the web-side AI organizer (commit d9f25df), so do not look for it.
 
 ## Operating contract
 
