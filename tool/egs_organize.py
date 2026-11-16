@@ -1739,12 +1739,22 @@ def record_organize_issue(conn, date, name, code, executed,
 
 
 def resolve_organize_issue(conn, issue_id, note=None):
+    """关闭一条整理待办；note（若有）写入 message，作为关闭结论留痕。"""
     ensure_issue_schema(conn)
-    cur = conn.execute(
-        "UPDATE egs_organize_issues SET resolved=1, resolved_at=?"
-        " WHERE id=? AND resolved=0",
-        (time.strftime("%Y-%m-%d %H:%M:%S"), int(issue_id)),
-    )
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    note = str(note).strip() if note else ""
+    if note:
+        cur = conn.execute(
+            "UPDATE egs_organize_issues SET resolved=1, resolved_at=?, message=?"
+            " WHERE id=? AND resolved=0",
+            (now, note, int(issue_id)),
+        )
+    else:
+        cur = conn.execute(
+            "UPDATE egs_organize_issues SET resolved=1, resolved_at=?"
+            " WHERE id=? AND resolved=0",
+            (now, int(issue_id)),
+        )
     conn.commit()
     return {"success": cur.rowcount > 0, "id": int(issue_id)}
 

@@ -171,7 +171,7 @@ egs.db
 egs.db-shm
 egs.db-wal
 .python-version
-status/
+status/*
 logs/
 tool/115-cookies.txt
 /db_backups/
@@ -183,3 +183,6 @@ tool/115-cookies.txt
 
 # p115client 本地缓存
 .p115client.cache.d/
+
+# status/ 只收代码脚本，运行数据仍全部忽略
+!status/backfill_savedata.py
