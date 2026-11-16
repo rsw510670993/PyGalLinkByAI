@@ -59,6 +59,58 @@ function run_cli($args, $entry = 'cli.py') {
     return [$code, ['status' => 'error', 'message' => 'Python返回非JSON', 'stderr' => $err]];
 }
 
+// 2026-11-16 安全加固（P1–P3）：写接口统一守卫。
+const WRITE_ACTIONS = ['pipeline_start', 'pipeline_stop', 'agent_job_prune'];
+const PIPELINE_ACTIONS = ['crawl', 'magnet', 'check', 'submit', 'sync', 'organize'];
+
+function allowed_origins() {
+    $origins = ['https://www.usagiviz.xyz'];
+    $host = strtolower((string) ($_SERVER['HTTP_HOST'] ?? ''));
+    if ($host !== '') {
+        $origins[] = 'http://' . $host;
+        $origins[] = 'https://' . $host;
+    }
+    return array_values(array_unique($origins));
+}
+
+function origin_of($url) {
+    $parts = parse_url((string) $url);
+    if (!is_array($parts) || empty($parts['scheme']) || empty($parts['host'])) return null;
+    $origin = strtolower($parts['scheme']) . '://' . strtolower($parts['host']);
+    if (isset($parts['port'])) $origin .= ':' . $parts['port'];
+    return $origin;
+}
+
+function reject_request($code, $message) {
+    http_response_code($code);
+    json_response(['status' => 'error', 'code' => $code, 'message' => $message]);
+}
+
+// P1：CSRF 防护。Content-Type 必须是 JSON（跨站表单发不出这个类型），
+// Origin 优先、缺失时退回 Referer，两者必须同源；都没有一律拒绝。
+function require_csrf() {
+    $ctype = strtolower((string) ($_SERVER['CONTENT_TYPE'] ?? ''));
+    if (strpos($ctype, 'application/json') !== 0) {
+        reject_request(415, 'Content-Type 必须为 application/json');
+    }
+    $origins = allowed_origins();
+    $origin = origin_of($_SERVER['HTTP_ORIGIN'] ?? '');
+    if ($origin !== null) {
+        if (!in_array($origin, $origins, true)) {
+            reject_request(403, '跨站请求被拒绝（Origin 不匹配）');
+        }
+        return;
+    }
+    $referer = origin_of($_SERVER['HTTP_REFERER'] ?? '');
+    if ($referer !== null) {
+        if (!in_array($referer, $origins, true)) {
+            reject_request(403, '跨站请求被拒绝（Referer 不匹配）');
+        }
+        return;
+    }
+    reject_request(403, '跨站请求被拒绝（缺少 Origin/Referer）');
+}
+
 $action = isset($_GET['action']) ? $_GET['action'] : '';
 
 // 2026-11-10：写操作需要站点登录。注意 pipeline_status 虽是 GET，但内部
@@ -66,12 +118,22 @@ $action = isset($_GET['action']) ? $_GET['action'] : '';
 // 2026-11-13：115_login_status 虽为只读，但匿名可访问会代服务器向 webapi.115.com
 // 发请求并回显 115 账号名（信息泄露 + 请求放大器），同样纳入登录校验；
 // 其余 GET（overview/years/calendar/egs_games/preflight）保持公开只读。
+// P2：写接口方法守卫——非 POST 直接 405，不再回 200 + error 正文。
+if (in_array($action, WRITE_ACTIONS, true) && ($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+    reject_request(405, '请使用 POST 请求');
+}
+
 require_once dirname(__DIR__, 2) . '/auth/config.php';
 $ssoSession = sso_read_cookie(isset($_COOKIE[SSO_COOKIE]) ? (string) $_COOKIE[SSO_COOKIE] : null);
 if (!is_array($ssoSession)
     && in_array($action, ['pipeline_start', 'pipeline_stop', 'agent_job_prune', 'pipeline_status', '115_login_status'], true)) {
     http_response_code(401);
     json_response(['status' => 'error', 'message' => '需要登录站点后才能执行该操作']);
+}
+
+// P1：已登录的写接口必须通过 CSRF 校验（Origin/Referer + Content-Type）。
+if (in_array($action, WRITE_ACTIONS, true)) {
+    require_csrf();
 }
 
 if ($action === 'overview') {
@@ -117,6 +179,9 @@ if ($action === 'egs_games') {
 
 if ($action === 'pipeline_preflight') {
     $actionName = strval($_GET['pipeline_action'] ?? 'check');
+    if (!in_array($actionName, PIPELINE_ACTIONS, true)) {
+        reject_request(400, '未知功能');
+    }
     $args = ['preflight', '--action', $actionName,
              '--start-year', strval(as_int($_GET['start_year'] ?? null, 0)),
              '--end-year', strval(as_int($_GET['end_year'] ?? null, 0)),
@@ -126,16 +191,18 @@ if ($action === 'pipeline_preflight') {
 }
 
 if (in_array($action, ['pipeline_start', 'pipeline_status', 'pipeline_stop'], true)) {
-    if ($action !== 'pipeline_status' && ($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
-        json_response(['status' => 'error', 'message' => '请使用 POST 请求']);
-    }
     $body = read_json_body();
     if ($action === 'pipeline_status') {
         $args = ['status'];
     } elseif ($action === 'pipeline_stop') {
         $args = ['stop', '--job-id', strval($body['job_id'] ?? '')];
     } else {
-        $args = ['start', '--action', strval($body['action'] ?? ''),
+        // P3：动作白名单（Python argparse 虽有 choices 兜底，这里提前拒绝，避免白起子进程）
+        $pipelineAction = strval($body['action'] ?? '');
+        if (!in_array($pipelineAction, PIPELINE_ACTIONS, true)) {
+            reject_request(400, '未知功能');
+        }
+        $args = ['start', '--action', $pipelineAction,
                  '--start-year', strval(as_int($body['start_year'] ?? null, 0)),
                  '--end-year', strval(as_int($body['end_year'] ?? null, 0)),
                  '--month', strval(as_int($body['month'] ?? null, 0))];
@@ -152,9 +219,6 @@ if ($action === '115_login_status') {
 
 // 维护：清理任务记录与 db 快照（默认预览，execute=true 才真删）
 if ($action === 'agent_job_prune') {
-    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
-        json_response(['status' => 'error', 'message' => '请使用 POST 请求']);
-    }
     $body = read_json_body();
     $args = ['prune',
              '--keep', strval(as_int($body['keep'] ?? null, 50)),

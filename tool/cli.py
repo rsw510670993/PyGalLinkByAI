@@ -1330,7 +1330,7 @@ def cmd_egs_organize_issue_resolve(args):
     from tool.egs_organize import resolve_organize_issue
     conn = open_egs_db(args.db)
     try:
-        _print(resolve_organize_issue(conn, int(args.id)))
+        _print(resolve_organize_issue(conn, int(args.id), note=getattr(args, 'note', None)))
     finally:
         conn.close()
 
@@ -1703,6 +1703,7 @@ def build_parser():
 
     p_egs_organize_issue_resolve = egs_sub.add_parser("organize_issue_resolve")
     p_egs_organize_issue_resolve.add_argument("--id", type=int, required=True)
+    p_egs_organize_issue_resolve.add_argument("--note", type=str, help="关闭结论，写入 issue 的 message")
     p_egs_organize_issue_resolve.add_argument("--db", type=str)
     p_egs_organize_issue_resolve.set_defaults(func=cmd_egs_organize_issue_resolve)
 
