@@ -2,8 +2,8 @@
 """批量补全 CG 存档：seiya/sagaoz 索引 -> 下载 -> 直传 115 游戏目录 -> 落库。
 
 用法（必须用装了 p115client 0.0.9 的解释器，项目 .venv 的 0.0.8 上传会 405）：
-  status/venv115/bin/python status/backfill_savedata.py --limit 100          # dry-run
-  status/venv115/bin/python status/backfill_savedata.py --limit 100 --execute
+  status/venv115/bin/python scripts/backfill_savedata.py --limit 100          # dry-run
+  status/venv115/bin/python scripts/backfill_savedata.py --limit 100 --execute
 
 断点续跑：成功记录写入 egs_savedata 表，已 ok 的会跳过；本地下载包处理完即删。
 """
