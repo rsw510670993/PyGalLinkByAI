@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -37,7 +38,8 @@ BATCHES = [
 ]
 
 POLL_SECONDS = 15
-BATCH_TIMEOUT = 3 * 3600
+# 批次 3（2010-2011，约 1,148 条）按历史吞吐可能接近 3 小时，留一倍余量。
+BATCH_TIMEOUT = 6 * 3600
 
 
 def log(msg: str) -> None:
@@ -91,10 +93,25 @@ def preflight(start_year: int, end_year: int) -> dict:
                     '--start-year', str(start_year), '--end-year', str(end_year), '--month', '0'])
 
 
+def _pid_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (ProcessLookupError, ValueError, TypeError):
+        return False
+    except PermissionError:
+        return True
+
+
 def wait_finish(job_id: str, timeout: int = BATCH_TIMEOUT) -> dict:
     deadline = time.time() + timeout
     while time.time() < deadline:
         cur = pipeline_status()
+        if cur.get('job_id') == job_id and cur.get('running'):
+            if not _pid_alive(cur.get('pid')):
+                return {**cur, 'running': False,
+                        'outcome': cur.get('outcome') or 'error',
+                        'message': 'worker 进程已退出'}
         if cur.get('job_id') == job_id and not cur.get('running'):
             return cur
         time.sleep(POLL_SECONDS)
@@ -109,6 +126,13 @@ def run_batch(no: int, start_year: int, end_year: int, label: str, state: dict, 
         return True
 
     pre = preflight(start_year, end_year)
+    if pre.get('status') != 'success' or 'count' not in pre:
+        message = pre.get('message') or 'preflight 未返回 status=success 与 count，视为预检失败'
+        log(f'[批次 {no}] {label} 预检失败：{message}')
+        rec.update({'outcome': 'preflight_error', 'message': message})
+        state['batches'][key] = rec
+        save_state(state)
+        return False
     pending = int(pre.get('count') or 0)
     if pending:
         log(f'[批次 {no}] {label} 被审核 gate 挡住：还有 {pending} 条低分待审，先复核再跑')
@@ -147,11 +171,58 @@ def run_batch(no: int, start_year: int, end_year: int, label: str, state: dict, 
     return outcome == 'complete'
 
 
+def cooldown(args) -> None:
+    """批次间冷却：固定等待 +（可选）等 115 离线队列变浅。
+
+    冷却只是放慢节奏：查询失败或等待超时都告警后继续，不中断后续批次。
+    """
+    if args.pause_seconds > 0:
+        log(f'批次间冷却：等待 {args.pause_seconds}s 再进入下一批')
+        time.sleep(args.pause_seconds)
+    if args.wait_queue <= 0:
+        return
+    try:
+        from tool.p115_client import offline_list
+    except ImportError:
+        # 直接跑 `python scripts/submit_batches.py` 时 sys.path[0] 是 scripts/，
+        # 仓库根不在导入路径上；补一次，再失败才放弃等待。
+        sys.path.insert(0, str(ROOT))
+        try:
+            from tool.p115_client import offline_list
+        except ImportError as exc:
+            log(f'警告：无法导入 tool.p115_client（{exc}），跳过队列等待')
+            return
+    deadline = time.time() + 60 * 60
+    while True:
+        try:
+            listing = offline_list()
+        except Exception as exc:
+            log(f'警告：读取 115 离线列表失败（{exc}），跳过队列等待')
+            return
+        if not listing.get('success'):
+            log(f'警告：读取 115 离线列表失败（{listing.get("message")}），跳过队列等待')
+            return
+        waiting = sum(1 for task in (listing.get('tasks') or [])
+                      if task.get('display_status') == 'waiting')
+        if waiting <= args.wait_queue:
+            log(f'批次间冷却：115 等待中任务 {waiting} 条，已降到 {args.wait_queue} 以内，继续下一批')
+            return
+        if time.time() >= deadline:
+            log(f'批次间冷却：等待超过 60 分钟（仍有 {waiting} 条 waiting），继续下一批')
+            return
+        log(f'批次间冷却：115 等待中任务 {waiting} 条，60s 后复查')
+        time.sleep(60)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description='12-01 分批提交 driver（可续跑）')
     ap.add_argument('--dry-run', action='store_true', help='只跑 preflight 并打印计划')
     ap.add_argument('--resume', action='store_true', help='跳过已完成批次')
     ap.add_argument('--only', type=int, help='只跑指定批次号')
+    ap.add_argument('--pause-seconds', type=int, default=0,
+                    help='每批结束后固定等待秒数再进入下一批（默认 0，不等待）')
+    ap.add_argument('--wait-queue', type=int, default=0,
+                    help='每批结束后等 115 离线 waiting 任务数降到该值以内（最长 60 分钟，默认 0 不等）')
     args = ap.parse_args()
 
     if subprocess.run(['id', '-un'], capture_output=True, text=True).stdout.strip() != 'www-data':
@@ -166,6 +237,8 @@ def main() -> int:
         if not ok:
             log('批次中断，后续批次未执行；修复后可用 --resume 继续')
             break
+        if not args.dry_run:
+            cooldown(args)
     log('全部批次结束' if ok else '存在未完成批次')
     return 0 if ok else 1
 

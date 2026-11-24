@@ -102,10 +102,15 @@ def _offline_stall_decision(prev, percent, add_time, now_epoch):
 
     percent 首次见到或有增长时只更新快照；percent 连续不变、且任务进队已满
     30 分钟、观察窗也满 30 分钟，才判死种。entry=None 表示 percent 不可解析。
+    percent<=0 视为排队中（批量提交后队列变深的常态），不判死，只留 72h 兜底。
     """
     try:
         p = float(percent)
     except (TypeError, ValueError):
+        return False, None
+    if p <= 0:
+        # 排队中的任务 percentDone 恒为 0，批量提交后队列变深是常态；
+        # 此时判死会批量清掉正常任务。只保留 72h 兜底，不在 30 分钟窗口判。
         return False, None
     prev_p = None
     first_seen = now_epoch
@@ -405,6 +410,7 @@ def execute_job(state, save, should_stop):
             sql += ' AND submitted_115 = 1'
         if action == 'submit':
             sql += ' AND submitted_115 = 0'
+            sql += ' AND COALESCE(is_eroge,1)=1'
         rows = conn.execute(sql + ' ORDER BY date, egs_id', params).fetchall()
         state['total'] = len(rows)
         save()
