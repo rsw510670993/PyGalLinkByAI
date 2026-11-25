@@ -77,3 +77,9 @@
 
 - 代码常量见 `tool/egs_core.py` 的 `*_VALUES` 常量；新增枚举先改本文件与常量。
 - `egs_artifact_links.source='manual'` 的行，自动双写不会覆盖其 `relation`/`note`。
+
+## 巡检
+
+- 残留 link 只读检查：`python tool/cli.py egs artifact_audit`（加 `--strict` 时四类残留非零则退出码 1，供定时任务使用）。
+- 口径实现见 `tool/egs_core.py` 的 `audit_artifact_links()`：失败态残留、记录/产物 hash 不一致、一个记录多条 link、有 hash 只剩 folder-only link，另附孤儿 artifact 数量。
+- 失败态（`download_failed=1` 且 `link` 为空）的 hash link 由人工或清理脚本删除，`download_failed` 标记本身足够；`relation='dlc'` 与 `source='manual'` 的 link 不得自动清理。

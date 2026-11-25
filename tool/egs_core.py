@@ -648,6 +648,84 @@ def refresh_magnet_duplicates(conn: sqlite3.Connection, infohashes=None) -> None
     sync_infohash_artifacts(conn, groups)
 
 
+def audit_artifact_links(conn, sample_limit: int = 20) -> dict:
+    """残留 link 巡检（只读）：四类不一致 + 孤儿 artifact。
+
+    口径与 2026-11-25 清理裁定一致：
+    - failed_hash_links：download_failed=1 且 egs.link 为空，仍挂可自动清理的
+      hash link（source='auto' 且 relation!='dlc'）；人工/dlc link 受保护不计入。
+    - hash_mismatch：记录 infohash_hex 与 link 指向 artifact 的 hash 不一致；
+      排除 relation='dlc'（共享目录允许不同 hash 的产物挂同一目录）。
+    - multi_link_egs：一个 egs 挂多条 link（同链/目录应归一为一条）。
+    - hash_with_folder_only：记录有 hash，但所有 link 都指向无 hash 的 folder artifact。
+    - orphan_artifacts：没有任何 link 的 artifact；清理失败态 link 后会自然出现，
+      保留行供历史追溯，只报告不自动删，不计入 ok。
+    """
+    present = _artifact_tables_present(conn)
+    counts = {
+        "failed_hash_links": 0,
+        "hash_mismatch": 0,
+        "multi_link_egs": 0,
+        "hash_with_folder_only": 0,
+    }
+    samples = {name: [] for name in counts}
+    orphan_artifacts = 0
+    if present:
+        queries = {
+            "failed_hash_links": """
+                SELECT l.id FROM egs_games g
+                  JOIN egs_artifact_links l ON l.egs_id=g.egs_id
+                  JOIN egs_artifacts a ON a.artifact_id=l.artifact_id
+                 WHERE COALESCE(g.download_failed,0)=1
+                   AND trim(COALESCE(g.link,''))=''
+                   AND trim(COALESCE(a.infohash_hex,''))!=''
+                   AND l.source='auto' AND l.relation!='dlc'
+                 ORDER BY l.id
+            """,
+            "hash_mismatch": """
+                SELECT l.id FROM egs_games g
+                  JOIN egs_artifact_links l ON l.egs_id=g.egs_id
+                  JOIN egs_artifacts a ON a.artifact_id=l.artifact_id
+                 WHERE trim(COALESCE(g.infohash_hex,''))!=''
+                   AND trim(COALESCE(a.infohash_hex,''))!=''
+                   AND l.relation!='dlc'
+                   AND lower(trim(g.infohash_hex)) != lower(trim(a.infohash_hex))
+                 ORDER BY l.id
+            """,
+            "multi_link_egs": """
+                SELECT egs_id FROM egs_artifact_links
+                 GROUP BY egs_id HAVING COUNT(*)>1
+                 ORDER BY egs_id
+            """,
+            "hash_with_folder_only": """
+                SELECT g.egs_id FROM egs_games g
+                  JOIN egs_artifact_links l ON l.egs_id=g.egs_id
+                  JOIN egs_artifacts a ON a.artifact_id=l.artifact_id
+                 WHERE trim(COALESCE(g.infohash_hex,''))!=''
+                 GROUP BY g.egs_id
+                HAVING SUM(CASE WHEN trim(COALESCE(a.infohash_hex,''))!=''
+                                THEN 1 ELSE 0 END)=0
+                 ORDER BY g.egs_id
+            """,
+        }
+        for name, sql in queries.items():
+            rows = conn.execute(sql).fetchall()
+            counts[name] = len(rows)
+            samples[name] = [row[0] for row in rows[:max(0, int(sample_limit))]]
+        orphan_artifacts = conn.execute(
+            "SELECT COUNT(*) FROM egs_artifacts a"
+            " WHERE NOT EXISTS (SELECT 1 FROM egs_artifact_links l"
+            "                    WHERE l.artifact_id=a.artifact_id)"
+        ).fetchone()[0]
+    return {
+        "tables_present": present,
+        "ok": present and not any(counts.values()),
+        "counts": counts,
+        "samples": samples,
+        "orphan_artifacts": orphan_artifacts,
+    }
+
+
 def ensure_review_blacklist_schema(conn: sqlite3.Connection) -> None:
     """公司级审核黑名单：低分候选只入库，不在列表显示审核入口。"""
     conn.execute(

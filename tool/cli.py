@@ -554,6 +554,18 @@ def cmd_egs_games(args):
         conn.close()
 
 
+def cmd_egs_artifact_audit(args):
+    from tool.egs_core import audit_artifact_links, open_egs_db
+    conn = open_egs_db(args.db)
+    try:
+        result = audit_artifact_links(conn)
+    finally:
+        conn.close()
+    _print(result)
+    if getattr(args, "strict", False) and not result["ok"]:
+        sys.exit(1)
+
+
 def cmd_egs_overview(args):
     import sqlite3 as _sqlite3
     from tool.egs_core import open_egs_db, ensure_egs_schema
@@ -965,6 +977,14 @@ def build_parser():
     p_egs_status = egs_sub.add_parser("status")
     p_egs_status.add_argument("--db", type=str, dest="db")
     p_egs_status.set_defaults(func=cmd_egs_status)
+
+    p_egs_artifact_audit = egs_sub.add_parser(
+        "artifact_audit", help="残留 artifact link 巡检（只读，输出四类+孤儿）")
+    p_egs_artifact_audit.add_argument("--db", type=str, dest="db")
+    p_egs_artifact_audit.add_argument(
+        "--strict", action="store_true",
+        help="存在四类残留时以退出码 1 结束，供巡检脚本使用")
+    p_egs_artifact_audit.set_defaults(func=cmd_egs_artifact_audit)
 
     p_egs_games = egs_sub.add_parser("games")
     p_egs_games.add_argument("--page", type=int, default=1)
