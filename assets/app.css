@@ -97,6 +97,13 @@ main{max-width:1240px;margin:0 auto;padding:24px}
 .step-d{font-size:var(--fs-xs);color:var(--muted);margin-top:3px}
 .step-d b{color:var(--text);font-weight:600}
 .step-badge{font-size:var(--fs-xs);padding:4px 8px;border-radius:var(--r-pill);font-weight:600;line-height:1}
+
+/* 待办卡：只给总数，不按年份展开 */
+.todo-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.todo-item{background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-md);padding:14px 10px;text-align:center;display:flex;flex-direction:column;gap:4px}
+.todo-item b{font-size:var(--fs-xl);font-weight:700;line-height:1.1;font-variant-numeric:tabular-nums}
+.todo-item span{font-size:var(--fs-xs);color:var(--muted)}
+@media(max-width:520px){.todo-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .b-ok{background:var(--ok-soft);color:var(--ok)} .b-warn{background:var(--warn-soft);color:var(--warn)}
 .b-run{background:var(--info-soft);color:var(--info)} .b-wait{background:var(--surface-2);color:var(--muted)}
 
@@ -160,17 +167,14 @@ main{max-width:1240px;margin:0 auto;padding:24px}
 .legend{font-size:var(--fs-xs);color:var(--faint);padding:8px 18px 12px;display:flex;gap:14px;align-items:center;border-top:1px solid var(--border);margin-top:6px}
 .legend i{width:8px;height:8px;border-radius:2px;display:inline-block;margin-right:4px}
 
-/* 卡片网格 */
-.cards{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:14px;padding:18px}
-@media(max-width:1180px){.cards{grid-template-columns:repeat(5,minmax(0,1fr))}}
-@media(max-width:980px){.cards{grid-template-columns:repeat(4,minmax(0,1fr))}}
-@media(max-width:760px){.cards{grid-template-columns:repeat(3,minmax(0,1fr))}}
-@media(max-width:520px){.cards{grid-template-columns:repeat(2,minmax(0,1fr))}}
-.game{display:block;text-decoration:none;border-radius:var(--r-md);transition:transform .12s ease}
+/* 卡片网格：按容器宽度自动伸缩列数（auto-fill），封面区固定高度保证同行等高 */
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(152px,1fr));gap:14px;padding:18px;align-items:start}
+.game{display:flex;flex-direction:column;min-width:0;text-decoration:none;border-radius:var(--r-md);transition:transform .12s ease}
 .game:hover{transform:translateY(-2px)}
-.game .cov{aspect-ratio:280/396;border-radius:var(--r-md);overflow:hidden;background:var(--surface-2);border:1px solid var(--border);position:relative}
-.game .cov img{width:100%;height:100%;object-fit:cover;display:block}
-.game .cov.ph{display:grid;place-items:center;color:var(--faint);font-size:var(--fs-xs)}
+/* 封面画框：等高（不用 aspect-ratio，避免随列宽变化）；白底细线；contain 完整显示不裁切 */
+.game .cov{height:clamp(120px,17vw,196px);flex:none;border-radius:var(--r-md);overflow:hidden;background:var(--surface);border:1px solid var(--border);position:relative;display:flex;align-items:center;justify-content:center}
+.game .cov img{width:100%;height:100%;object-fit:contain;display:block}
+.game .cov.ph{display:flex;align-items:center;justify-content:center;background:var(--surface-2);color:var(--faint);font-size:var(--fs-xs)}
 .game .meta{padding:8px 2px 0}
 .game .t{font-weight:600;font-size:var(--fs-sm);line-height:1.35;margin-bottom:3px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:36px}
 .game .s{font-size:var(--fs-xs);color:var(--muted);display:flex;gap:6px;flex-wrap:wrap;align-items:center}
@@ -278,7 +282,7 @@ details.fold .fold-b{padding:0 18px 18px}
 
   /* 内容区收紧，给底部栏留出空间 */
   main{padding:var(--sp-3) var(--sp-3) calc(76px + env(safe-area-inset-bottom,0px))}
-  .cards{padding:var(--sp-3);gap:10px}
+  .cards{padding:var(--sp-3) var(--sp-3) calc(76px + env(safe-area-inset-bottom,0px));gap:10px;grid-template-columns:repeat(auto-fill,minmax(132px,1fr))}
   .card{border-radius:var(--r-md)}
   .game .t{font-size:var(--fs-sm)}
 

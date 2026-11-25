@@ -20,11 +20,6 @@ for ($m = 1; $m <= 12; $m++) $monthOpts .= "<option value=\"{$m}\">{$m}月</opti
 <main>
   <div class="grid">
 
-    <section class="card" aria-label="流水线">
-      <div class="card-h">流水线 <span class="muted small" id="pipeline-updated" style="font-weight:400"></span></div>
-      <div class="card-b"><div class="steps" id="steps"></div></div>
-    </section>
-
     <section class="card" aria-label="控制器">
       <div class="card-h">控制器</div>
       <div class="card-b">
@@ -50,6 +45,18 @@ for ($m = 1; $m <= 12; $m++) $monthOpts .= "<option value=\"{$m}\">{$m}月</opti
           </div>
         </div>
         <div class="hint" id="control-msg" role="status"></div>
+      </div>
+    </section>
+
+    <section class="card" aria-label="待办">
+      <div class="card-h">待办 <span class="muted small" id="todo-updated" style="font-weight:400"></span></div>
+      <div class="card-b">
+        <div class="todo-grid">
+          <div class="todo-item"><b id="t-review">0</b><span>待审候选</span></div>
+          <div class="todo-item"><b id="t-submit">0</b><span>待提交</span></div>
+          <div class="todo-item"><b id="t-cover">0</b><span>缺封面</span></div>
+          <div class="todo-item"><b id="t-issues">0</b><span>整理待办</span></div>
+        </div>
       </div>
     </section>
 

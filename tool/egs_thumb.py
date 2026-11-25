@@ -17,6 +17,7 @@ from pathlib import Path
 
 import requests
 
+from . import egs_extids
 from .egs_core import ensure_egs_schema, open_egs_db
 from .runtime import now_ts, repo_root, write_json_atomic
 
@@ -101,8 +102,8 @@ def missing_kind(row) -> str:
 def pending_rows(conn, year: int | None = None, month: int | None = None,
                  limit: int = 0) -> list:
     """有 getchu_id 且**尚无任何封面**的记录。"""
-    sql = ("SELECT egs_id, getchu_id, dlsite_id, dmm, date, name FROM egs_games "
-           "WHERE getchu_id IS NOT NULL AND getchu_id != ''")
+    sql = ("SELECT egs_id, " + egs_extids.external_id_columns() + ", date, name "
+           "FROM egs_games " "WHERE getchu_id IS NOT NULL AND getchu_id != ''")
     params: list = []
     if year:
         if month:
@@ -207,7 +208,7 @@ def coverage() -> dict:
     try:
         ensure_egs_schema(conn)
         rows = conn.execute(
-            "SELECT getchu_id, dlsite_id, dmm FROM egs_games"
+            "SELECT " + egs_extids.external_id_columns() + " FROM egs_games"
         ).fetchall()
     finally:
         conn.close()
@@ -262,11 +263,27 @@ def has_dlsite_cover(row) -> bool:
     return bool(pid) and web_dlsite_thumb_path(pid).is_file()
 
 
+def missing_downloaded_count() -> int:
+    """已下载记录里仍缺封面的条数（总控待办卡用）。"""
+    conn = open_egs_db()
+    try:
+        ensure_egs_schema(conn)
+        rows = conn.execute(
+            "SELECT egs_id, " + egs_extids.external_id_columns() + " FROM egs_games "
+            "WHERE downloaded = 1"
+        ).fetchall()
+        return sum(1 for row in rows if not has_cover(row))
+    except Exception:  # noqa: BLE001 - 面板统计失败不应拖垮 overview
+        return -1
+    finally:
+        conn.close()
+
+
 def pending_dlsite(conn, year: int | None = None, month: int | None = None,
                    limit: int = 0) -> list:
     """有 dlsite_id、且**尚无任何封面**的记录。"""
-    sql = ("SELECT egs_id, getchu_id, dlsite_id, dmm, date, name FROM egs_games "
-           "WHERE dlsite_id IS NOT NULL AND dlsite_id != ''")
+    sql = ("SELECT egs_id, " + egs_extids.external_id_columns() + ", date, name "
+           "FROM egs_games " "WHERE dlsite_id IS NOT NULL AND dlsite_id != ''")
     params: list = []
     if year:
         if month:
@@ -284,19 +301,69 @@ def pending_dlsite(conn, year: int | None = None, month: int | None = None,
     return missing[:limit] if limit else missing
 
 
-def download_dlsite(pid, session: requests.Session, timeout: int = 30):
-    """访问作品页取 og:image 再下载；返回 (ok, message, bytes)。"""
-    import re
+DLSITE_CDN = 'https://img.dlsite.jp/modpub/images2/work/{sub}/{folder}/{pid}_img_{kind}.jpg'
+# 前缀 → CDN 子目录：同人作品在 doujin，商业作品在 professional
+DLSITE_CDN_SUB = {'RJ': 'doujin', 'VJ': 'professional', 'RE': 'doujin'}
 
+
+def dlsite_cdn_urls(pid) -> list[str]:
+    """按编号直接拼 CDN 封面地址（main 优先，sam 兜底）。
+
+    2026-11-26 实测：已下架作品商品页返回 404，但图片仍在 CDN 上。
+    目录规则＝前缀 + 编号向上取整到千位（RJ088973 → RJ089000）。
+    """
+    match = re.match(r'([A-Za-z]+)(\d+)', str(pid or '').strip())
+    if not match:
+        return []
+    prefix, digits = match.group(1).upper(), match.group(2)
+    sub = DLSITE_CDN_SUB.get(prefix)
+    if not sub:
+        return []
+    upper = -(-int(digits) // 1000) * 1000
+    folder = f'{prefix}{upper:0{len(digits)}d}'
+    name = f'{prefix}{digits}'
+    return [DLSITE_CDN.format(sub=sub, folder=folder, pid=name, kind=kind)
+            for kind in ('main', 'sam')]
+
+
+def _save_dlsite_image(pid, data: bytes) -> None:
+    target = dlsite_thumb_path(pid)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(target.name + '.part')
+    tmp.write_bytes(data)
+    try:
+        os.chmod(tmp, 0o644)
+    except OSError:
+        pass
+    tmp.replace(target)
+
+
+def download_dlsite(pid, session: requests.Session, timeout: int = 30):
+    """取 DLsite 封面：① CDN 直连（下架作品也能取）② 商品页 og:image 兜底。"""
     site = dlsite_site(pid)
     if not site:
         return False, '未知 dlsite 前缀', 0
+    last_error = '无可用地址'
+    for url in dlsite_cdn_urls(pid):
+        try:
+            img = session.get(url, timeout=timeout)
+        except requests.RequestException as exc:
+            last_error = f'CDN 网络错误: {exc}'
+            continue
+        if img.status_code != 200 or 'image' not in img.headers.get('Content-Type', ''):
+            last_error = f'CDN HTTP {img.status_code}'
+            continue
+        if len(img.content) < MIN_BYTES:
+            last_error = 'CDN 文件过小'
+            continue
+        _save_dlsite_image(pid, img.content)
+        return True, f'cdn {len(img.content)} bytes', len(img.content)
     try:
         page = session.get(DLSITE_URL.format(site=site, pid=pid), timeout=timeout)
     except requests.RequestException as exc:
         return False, f'网络错误: {exc}', 0
     if page.status_code != 200:
-        return False, f'HTTP {page.status_code}', 0
+        return False, f'HTTP {page.status_code}（CDN: {last_error}）', 0
     match = re.search(OG_IMAGE_RE, page.text)
     if not match:
         return False, '无 og:image', 0
@@ -308,15 +375,7 @@ def download_dlsite(pid, session: requests.Session, timeout: int = 30):
         return False, f'图片 HTTP {img.status_code}', 0
     if len(img.content) < MIN_BYTES:
         return False, '文件过小', len(img.content)
-    target = dlsite_thumb_path(pid)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(target.name + '.part')
-    tmp.write_bytes(img.content)
-    try:
-        os.chmod(tmp, 0o644)
-    except OSError:
-        pass
-    tmp.replace(target)
+    _save_dlsite_image(pid, img.content)
     return True, f'{len(img.content)} bytes', len(img.content)
 
 
@@ -376,7 +435,7 @@ def dlsite_coverage() -> dict:
     try:
         ensure_egs_schema(conn)
         rows = conn.execute(
-            "SELECT getchu_id, dlsite_id, dmm FROM egs_games "
+            "SELECT " + egs_extids.external_id_columns() + " FROM egs_games "
             "WHERE dlsite_id IS NOT NULL AND dlsite_id !=''"
         ).fetchall()
     finally:
@@ -422,17 +481,29 @@ def _similar(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, a, b).ratio()
 
 
+TITLE_SPAN_MIN = 0.60      # 包含判定的长度比下限（原 0.70）
+TITLE_RATIO_MIN = 0.82     # 相似度下限（原 0.86）
+CONTAIN_SCORE = 0.92       # 包含命中给的分数
+EMPTY_BRAND_TITLE_MIN = 0.90  # 候选品牌为空时，标题需达到的分数
+
+
 def title_match(target: str, candidate: str) -> tuple[bool, float]:
-    """标题核心匹配：完全一致、包含（长度比≥0.7）、或相似度≥0.86。"""
+    """标题核心匹配：完全一致、包含（长度比≥0.60）、或相似度≥0.82。
+
+    2026-11-26 放宽：原 0.70/0.86 会把「作品名 + 特典后缀」这类正确候选否掉
+    （40193 紳士ドライバー 长度比 0.68、相似度 0.80，唯一候选被丢）。
+    """
     a, b = norm_text(target), norm_text(candidate)
     if not a or not b:
         return False, 0.0
     if a == b:
         return True, 1.0
     ratio = _similar(a, b)
-    if (a in b or b in a) and min(len(a), len(b)) / max(len(a), len(b)) >= 0.7:
-        return True, max(ratio, 0.9)
-    return (ratio >= 0.86), ratio
+    if a in b or b in a:
+        span = min(len(a), len(b)) / max(len(a), len(b))
+        if span >= TITLE_SPAN_MIN:
+            return True, max(ratio, CONTAIN_SCORE)
+    return (ratio >= TITLE_RATIO_MIN), ratio
 
 
 def brand_match(target: str, candidate: str) -> tuple[bool, float]:
@@ -446,6 +517,18 @@ def brand_match(target: str, candidate: str) -> tuple[bool, float]:
         return True, 0.95
     ratio = _similar(a, b)
     return (ratio >= 0.8), ratio
+
+
+def brand_state(target: str, candidate: str) -> tuple[str, float]:
+    """品牌三态：match / empty（候选页面没写品牌）/ miss。
+
+    Getchu 的同人作品页经常没有「ブランド名」链接，空品牌不能当成不匹配。
+    """
+    a, b = norm_brand(target), norm_brand(candidate)
+    if not a or not b:
+        return 'empty', 0.0
+    ok, score = brand_match(target, candidate)
+    return ('match', score) if ok else ('miss', score)
 
 
 def parse_getchu_search(html: str) -> list[dict]:
@@ -490,36 +573,44 @@ def search_getchu(name: str, session: requests.Session, timeout: int = 30,
     return results, ''
 
 
-def pick_getchu_match(row, results: list[dict], min_score: float = 0.86):
-    """从搜索结果里挑唯一可信的匹配：标题 + 品牌双校验。
+def pick_getchu_match(row, results: list[dict], min_score: float = EMPTY_BRAND_TITLE_MIN):
+    """从搜索结果里挑唯一可信的匹配：标题为主，品牌缺失不否决。
 
+    品牌为空（Getchu 同人页常见）时改用标题分数下限兜底；
+    并列最高分时优先品牌命中的候选，仍并列则放弃（避免歧义配错）。
     返回 (match, evidence)；没有可靠匹配时 match 为 None。
     """
-    target_name = row['name'] or row['egs_name'] or ''
-    target_brand = row['company'] or row['egs_company'] or ''
+    target_name = _row_get(row, 'name') or _row_get(row, 'egs_name') or ''
+    target_brand = _row_get(row, 'company') or _row_get(row, 'egs_company') or ''
     scored = []
     for item in results:
-        if item['media'].upper() in NON_GAME_MEDIA:
+        if (item.get('media') or '').upper() in NON_GAME_MEDIA:
             continue
         t_ok, t_score = title_match(target_name, item['title'])
-        if not t_ok or t_score < min_score:
+        if not t_ok:
             continue
-        b_ok, b_score = brand_match(target_brand, item['brand'])
-        if not b_ok:
+        state, b_score = brand_state(target_brand, item['brand'])
+        if state == 'miss':
+            continue
+        if state == 'empty' and t_score < min_score:
             continue
         item['title_score'] = round(t_score, 3)
+        item['brand_state'] = state
         item['brand_score'] = round(b_score, 3)
         scored.append(item)
     if not scored:
-        return None, {'reason': '无标题+品牌双匹配候选',
-                      'candidates': len(results)}
+        return None, {'reason': '无标题（+品牌）匹配候选', 'candidates': len(results)}
     scored.sort(key=lambda it: (-it['title_score'], -it['brand_score']))
     best = scored[0]
-    # 多个候选并列最高分时不采用（避免歧义配错）
-    if len(scored) > 1 and scored[1]['title_score'] == best['title_score'] \
-            and scored[1]['brand_score'] == best['brand_score']:
+    # 同分且品牌状态相同才视为歧义；一条品牌命中、一条品牌缺失时取命中的
+    tied = [it for it in scored[1:]
+            if it['title_score'] == best['title_score']
+            and it['brand_state'] == best['brand_state']]
+    if tied:
         return None, {'reason': '多个候选并列，放弃', 'candidates': len(results)}
-    return best, {'reason': '标题+品牌双匹配', 'candidates': len(results)}
+    reason = ('标题+品牌匹配' if best['brand_state'] == 'match'
+              else '标题匹配（候选无品牌）')
+    return best, {'reason': reason, 'candidates': len(results)}
 
 
 
@@ -568,8 +659,14 @@ def page_is_about(html: str, name: str, company: str) -> bool:
 
 
 def image_looks_like_package(data: bytes, min_width: int = 200,
-                             min_height: int = 200) -> tuple[bool, str]:
-    """包图基本是竖版；横版大图多半是横幅/logo，判为不合格。"""
+                             min_height: int = 200,
+                             max_ratio: float = 3.0) -> tuple[bool, str]:
+    """判断一张图能否当封面用。
+
+    2026-11-26 放宽：原先用 `height < width*0.95` 硬拒所有横图，但同人游戏
+    大量是 4:3 横版封面（DLsite 源抽样 36/40 是 384x288），方形也是正常形态。
+    现在只拒绝过小的图和比例超过 max_ratio 的纯横幅／长条图。
+    """
     try:
         from PIL import Image
         import io
@@ -579,8 +676,9 @@ def image_looks_like_package(data: bytes, min_width: int = 200,
         return False, f'无法解析图片: {exc}'
     if width < min_width or height < min_height:
         return False, f'尺寸过小 {width}x{height}'
-    if height < width * 0.95:
-        return False, f'非竖版 {width}x{height}'
+    long_side, short_side = max(width, height), min(width, height)
+    if short_side and long_side / short_side > max_ratio:
+        return False, f'比例过扁 {width}x{height}'
     return True, f'{width}x{height}'
 
 # ---------------- DMM 编号直连（无 getchu/dlsite 但 EGS 带 dmm 编号） ----------------
@@ -617,8 +715,8 @@ def has_dmm_cover(row) -> bool:
 def pending_dmm(conn, limit: int = 0) -> list:
     """没有 getchu/dlsite id、但有 dmm 编号且尚无封面的记录。"""
     rows = conn.execute(
-        "SELECT egs_id, getchu_id, dlsite_id, dmm, date, name FROM egs_games "
-        "WHERE dmm IS NOT NULL AND dmm != '' ORDER BY date, egs_id"
+        "SELECT egs_id, " + egs_extids.external_id_columns() + ", date, name "
+        "FROM egs_games WHERE dmm IS NOT NULL AND dmm != '' ORDER BY date, egs_id"
     ).fetchall()
     missing = [r for r in rows if missing_kind(r) == 'dmm' and not has_cover(r)]
     return missing[:limit] if limit else missing
@@ -672,6 +770,93 @@ def download_dmm(dmm, session: requests.Session, timeout: int = 30,
     return True, f'{len(data)} bytes', len(data), url
 
 
+def pending_official(conn, limit: int = 0) -> list:
+    """已下载、仍无封面、且记录带官网地址的记录。"""
+    rows = conn.execute(
+        "SELECT egs_id, " + egs_extids.external_id_columns() + ", date, name, official_url "
+        "FROM egs_games WHERE COALESCE(official_url,'') != '' AND downloaded = 1 "
+        "ORDER BY date, egs_id"
+    ).fetchall()
+    missing = [r for r in rows if not has_cover(r)]
+    return missing[:limit] if limit else missing
+
+
+def run_official(limit: int = 0, interval: float = 1.0, should_stop=None,
+                 logger=None) -> dict:
+    """从作品官网抓 og:image 兜底补封面（横向包图现在也接受）。"""
+    log = logger or (lambda msg: None)
+    conn = open_egs_db()
+    try:
+        ensure_egs_schema(conn)
+        rows = pending_official(conn, limit)
+    finally:
+        conn.close()
+
+    session = requests.Session()
+    session.headers.update({'User-Agent': UA})
+    stats = {'status': 'success', 'mode': 'official', 'total': len(rows), 'ok': 0,
+             'failed': 0, 'failed_ids': [], 'last_error': '',
+             'started_at': now_ts(), 'finished_at': None}
+    log(f'待抓 {len(rows)} 个官网封面')
+    for i, row in enumerate(rows):
+        if should_stop and should_stop():
+            stats['status'] = 'stopped'
+            break
+        ok, message, _size = download_official(
+            row['egs_id'], row['official_url'], session)
+        if ok:
+            stats['ok'] += 1
+            log(f'[{i + 1}/{len(rows)}] {row["egs_id"]} ✓ {message} {row["name"]}')
+        else:
+            stats['failed'] += 1
+            stats['failed_ids'].append(row['egs_id'])
+            stats['last_error'] = message
+            log(f'[{i + 1}/{len(rows)}] {row["egs_id"]} ✗ {message} {row["name"]}')
+        if interval and i + 1 < len(rows):
+            time.sleep(interval)
+    stats['finished_at'] = now_ts()
+    _save_state(stats)
+    return stats
+
+
+def run_dmm(limit: int = 0, interval: float = 1.0, should_stop=None,
+            logger=None) -> dict:
+    """按 DMM 编号批量补封面（竖版包图优先，横向商品图兜底）。"""
+    log = logger or (lambda msg: None)
+    conn = open_egs_db()
+    try:
+        ensure_egs_schema(conn)
+        rows = pending_dmm(conn, limit)
+    finally:
+        conn.close()
+
+    session = requests.Session()
+    session.headers.update({'User-Agent': UA, 'Referer': 'https://www.dmm.co.jp/'})
+    stats = {'status': 'success', 'mode': 'dmm', 'total': len(rows), 'ok': 0,
+             'failed': 0, 'failed_ids': [], 'last_error': '',
+             'started_at': now_ts(), 'finished_at': None}
+    log(f'待下载 {len(rows)} 张 DMM 封面')
+    for i, row in enumerate(rows):
+        if should_stop and should_stop():
+            stats['status'] = 'stopped'
+            break
+        code = str(row['dmm']).strip()
+        ok, message, _size, _url = download_dmm(code, session)
+        if ok:
+            stats['ok'] += 1
+            log(f'[{i + 1}/{len(rows)}] {code} ✓ {message} {row["name"]}')
+        else:
+            stats['failed'] += 1
+            stats['failed_ids'].append(code)
+            stats['last_error'] = message
+            log(f'[{i + 1}/{len(rows)}] {code} ✗ {message} {row["name"]}')
+        if interval and i + 1 < len(rows):
+            time.sleep(interval)
+    stats['finished_at'] = now_ts()
+    _save_state(stats)
+    return stats
+
+
 def download_official(egs_id, url, session: requests.Session,
                       timeout: int = 15) -> tuple[bool, str, int]:
     """从作品官网抓 og:image 包图，存到 thumbnails/official/{egs_id}.jpg。
@@ -717,3 +902,111 @@ def download_official_with_data(egs_id, url, session, timeout=15):
         pass
     tmp.replace(target)
     return True, f'{info} {len(img.content)} bytes', len(img.content)
+
+
+# ---------------- 补 ID：从种子名 / 115 目录名提取 DLsite 编号 ----------------
+# 编号来自我们自己下载的目录名或种子名，不是按名猜，零误配风险。
+RJ_ID_RE = re.compile(r'((?:RJ|VJ|RE)\d{6,10})', re.I)
+
+
+def extract_dlsite_id(text) -> str:
+    match = RJ_ID_RE.search(str(text or ''))
+    return match.group(1).upper() if match else ''
+
+
+def scan_dlsite_ids_from_dirs(conn, dry_run: bool = True, limit: int = 0) -> dict:
+    """已下载但无任何外部 ID 的记录：从种子名 / 115 目录名提取 DLsite 编号。"""
+    sql = """
+        SELECT g.egs_id, g.name, g.torrent_name, g.nyaa_name,
+               COALESCE(f.folder_name,'') AS folder_name,
+               COALESCE(f.folder_path,'') AS folder_path
+          FROM egs_games g
+          LEFT JOIN egs_115_folders f ON f.date=g.date AND f.name=g.name
+         WHERE g.downloaded=1
+           AND COALESCE(g.getchu_id,'')='' AND COALESCE(g.dlsite_id,'')=''
+           AND COALESCE(g.dmm,'')=''
+         ORDER BY g.egs_id
+    """
+    rows = conn.execute(sql).fetchall()
+    items = []
+    for row in rows:
+        blob = ' '.join(str(_row_get(row, key) or '') for key in
+                        ('torrent_name', 'nyaa_name', 'folder_name', 'folder_path'))
+        pid = extract_dlsite_id(blob)
+        if not pid:
+            continue
+        items.append({'egs_id': row['egs_id'], 'name': row['name'], 'dlsite_id': pid})
+        if limit and len(items) >= limit:
+            break
+    written = 0
+    if not dry_run:
+        for item in items:
+            res = egs_extids.attach_external_id(
+                conn, item['egs_id'], 'dlsite', item['dlsite_id'], origin='dir_scan')
+            if res.get('changed') or res.get('legacy_written'):
+                written += 1
+                item['written'] = True
+        conn.commit()
+    return {'status': 'success', 'mode': 'dir_scan', 'dry_run': dry_run,
+            'scanned': len(rows), 'extracted': len(items), 'written': written,
+            'items': items}
+
+
+def run_namesearch_getchu(conn, year: int | None = None, month: int | None = None,
+                          limit: int = 0, dry_run: bool = True,
+                          interval: float = 1.5, should_stop=None,
+                          logger=None) -> dict:
+    """对没有任何外部 ID 的记录按名搜索 Getchu，补 getchu_id。
+
+    只处理 getchu/dlsite/dmm 全空的记录：已经有 ID 的不该再按名猜。
+    """
+    log = logger or (lambda msg: None)
+    sql = ("SELECT egs_id, name, company, date FROM egs_games "
+           "WHERE COALESCE(getchu_id,'')='' AND COALESCE(dlsite_id,'')='' "
+           "AND COALESCE(dmm,'')=''")
+    params: list = []
+    if year:
+        if month:
+            sql += ' AND date = ?'
+            params.append(f'{int(year):04d}-{int(month):02d}')
+        else:
+            sql += ' AND date >= ? AND date < ?'
+            params.extend([f'{int(year):04d}-01', f'{int(year) + 1:04d}-01'])
+    sql += ' ORDER BY date, egs_id'
+    rows = conn.execute(sql, params).fetchall()
+    if limit:
+        rows = rows[:limit]
+
+    session = requests.Session()
+    session.headers.update({'User-Agent': UA, 'Referer': 'https://www.getchu.com/'})
+    stats = {'status': 'success', 'mode': 'getchu_search', 'dry_run': dry_run,
+             'year': year, 'month': month, 'total': len(rows),
+             'matched': 0, 'written': 0, 'items': []}
+    for i, row in enumerate(rows):
+        if should_stop and should_stop():
+            stats['status'] = 'stopped'
+            break
+        hits, err = search_getchu(row['name'], session)
+        match, evidence = pick_getchu_match(row, hits)
+        item = {'egs_id': row['egs_id'], 'name': row['name'], 'hits': len(hits),
+                'reason': evidence.get('reason'), 'error': err, 'match': None}
+        if match is not None:
+            stats['matched'] += 1
+            item['match'] = {'getchu_id': match['getchu_id'], 'title': match['title'],
+                             'score': match.get('title_score'),
+                             'brand_state': match.get('brand_state')}
+            if not dry_run:
+                res = egs_extids.attach_external_id(
+                    conn, row['egs_id'], 'getchu', match['getchu_id'],
+                    origin='getchu_search')
+                item['written'] = bool(res.get('changed') or res.get('legacy_written'))
+                if item['written']:
+                    stats['written'] += 1
+        stats['items'].append(item)
+        log(f'[{i + 1}/{len(rows)}] {row["egs_id"]} hits={len(hits)} '
+            f'{"✓" if match else "✗"} {row["name"]}')
+        if i + 1 < len(rows):
+            time.sleep(interval)
+    if not dry_run:
+        conn.commit()
+    return stats

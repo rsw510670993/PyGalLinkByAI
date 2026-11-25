@@ -92,15 +92,31 @@ def resolve(path):
         return None
 
 
+def _resolve_by_external(conn, rj: str):
+    """优先用外部 ID 映射表反查（索引命中），映射表不可用时返回 None 交由旧列 LIKE 兜底。"""
+    try:
+        from tool.egs_extids import resolve_egs_id
+    except Exception:  # noqa: BLE001 - 独立脚本环境可能没有 tool 包
+        return None
+    egs_id = resolve_egs_id(conn, 'dlsite', rj)
+    if not egs_id:
+        return None
+    return conn.execute(
+        'SELECT egs_id, date, name FROM egs_games WHERE egs_id = ?', (egs_id,)
+    ).fetchone()
+
+
 def find_counterpart(conn, year: int, old_name: str):
     """为旧库目录找一个**可核实**的 /GAL 对照目录；核不出来返回 None。"""
-    # ① RJ 号 → egs_games → egs_115_folders 精确映射
+    # ① RJ 号 → 外部 ID 映射表（优先）/ egs_games.dlsite_id → egs_115_folders 精确映射
     match = re.search(r'(RJ\d{6,8})', old_name or '', re.I)
     if match:
-        row = conn.execute(
-            'SELECT egs_id, date, name FROM egs_games WHERE dlsite_id LIKE ? LIMIT 1',
-            (f'%{match.group(1)}%',),
-        ).fetchone()
+        row = _resolve_by_external(conn, match.group(1))
+        if row is None:
+            row = conn.execute(
+                'SELECT egs_id, date, name FROM egs_games WHERE dlsite_id LIKE ? LIMIT 1',
+                (f'%{match.group(1)}%',),
+            ).fetchone()
         if row:
             mapped = conn.execute(
                 'SELECT folder_name, cid, folder_path FROM egs_115_folders WHERE date=? AND name=?',
