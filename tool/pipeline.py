@@ -399,6 +399,10 @@ def execute_job(state, save, should_stop):
         if action == 'submit':
             sql += ' AND submitted_115 = 0'
             sql += ' AND COALESCE(is_eroge,1)=1'
+            # 2026-11-25 双表读路径第 1 步：可提交判定改用 relation（无非 primary link）。
+            # 与旧 magnet_duplicate 口径逐条对比一致（3,388 条互差 0），旧条件暂留作过渡。
+            sql += (" AND NOT EXISTS (SELECT 1 FROM egs_artifact_links l"
+                    " WHERE l.egs_id = egs_games.egs_id AND l.relation != 'primary')")
         rows = conn.execute(sql + ' ORDER BY date, egs_id', params).fetchall()
         state['total'] = len(rows)
         save()
