@@ -278,11 +278,23 @@ def adopt_downloaded_folder_by_torrent_name(conn, date, name, link, stored_infoh
     cid = str(item.get("cid") or "")
     if not cid:
         return None
-    owner = conn.execute(
-        """SELECT 1 FROM egs_115_folders
-             WHERE cid=? AND NOT (date=? AND name=?) LIMIT 1""",
-        (cid, date, name),
-    ).fetchone()
+    # 2026-11-25 双表优先（读路径第 3 步）：artifact link 里已被别的记录引用的目录
+    # 不再认领；旧 egs_115_folders 判断保留作兜底（两者任一命中即视为已占用）。
+    owner = None
+    if _artifact_tables_present(conn):
+        owner = conn.execute(
+            """SELECT 1 FROM egs_artifact_links l
+                 JOIN egs_games g ON g.egs_id=l.egs_id
+                WHERE l.artifact_id IN (SELECT artifact_id FROM egs_artifacts WHERE folder_cid=?)
+                  AND NOT (g.date=? AND g.name=?) LIMIT 1""",
+            (cid, date, name),
+        ).fetchone()
+    if owner is None:
+        owner = conn.execute(
+            """SELECT 1 FROM egs_115_folders
+                 WHERE cid=? AND NOT (date=? AND name=?) LIMIT 1""",
+            (cid, date, name),
+        ).fetchone()
     if owner:
         return None
 
