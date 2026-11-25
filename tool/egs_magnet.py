@@ -28,7 +28,12 @@ from bs4 import BeautifulSoup
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-from tool.egs_core import ensure_egs_schema, open_egs_db, refresh_magnet_duplicates
+from tool.egs_core import (
+    ensure_egs_schema,
+    open_egs_db,
+    refresh_magnet_duplicates,
+    sync_magnet_artifact,
+)
 from tool.egs_match import (
     MAX_SCORE,
     THRESHOLD,
@@ -837,6 +842,8 @@ def process_game(conn: sqlite3.Connection, session: requests.Session, row,
                 (egs_id,),
             )
         refresh_magnet_duplicates(conn, (old_infohash, best_key))
+        # 选链/换链后同步新双表（note='magnet'）；旧 hash 的自动 link 一并清理。
+        sync_magnet_artifact(conn, egs_id)
         conn.execute(
             """
             INSERT INTO egs_nyaa_search_log
@@ -1271,6 +1278,8 @@ def decide_review(egs_id: int, decision: str, candidate_id: int | None = None,
                     (egs_id,),
                 )
             refresh_magnet_duplicates(conn, (game["infohash_hex"], infohash))
+            # 审核通过/换链后同步新双表（note='magnet'），旧 hash 自动 link 清理。
+            sync_magnet_artifact(conn, egs_id)
             conn.execute(
                 """
                 INSERT INTO egs_nyaa_search_log

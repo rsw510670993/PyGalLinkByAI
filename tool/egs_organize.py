@@ -7,7 +7,7 @@ import sqlite3
 import time
 from urllib.parse import unquote
 
-from .egs_core import ensure_egs_schema, open_egs_db as open_db
+from .egs_core import ensure_egs_schema, open_egs_db as open_db, sync_folder_artifact
 from .runtime import read_config, repo_root, share_sqlite_wal_files
 from .p115_client import (
     get_item_info,
@@ -95,6 +95,13 @@ def save_folder_record(conn, date, name, **kw):
         (date, name, rec.get("cid"), rec.get("pid"), rec.get("pick_code"),
          rec.get("folder_name"), rec.get("folder_path"), rec.get("target_name"),
          rec.get("date_code"), rec.get("company"), rec.get("status"), int(time.time())),
+    )
+    # 双写新表（egs_artifacts/egs_artifact_links）：有 hash 按 hash、无 hash 按 cid。
+    sync_folder_artifact(
+        conn, date, name,
+        folder_cid=rec.get("cid"),
+        folder_path=rec.get("folder_path"),
+        display_name=rec.get("target_name") or rec.get("folder_name"),
     )
     conn.commit()
 
