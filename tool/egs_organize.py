@@ -1364,17 +1364,33 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
         # 目录定位冲突不能证明磁链重复，更不能永久改变提交资格。
         # 使用 INNER JOIN 排除已不存在 EGS 行的孤儿目录映射；同一 egs_id 的
         # 新旧目录映射（搬月遗留）不算“被其他游戏记录引用”。
-        others = conn.execute(
-            """SELECT g.egs_id,f.date,f.name,f.target_name,g.infohash_hex,
-                      f.folder_name,f.folder_path
-                 FROM egs_115_folders f
-                 JOIN egs_games g ON g.date=f.date AND g.name=f.name
-                WHERE f.cid=? AND NOT (f.date=? AND f.name=?)
-                  AND g.egs_id!=?
-                  AND COALESCE(g.magnet_duplicate,0)=0
-                  AND COALESCE(g.submission_excluded,0)=0""",
-            (cid, date, name, egs_id),
-        ).fetchall()
+        # 2026-11-25 双表优先：按 artifact.folder_cid 找其他 primary 记录；
+        # 未命中回退旧的 folders join（搬月/历史数据兜底）。
+        others = []
+        if _artifact_tables_present(conn):
+            others = conn.execute(
+                """SELECT g.egs_id,g.date,g.name,f.target_name,g.infohash_hex,
+                          f.folder_name,f.folder_path
+                     FROM egs_artifact_links l
+                     JOIN egs_artifacts a ON a.artifact_id=l.artifact_id
+                     JOIN egs_games g ON g.egs_id=l.egs_id
+                     LEFT JOIN egs_115_folders f ON f.date=g.date AND f.name=g.name
+                    WHERE a.folder_cid=? AND l.relation='primary' AND l.egs_id!=?
+                      AND COALESCE(g.submission_excluded,0)=0""",
+                (cid, egs_id),
+            ).fetchall()
+        if not others:
+            others = conn.execute(
+                """SELECT g.egs_id,f.date,f.name,f.target_name,g.infohash_hex,
+                          f.folder_name,f.folder_path
+                     FROM egs_115_folders f
+                     JOIN egs_games g ON g.date=f.date AND g.name=f.name
+                    WHERE f.cid=? AND NOT (f.date=? AND f.name=?)
+                      AND g.egs_id!=?
+                      AND COALESCE(g.magnet_duplicate,0)=0
+                      AND COALESCE(g.submission_excluded,0)=0""",
+                (cid, date, name, egs_id),
+            ).fetchall()
         if others:
             my_record_holds = (located_by == "db_record" and old_name == target
                                and not any(o[3] == old_name for o in others))
