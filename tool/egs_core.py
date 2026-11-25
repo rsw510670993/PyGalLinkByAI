@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 import sqlite3
@@ -175,7 +176,357 @@ def ensure_egs_schema(conn: sqlite3.Connection) -> None:
         "WHERE link IS NOT NULL AND link != '' "
         "AND magnet_duplicate=0 AND submission_excluded=0 AND downloaded=0"
     )
+    ensure_artifact_schema(conn)
     conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# 新双表双写（egs_artifacts / egs_artifact_links）
+#
+# 两表由外部建好并已回填历史数据，读路径仍走 egs_games 旧字段。这里只负责在
+# 写入点同步维护：取/建 artifact、按 egs 写 link。表不存在（旧库/测试临时库）时
+# 整段跳过；任何异常都回滚到保存点并记 warning，不影响主写入流程。
+# ---------------------------------------------------------------------------
+_LOG = logging.getLogger(__name__)
+_ARTIFACT_TABLES = ("egs_artifacts", "egs_artifact_links")
+_HEX_INFOHASH_RE = re.compile(r"[0-9a-f]{40}")
+_ARTIFACT_KIND_RANK = {"torrent": 1, "folder": 1, "both": 2}
+_ARTIFACT_SAVEPOINT = "egs_artifact_dual_write"
+
+
+def _artifact_tables_present(conn) -> bool:
+    """双表是否都存在；不存在则整段双写跳过（不抛错）。"""
+    try:
+        names = {
+            row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?,?)",
+                _ARTIFACT_TABLES,
+            ).fetchall()
+        }
+    except sqlite3.Error:
+        return False
+    return names >= set(_ARTIFACT_TABLES)
+
+
+def _normalized_infohash(value) -> str:
+    text = str(value or "").strip().lower()
+    return text if _HEX_INFOHASH_RE.fullmatch(text) else ""
+
+
+def _infohash_from_link(link) -> str:
+    text = str(link or "").strip()
+    if not text:
+        return ""
+    try:
+        from .p115_client import _magnet_info_hash
+
+        return _normalized_infohash(_magnet_info_hash(text))
+    except Exception:
+        return ""
+
+
+def _artifact_kind_for(infohash_hex, folder_cid, requested=None) -> str:
+    """按可定位信息推导 kind：hash+cid=both，单 hash=torrent，单 cid=folder。"""
+    if infohash_hex and folder_cid:
+        return "both"
+    if infohash_hex:
+        return requested or "torrent"
+    if folder_cid:
+        return "folder"
+    return requested or "torrent"
+
+
+def _merge_artifact_kind(current, desired) -> str:
+    """kind 只升不降，避免已有 both 被单一路径写回 torrent/folder。"""
+    current = str(current or "").strip()
+    desired = str(desired or "").strip()
+    if not current:
+        return desired or "torrent"
+    if not desired:
+        return current
+    if _ARTIFACT_KIND_RANK.get(desired, 0) > _ARTIFACT_KIND_RANK.get(current, 0):
+        return desired
+    return current
+
+
+def _link_relation(duplicate_of_egs_id, duplicate_reason) -> str:
+    """同链成员关系：无主记录归属=primary，共享目录人工标记=dlc，其余=member。"""
+    if duplicate_of_egs_id:
+        return "dlc" if str(duplicate_reason or "") == "shared_cid_manual" else "member"
+    return "primary"
+
+
+# 字段枚举（定义见 docs/FIELD_DEFINITIONS.md；新增取值先改文档与这里）
+REVIEW_STATUS_VALUES = ('none', 'pending', 'approved', 'rejected')
+ARTIFACT_KIND_VALUES = ('torrent', 'folder', 'both')
+ARTIFACT_RELATION_VALUES = ('primary', 'member', 'dlc')
+ARTIFACT_SOURCE_VALUES = ('auto', 'manual')
+FOLDER_STATUS_VALUES = ('ok', 'renamed', 'moved', 'renamed_moved', 'needs_manual')
+FOLDER_SOURCE_VALUES = ('auto', 'orphan_match', 'collection_match', 'magnet_match',
+                        'manual_move', 'adopt')
+_FOLDER_STATUS_MAP = {
+    'renamed': ('renamed', 'auto'),
+    'already_ok': ('ok', 'auto'),
+    'renamed_moved': ('renamed_moved', 'auto'),
+    'moved': ('moved', 'auto'),
+    'ready': ('ok', 'auto'),
+    'downloaded_unorganized': ('needs_manual', 'auto'),
+    'manual_orphan_match': ('renamed', 'orphan_match'),
+    'manual_collection_match': ('renamed', 'collection_match'),
+    'manual_magnet_match': ('renamed', 'magnet_match'),
+    'manually_moved_from_gal_old': ('moved', 'manual_move'),
+    'found_set_downloaded': ('ok', 'adopt'),
+}
+
+
+def normalize_folder_status(status, source=None):
+    """旧 status 归一为 (新 status, 来源 source)；已是新值或未知历史值则原样保留。"""
+    st = str(status or '').strip()
+    src = str(source or '').strip() if str(source or '').strip() in FOLDER_SOURCE_VALUES else 'auto'
+    if not st:
+        return ('ok', src)
+    if st in FOLDER_STATUS_VALUES:
+        return (st, src)
+    mapped = _FOLDER_STATUS_MAP.get(st)
+    if mapped:
+        return mapped
+    # adopted_exact_torrent_name / wrapped_file 等历史值先保留，后续再逐步收敛
+    return (st, src)
+
+
+_ARTIFACT_SCHEMA_SQL = (
+    """CREATE TABLE IF NOT EXISTS egs_artifacts (
+  artifact_id INTEGER PRIMARY KEY,
+  infohash_hex TEXT UNIQUE,
+  folder_cid TEXT,
+  folder_path TEXT,
+  kind TEXT NOT NULL DEFAULT 'torrent',
+  display_name TEXT,
+  created_at TEXT
+)""",
+    """CREATE TABLE IF NOT EXISTS egs_artifact_links (
+  id INTEGER PRIMARY KEY,
+  egs_id INTEGER NOT NULL,
+  artifact_id INTEGER NOT NULL,
+  relation TEXT NOT NULL,
+  source TEXT NOT NULL,
+  note TEXT,
+  created_at TEXT,
+  UNIQUE(egs_id, artifact_id)
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_artifacts_cid ON egs_artifacts(folder_cid)",
+    "CREATE INDEX IF NOT EXISTS idx_links_artifact ON egs_artifact_links(artifact_id)",
+)
+
+
+def ensure_artifact_schema(conn) -> None:
+    """建双表（幂等）；旧库/新库都会自动补上，避免双写静默跳过。"""
+    for sql in _ARTIFACT_SCHEMA_SQL:
+        conn.execute(sql)
+
+
+def get_or_create_artifact(conn, infohash_hex=None, folder_cid=None,
+                           folder_path=None, display_name=None,
+                           kind=None) -> int | None:
+    """按 infohash（优先）或 folder_cid 取/建 artifact，返回 artifact_id。
+
+    已有行只补空字段、kind 只升不降；两者都缺失时返回 None（无可定位信息）。
+    """
+    hash_ = _normalized_infohash(infohash_hex) or None
+    cid = str(folder_cid or "").strip() or None
+    path = str(folder_path or "").strip() or None
+    name = str(display_name or "").strip() or None
+    row = None
+    if hash_:
+        row = conn.execute(
+            "SELECT artifact_id,infohash_hex,folder_cid,kind FROM egs_artifacts "
+            "WHERE infohash_hex=?",
+            (hash_,),
+        ).fetchone()
+    if row is None and cid:
+        # 同一 115 目录优先复用已有 hash 记录（更具体），否则用最早创建的那条。
+        row = conn.execute(
+            "SELECT artifact_id,infohash_hex,folder_cid,kind FROM egs_artifacts "
+            "WHERE folder_cid=? ORDER BY (infohash_hex IS NULL), artifact_id LIMIT 1",
+            (cid,),
+        ).fetchone()
+    if row is not None:
+        artifact_id = int(row[0])
+        current_hash = _normalized_infohash(row[1]) or None
+        current_cid = str(row[2] or "").strip() or None
+        kind_now = _merge_artifact_kind(
+            row[3],
+            _artifact_kind_for(hash_ or current_hash, cid or current_cid, kind),
+        )
+        conn.execute(
+            "UPDATE egs_artifacts SET kind=?, folder_cid=COALESCE(?, folder_cid),"
+            " folder_path=COALESCE(?, folder_path), display_name=COALESCE(?, display_name)"
+            " WHERE artifact_id=?",
+            (kind_now, cid, path, name, artifact_id),
+        )
+        return artifact_id
+    if not hash_ and not cid:
+        return None
+    cur = conn.execute(
+        "INSERT INTO egs_artifacts"
+        " (infohash_hex, folder_cid, folder_path, kind, display_name, created_at)"
+        " VALUES (?,?,?,?,?,?)",
+        (hash_, cid, path, _artifact_kind_for(hash_, cid, kind), name,
+         time.strftime("%Y-%m-%d %H:%M:%S")),
+    )
+    return int(cur.lastrowid)
+
+
+def upsert_artifact_link(conn, egs_id, artifact_id, relation,
+                         source="auto", note=None) -> None:
+    """写 egs↔artifact 关系，幂等；自动写入不覆盖人工 dlc 的 relation/note。"""
+    conn.execute(
+        """
+        INSERT INTO egs_artifact_links
+            (egs_id, artifact_id, relation, source, note, created_at)
+        VALUES (?,?,?,?,?,?)
+        ON CONFLICT(egs_id, artifact_id) DO UPDATE SET
+            relation = CASE WHEN egs_artifact_links.relation='dlc' AND excluded.source='auto'
+                            THEN egs_artifact_links.relation ELSE excluded.relation END,
+            source   = CASE WHEN egs_artifact_links.relation='dlc' AND excluded.source='auto'
+                            THEN egs_artifact_links.source ELSE excluded.source END,
+            note     = CASE WHEN egs_artifact_links.relation='dlc' AND excluded.source='auto'
+                            THEN egs_artifact_links.note ELSE excluded.note END
+        """,
+        (int(egs_id), int(artifact_id), relation, source, note,
+         time.strftime("%Y-%m-%d %H:%M:%S")),
+    )
+
+
+def _artifact_dual_write(conn, label, apply_fn) -> bool:
+    """在一个保存点里执行双写；失败回滚该段并 warning，不影响主流程。"""
+    if not _artifact_tables_present(conn):
+        _LOG.debug("EGS artifact tables absent, skip dual-write at %s", label)
+        return False
+    try:
+        conn.execute(f"SAVEPOINT {_ARTIFACT_SAVEPOINT}")
+    except sqlite3.Error as exc:
+        _LOG.warning("EGS artifact dual-write skipped at %s: %s", label, exc)
+        return False
+    try:
+        apply_fn()
+        conn.execute(f"RELEASE {_ARTIFACT_SAVEPOINT}")
+        return True
+    except Exception as exc:  # noqa: BLE001 - 双写失败不得打断主流程
+        try:
+            conn.execute(f"ROLLBACK TO {_ARTIFACT_SAVEPOINT}")
+            conn.execute(f"RELEASE {_ARTIFACT_SAVEPOINT}")
+        except sqlite3.Error:
+            pass
+        _LOG.warning("EGS artifact dual-write failed at %s: %s", label, exc)
+        return False
+
+
+def sync_folder_artifact(conn, date, name, folder_cid=None, folder_path=None,
+                         display_name=None) -> None:
+    """save_folder_record 之后：按 (date,name) 定位 egs 行并同步 artifact+link。"""
+    cid = str(folder_cid or "").strip()
+    path = str(folder_path or "").strip()
+    if not cid and not path:
+        return
+
+    def _apply():
+        row = conn.execute(
+            "SELECT egs_id,link,infohash_hex,duplicate_of_egs_id,duplicate_reason"
+            "  FROM egs_games WHERE date=? AND name=? ORDER BY egs_id LIMIT 1",
+            (date, name),
+        ).fetchone()
+        if row is None:
+            return
+        infohash = _normalized_infohash(row["infohash_hex"]) or _infohash_from_link(row["link"])
+        artifact_id = get_or_create_artifact(
+            conn,
+            infohash_hex=infohash,
+            folder_cid=cid,
+            folder_path=path,
+            display_name=display_name,
+            kind="both" if infohash else "folder",
+        )
+        if not artifact_id:
+            return
+        upsert_artifact_link(
+            conn, row["egs_id"], artifact_id,
+            _link_relation(row["duplicate_of_egs_id"], row["duplicate_reason"]),
+            source="auto", note="folder:save",
+        )
+
+    _artifact_dual_write(conn, "folder:save", _apply)
+
+
+def sync_infohash_artifacts(conn, groups) -> None:
+    """refresh_magnet_duplicates 之后：每个 infohash 组取/建 artifact 并写 link。"""
+
+    def _apply():
+        members_by_hash = {}
+        wanted_ids = []
+        for hash_, members in (groups or {}).items():
+            hash_ = _normalized_infohash(hash_)
+            if not hash_ or not members:
+                continue
+            members_by_hash[hash_] = members
+            wanted_ids.extend(int(member["egs_id"]) for member in members)
+        if not members_by_hash:
+            return
+        marks = ",".join("?" for _ in wanted_ids)
+        owner_state = {
+            int(row[0]): row[1]
+            for row in conn.execute(
+                f"SELECT egs_id,duplicate_of_egs_id FROM egs_games WHERE egs_id IN ({marks})",
+                wanted_ids,
+            ).fetchall()
+        }
+        for hash_, members in members_by_hash.items():
+            artifact_id = get_or_create_artifact(conn, infohash_hex=hash_, kind="torrent")
+            if not artifact_id:
+                continue
+            for member in members:
+                egs_id = int(member["egs_id"])
+                relation = "primary" if not owner_state.get(egs_id) else "member"
+                upsert_artifact_link(conn, egs_id, artifact_id, relation,
+                                     source="auto", note="refresh:duplicates")
+
+    _artifact_dual_write(conn, "magnet:refresh", _apply)
+
+
+def sync_magnet_artifact(conn, egs_id, note="magnet:selected") -> None:
+    """选链/换链之后：按 egs 当前 hash 同步 link，并清理不再使用的自动旧链。"""
+
+    def _apply():
+        row = conn.execute(
+            "SELECT infohash_hex,duplicate_of_egs_id FROM egs_games WHERE egs_id=?",
+            (int(egs_id),),
+        ).fetchone()
+        if row is None:
+            return
+        infohash = _normalized_infohash(row["infohash_hex"])
+        if not infohash:
+            return
+        artifact_id = get_or_create_artifact(conn, infohash_hex=infohash, kind="torrent")
+        if not artifact_id:
+            return
+        relation = "member" if row["duplicate_of_egs_id"] else "primary"
+        upsert_artifact_link(conn, int(egs_id), artifact_id, relation,
+                             source="auto", note=note)
+        # 换链后旧 hash 的自动 link 不再属于该 egs；人工 dlc 与 folder 链保留。
+        conn.execute(
+            """
+            DELETE FROM egs_artifact_links
+             WHERE egs_id=? AND source='auto' AND relation!='dlc'
+               AND artifact_id IN (
+                   SELECT artifact_id FROM egs_artifacts
+                    WHERE infohash_hex IS NOT NULL
+                      AND lower(trim(infohash_hex)) != ?
+               )
+            """,
+            (int(egs_id), infohash),
+        )
+
+    _artifact_dual_write(conn, f"magnet:{note}", _apply)
 
 
 _BUNDLE_OR_EXPANSION_RE = re.compile(
@@ -293,6 +644,86 @@ def refresh_magnet_duplicates(conn: sqlite3.Connection, infohashes=None) -> None
         "UPDATE egs_games SET magnet_duplicate=1,duplicate_of_egs_id=?,duplicate_reason=? WHERE egs_id=?",
         ((row[1], row[2], row[0]) for row in manual_duplicates),
     )
+    # 人工标记写完后同步新表：owner=primary、组内成员=member；不删除既有 dlc。
+    sync_infohash_artifacts(conn, groups)
+
+
+def audit_artifact_links(conn, sample_limit: int = 20) -> dict:
+    """残留 link 巡检（只读）：四类不一致 + 孤儿 artifact。
+
+    口径与 2026-11-25 清理裁定一致：
+    - failed_hash_links：download_failed=1 且 egs.link 为空，仍挂可自动清理的
+      hash link（source='auto' 且 relation!='dlc'）；人工/dlc link 受保护不计入。
+    - hash_mismatch：记录 infohash_hex 与 link 指向 artifact 的 hash 不一致；
+      排除 relation='dlc'（共享目录允许不同 hash 的产物挂同一目录）。
+    - multi_link_egs：一个 egs 挂多条 link（同链/目录应归一为一条）。
+    - hash_with_folder_only：记录有 hash，但所有 link 都指向无 hash 的 folder artifact。
+    - orphan_artifacts：没有任何 link 的 artifact；清理失败态 link 后会自然出现，
+      保留行供历史追溯，只报告不自动删，不计入 ok。
+    """
+    present = _artifact_tables_present(conn)
+    counts = {
+        "failed_hash_links": 0,
+        "hash_mismatch": 0,
+        "multi_link_egs": 0,
+        "hash_with_folder_only": 0,
+    }
+    samples = {name: [] for name in counts}
+    orphan_artifacts = 0
+    if present:
+        queries = {
+            "failed_hash_links": """
+                SELECT l.id FROM egs_games g
+                  JOIN egs_artifact_links l ON l.egs_id=g.egs_id
+                  JOIN egs_artifacts a ON a.artifact_id=l.artifact_id
+                 WHERE COALESCE(g.download_failed,0)=1
+                   AND trim(COALESCE(g.link,''))=''
+                   AND trim(COALESCE(a.infohash_hex,''))!=''
+                   AND l.source='auto' AND l.relation!='dlc'
+                 ORDER BY l.id
+            """,
+            "hash_mismatch": """
+                SELECT l.id FROM egs_games g
+                  JOIN egs_artifact_links l ON l.egs_id=g.egs_id
+                  JOIN egs_artifacts a ON a.artifact_id=l.artifact_id
+                 WHERE trim(COALESCE(g.infohash_hex,''))!=''
+                   AND trim(COALESCE(a.infohash_hex,''))!=''
+                   AND l.relation!='dlc'
+                   AND lower(trim(g.infohash_hex)) != lower(trim(a.infohash_hex))
+                 ORDER BY l.id
+            """,
+            "multi_link_egs": """
+                SELECT egs_id FROM egs_artifact_links
+                 GROUP BY egs_id HAVING COUNT(*)>1
+                 ORDER BY egs_id
+            """,
+            "hash_with_folder_only": """
+                SELECT g.egs_id FROM egs_games g
+                  JOIN egs_artifact_links l ON l.egs_id=g.egs_id
+                  JOIN egs_artifacts a ON a.artifact_id=l.artifact_id
+                 WHERE trim(COALESCE(g.infohash_hex,''))!=''
+                 GROUP BY g.egs_id
+                HAVING SUM(CASE WHEN trim(COALESCE(a.infohash_hex,''))!=''
+                                THEN 1 ELSE 0 END)=0
+                 ORDER BY g.egs_id
+            """,
+        }
+        for name, sql in queries.items():
+            rows = conn.execute(sql).fetchall()
+            counts[name] = len(rows)
+            samples[name] = [row[0] for row in rows[:max(0, int(sample_limit))]]
+        orphan_artifacts = conn.execute(
+            "SELECT COUNT(*) FROM egs_artifacts a"
+            " WHERE NOT EXISTS (SELECT 1 FROM egs_artifact_links l"
+            "                    WHERE l.artifact_id=a.artifact_id)"
+        ).fetchone()[0]
+    return {
+        "tables_present": present,
+        "ok": present and not any(counts.values()),
+        "counts": counts,
+        "samples": samples,
+        "orphan_artifacts": orphan_artifacts,
+    }
 
 
 def ensure_review_blacklist_schema(conn: sqlite3.Connection) -> None:

@@ -28,7 +28,12 @@ from bs4 import BeautifulSoup
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-from tool.egs_core import ensure_egs_schema, open_egs_db, refresh_magnet_duplicates
+from tool.egs_core import (
+    ensure_egs_schema,
+    open_egs_db,
+    refresh_magnet_duplicates,
+    sync_magnet_artifact,
+)
 from tool.egs_match import (
     MAX_SCORE,
     THRESHOLD,
@@ -837,6 +842,8 @@ def process_game(conn: sqlite3.Connection, session: requests.Session, row,
                 (egs_id,),
             )
         refresh_magnet_duplicates(conn, (old_infohash, best_key))
+        # 选链/换链后同步新双表（note='magnet'）；旧 hash 的自动 link 一并清理。
+        sync_magnet_artifact(conn, egs_id)
         conn.execute(
             """
             INSERT INTO egs_nyaa_search_log
@@ -1017,6 +1024,17 @@ def run_magnet(year: int, month: int | None = None, force: bool = False,
         finally:
             conn.rollback()
         ensure_egs_magnet_schema(conn)
+        # 无人流程下 pending 不能成为永久黑洞：超过 30 天未审自动回落为 rejected，
+        # DSH 需要时仍可从 rejected 队列找回，不再永久卡在待审里。
+        conn.execute(
+            """UPDATE egs_nyaa_search_log
+                  SET review_status='rejected', reviewed_at=?,
+                      review_note='超过30天无人审核，自动回落'
+                WHERE review_status='pending'
+                  AND COALESCE(tried_at,'') < datetime('now','-30 days')""",
+            (time.strftime('%Y-%m-%d %H:%M:%S'),),
+        )
+        conn.commit()
         rows = pending_rows(conn, year, month=month, force=force, limit=limit,
                              rescan=rescan, rescan_limit=rescan_limit)
         scope_sql = "SELECT COUNT(*) AS total, SUM(link IS NOT NULL AND link != '') AS linked, SUM((link IS NULL OR link = '') AND release_ts > date('now','localtime')) AS unreleased, SUM((link IS NULL OR link = '') AND (release_ts IS NULL OR release_ts <= date('now','localtime')) AND EXISTS(SELECT 1 FROM egs_nyaa_search_log l WHERE l.egs_id=g.egs_id)) AS cached FROM egs_games g WHERE COALESCE(is_eroge,1)=1 AND "
@@ -1260,6 +1278,8 @@ def decide_review(egs_id: int, decision: str, candidate_id: int | None = None,
                     (egs_id,),
                 )
             refresh_magnet_duplicates(conn, (game["infohash_hex"], infohash))
+            # 审核通过/换链后同步新双表（note='magnet'），旧 hash 自动 link 清理。
+            sync_magnet_artifact(conn, egs_id)
             conn.execute(
                 """
                 INSERT INTO egs_nyaa_search_log

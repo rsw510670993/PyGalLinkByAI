@@ -939,6 +939,20 @@ class PipelineTests(unittest.TestCase):
         get_name.assert_not_called()
         self.assertEqual(conn.execute('SELECT downloaded FROM egs_games WHERE egs_id=1').fetchone()[0], 0)
 
+    def test_offline_stall_ignores_zero_percent(self):
+        # 批量提交后排队任务 percentDone=0 是常态，不能按 30 分钟判死；
+        # 有进度的任务连续 30 分钟无增长仍要判死。
+        self.assertEqual(
+            pipeline._offline_stall_decision(None, 0, 0, 1000.0), (False, None))
+        self.assertEqual(
+            pipeline._offline_stall_decision(
+                {'percent': 0.0, 'seen_at': 1000.0}, 0, 1000.0, 1000.0 + 3600),
+            (False, None))
+        stalled, entry = pipeline._offline_stall_decision(
+            {'percent': 30.0, 'seen_at': 1000.0}, 30, 1000.0, 1000.0 + 3600)
+        self.assertTrue(stalled)
+        self.assertEqual(entry, {'percent': 30.0, 'seen_at': 1000.0})
+
     def test_pending_offline_task_is_not_organized(self):
         conn=sqlite3.connect(self.db)
         self.addCleanup(conn.close)

@@ -202,6 +202,31 @@ def _unnumbered_sequel_mismatch(gnorm, nt):
         start = pos + 1
 
 
+_NON_GAME_PATTERN = re.compile(
+    r"(hcg|cg集|cg\.rar|cg\.zip|増刊|今日のおかず|同人誌|画集|設定資料|"
+    r"サウンドトラック|サントラ|\bost\b|ドラマcd|壁紙)",
+    re.IGNORECASE,
+)
+_SERIES_VOLUME_PATTERN = re.compile(
+    r"(第[0-9一二三四五六七八九十]+[話话巻卷編编]|vol\.?\s*\d+)", re.IGNORECASE)
+
+
+def _risk_flags(gnorm, nt, title, cand_date, game_date):
+    """标题相似但很可能不是同一作品的候选：返回风险标记，命中即压回阈值以下。"""
+    flags = {}
+    if _NON_GAME_PATTERN.search(title):
+        flags["non_game_content"] = True
+    if _SERIES_VOLUME_PATTERN.search(title) and not _SERIES_VOLUME_PATTERN.search(gnorm):
+        flags["series_volume"] = True
+    pub = _parse_dt(cand_date)
+    rel = _parse_dt(game_date)
+    if not rel and game_date and len(str(game_date)) == 7:
+        rel = _parse_dt(str(game_date) + "-15")
+    if pub and rel and abs((pub.date() - rel.date()).days) > 730:
+        flags["date_far"] = True
+    return flags
+
+
 def score_candidate(game, cand):
     """game: {name, company, date, release_date}; cand: {nyaa_title, nyaa_date, ...}
 
@@ -284,6 +309,15 @@ def score_candidate(game, cand):
     if is_abnormally_short_name(game.get("name")) and "company" not in detail:
         total = min(total, THRESHOLD - 1)
         detail["short_name_requires_company"] = True
+
+    # 非游戏本体（CG 集/杂志增刊/画集/OST）与系列分卷：标题相似但不是同一作品，
+    # 压回阈值以下交 DSH 复核。年代差只做标记（老作补种很常见），不降分。
+    flags = _risk_flags(gnorm, nt, title,
+                        cand.get("nyaa_date"), game.get("release_date") or game.get("date"))
+    if flags:
+        detail.update(flags)
+        if flags.get("non_game_content") or flags.get("series_volume"):
+            total = min(total, THRESHOLD - 1)
 
     return round(total, 1), detail
 

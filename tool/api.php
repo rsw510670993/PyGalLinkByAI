@@ -177,19 +177,6 @@ if ($action === 'egs_games') {
     json_response($data);
 }
 
-if ($action === 'pipeline_preflight') {
-    $actionName = strval($_GET['pipeline_action'] ?? 'check');
-    if (!in_array($actionName, PIPELINE_ACTIONS, true)) {
-        reject_request(400, '未知功能');
-    }
-    $args = ['preflight', '--action', $actionName,
-             '--start-year', strval(as_int($_GET['start_year'] ?? null, 0)),
-             '--end-year', strval(as_int($_GET['end_year'] ?? null, 0)),
-             '--month', strval(as_int($_GET['month'] ?? null, 0))];
-    [$code, $data] = run_cli($args, 'pipeline_entry.py');
-    json_response($data);
-}
-
 if (in_array($action, ['pipeline_start', 'pipeline_status', 'pipeline_stop'], true)) {
     $body = read_json_body();
     if ($action === 'pipeline_status') {
@@ -227,7 +214,7 @@ if ($action === 'agent_job_prune') {
              '--db-days', strval(as_int($body['db_days'] ?? null, 7)),
              '--requested-by', 'web'];
     if (($body['execute'] ?? false) === true) $args[] = '--execute';
-    [$code, $data] = run_cli($args, 'agent_jobs_entry.py');
+    [$code, $data] = run_cli($args);
     json_response($data);
 }
 

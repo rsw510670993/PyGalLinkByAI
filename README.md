@@ -78,7 +78,7 @@ tool/egs_core.py       EGS 抓取与 schema
 tool/egs_magnet.py     磁链搜索 / 分层重扫 / 候选
 tool/egs_organize.py   命名、归位、整理 issue
 tool/p115_client.py    115 API 封装
-tool/agent_jobs.py     文件信箱任务总线（old_audit / prune 等）
+tool/ops.py            运维清理（spool / db 快照 prune）
 tool/gal_old_audit.py  旧库审计
 assets/app.css         设计系统（两页共用，深色模式跟随系统）
 assets/app.js          前端逻辑

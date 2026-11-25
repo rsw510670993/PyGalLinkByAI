@@ -7,7 +7,7 @@ import sqlite3
 import time
 from urllib.parse import unquote
 
-from .egs_core import ensure_egs_schema, open_egs_db as open_db
+from .egs_core import _artifact_tables_present, ensure_egs_schema, normalize_folder_status, open_egs_db as open_db, sync_folder_artifact
 from .runtime import read_config, repo_root, share_sqlite_wal_files
 from .p115_client import (
     get_item_info,
@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS egs_115_folders (
     date_code TEXT,
     company TEXT,
     status TEXT,
+    source TEXT,
     updated_at INTEGER,
     PRIMARY KEY (date, name)
 )
@@ -63,6 +64,9 @@ def ensure_folder_schema(conn):
     ensure_egs_schema(conn)
     conn.execute(FOLDER_SCHEMA_SQL)
     conn.execute(REJECTION_SCHEMA_SQL)
+    folder_cols = {r[1] for r in conn.execute("PRAGMA table_info(egs_115_folders)")}
+    if "source" not in folder_cols:
+        conn.execute("ALTER TABLE egs_115_folders ADD COLUMN source TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_egs_115_folders_cid ON egs_115_folders(cid)")
     conn.commit()
 
@@ -85,16 +89,24 @@ def save_folder_record(conn, date, name, **kw):
     # None 表示"本次不更新该列"，只覆盖显式传入的非 None 值；否则会把已有的
     # cid/pid 等定位信息抹掉，令后续整理退化为"找不到目录/未下载"。
     rec.update({k: v for k, v in kw.items() if v is not None})
+    status, source = normalize_folder_status(rec.get("status"), rec.get("source"))
     conn.execute(
         """
         INSERT OR REPLACE INTO egs_115_folders
         (date, name, cid, pid, pick_code, folder_name, folder_path, target_name,
-         date_code, company, status, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         date_code, company, status, source, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (date, name, rec.get("cid"), rec.get("pid"), rec.get("pick_code"),
          rec.get("folder_name"), rec.get("folder_path"), rec.get("target_name"),
-         rec.get("date_code"), rec.get("company"), rec.get("status"), int(time.time())),
+         rec.get("date_code"), rec.get("company"), status, source, int(time.time())),
+    )
+    # 双写新表（egs_artifacts/egs_artifact_links）：有 hash 按 hash、无 hash 按 cid。
+    sync_folder_artifact(
+        conn, date, name,
+        folder_cid=rec.get("cid"),
+        folder_path=rec.get("folder_path"),
+        display_name=rec.get("target_name") or rec.get("folder_name"),
     )
     conn.commit()
 
@@ -117,6 +129,33 @@ def find_downloaded_folder_by_infohash(conn, link, stored_infohash=None, getchu_
     wanted = _exact_infohash(link, stored_infohash)
     if not wanted:
         return None
+
+    # 2026-11-25 双表优先（读路径第 2 步）：按 infohash 找 artifact 的 115 目录，
+    # 命中即返回；未命中回退旧的 egs_115_folders join（搬月/历史数据仍可走旧路径）。
+    if _artifact_tables_present(conn):
+        art = conn.execute(
+            """SELECT folder_cid, folder_path, display_name FROM egs_artifacts
+                WHERE infohash_hex=? AND COALESCE(folder_cid,'')!=''
+                ORDER BY artifact_id LIMIT 1""",
+            (wanted,),
+        ).fetchone()
+        if art:
+            cid = str(art[0])
+            meta = conn.execute(
+                "SELECT pid, pick_code, folder_name, folder_path FROM egs_115_folders WHERE cid=? LIMIT 1",
+                (cid,),
+            ).fetchone()
+            return {
+                "source": "artifact",
+                "infohash_hex": wanted,
+                "source_date": None,
+                "source_name": None,
+                "cid": cid,
+                "pid": (meta[0] if meta else None),
+                "pick_code": (meta[1] if meta else None),
+                "name": ((meta[2] if meta else None) or art[2] or ""),
+                "folder_path": ((meta[3] if meta else None) or art[1]),
+            }
 
     rows = conn.execute(
         """SELECT g.date,g.name,g.link,g.infohash_hex,
@@ -239,11 +278,23 @@ def adopt_downloaded_folder_by_torrent_name(conn, date, name, link, stored_infoh
     cid = str(item.get("cid") or "")
     if not cid:
         return None
-    owner = conn.execute(
-        """SELECT 1 FROM egs_115_folders
-             WHERE cid=? AND NOT (date=? AND name=?) LIMIT 1""",
-        (cid, date, name),
-    ).fetchone()
+    # 2026-11-25 双表优先（读路径第 3 步）：artifact link 里已被别的记录引用的目录
+    # 不再认领；旧 egs_115_folders 判断保留作兜底（两者任一命中即视为已占用）。
+    owner = None
+    if _artifact_tables_present(conn):
+        owner = conn.execute(
+            """SELECT 1 FROM egs_artifact_links l
+                 JOIN egs_games g ON g.egs_id=l.egs_id
+                WHERE l.artifact_id IN (SELECT artifact_id FROM egs_artifacts WHERE folder_cid=?)
+                  AND NOT (g.date=? AND g.name=?) LIMIT 1""",
+            (cid, date, name),
+        ).fetchone()
+    if owner is None:
+        owner = conn.execute(
+            """SELECT 1 FROM egs_115_folders
+                 WHERE cid=? AND NOT (date=? AND name=?) LIMIT 1""",
+            (cid, date, name),
+        ).fetchone()
     if owner:
         return None
 
@@ -1313,17 +1364,33 @@ def organize_single(date, name, dry_run=True, conn=None, year_dirs=None,
         # 目录定位冲突不能证明磁链重复，更不能永久改变提交资格。
         # 使用 INNER JOIN 排除已不存在 EGS 行的孤儿目录映射；同一 egs_id 的
         # 新旧目录映射（搬月遗留）不算“被其他游戏记录引用”。
-        others = conn.execute(
-            """SELECT g.egs_id,f.date,f.name,f.target_name,g.infohash_hex,
-                      f.folder_name,f.folder_path
-                 FROM egs_115_folders f
-                 JOIN egs_games g ON g.date=f.date AND g.name=f.name
-                WHERE f.cid=? AND NOT (f.date=? AND f.name=?)
-                  AND g.egs_id!=?
-                  AND COALESCE(g.magnet_duplicate,0)=0
-                  AND COALESCE(g.submission_excluded,0)=0""",
-            (cid, date, name, egs_id),
-        ).fetchall()
+        # 2026-11-25 双表优先：按 artifact.folder_cid 找其他 primary 记录；
+        # 未命中回退旧的 folders join（搬月/历史数据兜底）。
+        others = []
+        if _artifact_tables_present(conn):
+            others = conn.execute(
+                """SELECT g.egs_id,g.date,g.name,f.target_name,g.infohash_hex,
+                          f.folder_name,f.folder_path
+                     FROM egs_artifact_links l
+                     JOIN egs_artifacts a ON a.artifact_id=l.artifact_id
+                     JOIN egs_games g ON g.egs_id=l.egs_id
+                     LEFT JOIN egs_115_folders f ON f.date=g.date AND f.name=g.name
+                    WHERE a.folder_cid=? AND l.relation='primary' AND l.egs_id!=?
+                      AND COALESCE(g.submission_excluded,0)=0""",
+                (cid, egs_id),
+            ).fetchall()
+        if not others:
+            others = conn.execute(
+                """SELECT g.egs_id,f.date,f.name,f.target_name,g.infohash_hex,
+                          f.folder_name,f.folder_path
+                     FROM egs_115_folders f
+                     JOIN egs_games g ON g.date=f.date AND g.name=f.name
+                    WHERE f.cid=? AND NOT (f.date=? AND f.name=?)
+                      AND g.egs_id!=?
+                      AND COALESCE(g.magnet_duplicate,0)=0
+                      AND COALESCE(g.submission_excluded,0)=0""",
+                (cid, date, name, egs_id),
+            ).fetchall()
         if others:
             my_record_holds = (located_by == "db_record" and old_name == target
                                and not any(o[3] == old_name for o in others))
