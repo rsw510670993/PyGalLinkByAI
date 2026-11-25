@@ -135,11 +135,8 @@ def run_batch(no: int, start_year: int, end_year: int, label: str, state: dict, 
         return False
     pending = int(pre.get('count') or 0)
     if pending:
-        log(f'[批次 {no}] {label} 被审核 gate 挡住：还有 {pending} 条低分待审，先复核再跑')
-        rec.update({'outcome': 'blocked', 'pending_review': pending})
-        state['batches'][key] = rec
-        save_state(state)
-        return False
+        # 2026-11-25 起审核是待办队列、行级过滤，不再阻塞整批；这里只记录供观察。
+        log(f'[批次 {no}] {label} 另有 {pending} 条低分待审（行级过滤，不阻塞本批）')
 
     log(f'[批次 {no}] {label} preflight 通过（待审 0），提交 {start_year}-{end_year}')
     if dry_run:
@@ -214,6 +211,22 @@ def cooldown(args) -> None:
         time.sleep(60)
 
 
+def run_check(start_year: int, end_year: int, delay: int) -> None:
+    """批次后补一次 check：把「提交后 10 分钟校对」从浏览器搬进无人流程。"""
+    if delay > 0:
+        log(f'等待 {delay}s 后校对 {start_year}-{end_year}')
+        time.sleep(delay)
+    started = run_cli(['-m', 'tool.pipeline', 'start', '--action', 'check',
+                       '--start-year', str(start_year), '--end-year', str(end_year),
+                       '--month', '0', '--execute'])
+    if started.get('status') != 'success':
+        log(f'校对启动失败：{started.get("message")}')
+        return
+    final = wait_finish(started.get('job_id'))
+    log(f'校对结束：outcome={final.get("outcome")} total={final.get("total")} '
+        f'success={final.get("success")} failed={final.get("failed")} skipped={final.get("skipped")}')
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description='12-01 分批提交 driver（可续跑）')
     ap.add_argument('--dry-run', action='store_true', help='只跑 preflight 并打印计划')
@@ -223,6 +236,10 @@ def main() -> int:
                     help='每批结束后固定等待秒数再进入下一批（默认 0，不等待）')
     ap.add_argument('--wait-queue', type=int, default=0,
                     help='每批结束后等 115 离线 waiting 任务数降到该值以内（最长 60 分钟，默认 0 不等）')
+    ap.add_argument('--auto-check', action='store_true',
+                    help='每批提交结束后等待 --check-delay 秒再跑一次 check（默认关闭）')
+    ap.add_argument('--check-delay', type=int, default=600,
+                    help='--auto-check 的等待秒数（默认 600，与「提交后 10 分钟校对」一致）')
     args = ap.parse_args()
 
     if subprocess.run(['id', '-un'], capture_output=True, text=True).stdout.strip() != 'www-data':
@@ -239,6 +256,8 @@ def main() -> int:
             break
         if not args.dry_run:
             cooldown(args)
+            if args.auto_check:
+                run_check(sy, ey, args.check_delay)
     log('全部批次结束' if ok else '存在未完成批次')
     return 0 if ok else 1
 

@@ -1,18 +1,14 @@
 import argparse
 import json
 import os
-import signal
-import subprocess
 import sys
-import time
-import threading
 import concurrent.futures as cf
 import multiprocessing as mp
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
 import tool
-from tool.runtime import cleanup_old_logs, daily_log_path, now_ts, pid_is_running, read_json, runtime_paths, terminate_pid, write_json_atomic
+from tool.runtime import runtime_paths
 
 
 def _print(obj):
@@ -27,38 +23,6 @@ def _base_dir():
 def _in_gal_path(path):
     value = "/" + str(path or "").strip("/")
     return value == "/GAL" or value.startswith("/GAL/")
-
-
-def _spider_status_default():
-    return {
-        "running": False,
-        "pid": None,
-        "progress": 0.0,
-        "current_year": None,
-        "current_month": None,
-        "current_game": None,
-        "start_year": None,
-        "end_year": None,
-        "started_at": None,
-        "updated_at": None,
-        "stopped_reason": None,
-    }
-
-
-def _download_status_default():
-    return {
-        "running": False,
-        "pid": None,
-        "year": None,
-        "month": None,
-        "current_month": None,
-        "finished_months": 0,
-        "total_months": 0,
-        "started_at": None,
-        "updated_at": None,
-        "message": None,
-        "stopped_reason": None,
-    }
 
 
 def cmd_years(args):
@@ -219,183 +183,6 @@ def cmd_games(args):
     )
 
 
-def cmd_spider_status(args):
-    paths = runtime_paths()
-    status = read_json(paths["spider_status_path"], _spider_status_default())
-    pid = status.get("pid")
-    if status.get("running") and pid and not pid_is_running(int(pid)):
-        status["running"] = False
-        status["stopped_reason"] = "not_running"
-        write_json_atomic(paths["spider_status_path"], status)
-    _print(status)
-
-
-def cmd_spider_start(args):
-    paths = runtime_paths()
-    status = read_json(paths["spider_status_path"], _spider_status_default())
-    pid = status.get("pid")
-    if status.get("running") and pid and pid_is_running(int(pid)):
-        _print({"status": "error", "message": "爬虫已在运行中", "pid": int(pid)})
-        return
-
-    start_year = int(args.start_year)
-    end_year = int(args.end_year)
-    if start_year > end_year:
-        start_year, end_year = end_year, start_year
-
-    os.makedirs(paths["status_dir"], exist_ok=True)
-    os.makedirs(paths["log_dir"], exist_ok=True)
-    if paths.get("log_auto_cleanup"):
-        cleanup_old_logs(retention_days=paths.get("log_retention_days"))
-
-    spider_launch_log = daily_log_path("spider_launch")
-    launch_fp = open(spider_launch_log, "ab", buffering=0)
-
-    p = subprocess.Popen(
-        [
-            sys.executable,
-            os.path.join(_base_dir(), "spider_worker.py"),
-            "--start-year",
-            str(start_year),
-            "--end-year",
-            str(end_year),
-        ],
-        cwd=_base_dir(),
-        stdout=launch_fp,
-        stderr=launch_fp,
-        start_new_session=True,
-    )
-    started = False
-    for _ in range(10):
-        time.sleep(0.2)
-        status = read_json(paths["spider_status_path"], _spider_status_default())
-        if status.get("pid") == p.pid:
-            started = True
-            break
-
-    if not started:
-        try:
-            if pid_is_running(int(p.pid)):
-                terminate_pid(int(p.pid), signal.SIGTERM)
-        except Exception:
-            pass
-        _print(
-            {
-                "status": "error",
-                "message": "爬虫启动失败，请检查写权限（status/logs/getchu.db）与Python依赖是否已安装",
-            }
-        )
-        return
-
-    _print({"status": "success", "message": "爬虫已启动", "pid": p.pid})
-
-
-def cmd_spider_stop(args):
-    paths = runtime_paths()
-    status = read_json(paths["spider_status_path"], _spider_status_default())
-    pid = status.get("pid")
-    if not pid:
-        _print({"status": "error", "message": "未找到运行中的爬虫"})
-        return
-    try:
-        if pid_is_running(int(pid)):
-            terminate_pid(int(pid), signal.SIGTERM)
-        status["running"] = False
-        status["stopped_reason"] = "stopped"
-        write_json_atomic(paths["spider_status_path"], status)
-        _print({"status": "success", "message": "停止请求已发送", "pid": int(pid)})
-    except Exception as e:
-        _print({"status": "error", "message": str(e), "pid": int(pid)})
-
-
-def cmd_download_status(args):
-    paths = runtime_paths()
-    status = read_json(paths["download_status_path"], _download_status_default())
-    pid = status.get("pid")
-    if status.get("running") and pid and not pid_is_running(int(pid)):
-        status["running"] = False
-        status["stopped_reason"] = "not_running"
-        write_json_atomic(paths["download_status_path"], status)
-    _print(status)
-
-
-def cmd_download_start(args):
-    paths = runtime_paths()
-    status = read_json(paths["download_status_path"], _download_status_default())
-    pid = status.get("pid")
-    if status.get("running") and pid and pid_is_running(int(pid)):
-        _print({"status": "error", "message": "下载任务已在运行中", "pid": int(pid)})
-        return
-
-    year = int(args.year)
-    month = int(args.month) if args.month is not None else 0
-
-    os.makedirs(paths["status_dir"], exist_ok=True)
-    os.makedirs(paths["log_dir"], exist_ok=True)
-    if paths.get("log_auto_cleanup"):
-        cleanup_old_logs(retention_days=paths.get("log_retention_days"))
-
-    download_launch_log = daily_log_path("download_launch")
-    launch_fp = open(download_launch_log, "ab", buffering=0)
-
-    p = subprocess.Popen(
-        [
-            sys.executable,
-            os.path.join(_base_dir(), "download_worker.py"),
-            "--year",
-            str(year),
-            "--month",
-            str(month),
-            "--source", args.source,
-        ],
-        cwd=_base_dir(),
-        stdout=launch_fp,
-        stderr=launch_fp,
-        start_new_session=True,
-    )
-    started = False
-    for _ in range(10):
-        time.sleep(0.2)
-        status = read_json(paths["download_status_path"], _download_status_default())
-        if status.get("pid") == p.pid:
-            started = True
-            break
-
-    if not started:
-        try:
-            if pid_is_running(int(p.pid)):
-                terminate_pid(int(p.pid), signal.SIGTERM)
-        except Exception:
-            pass
-        _print(
-            {
-                "status": "error",
-                "message": "下载任务启动失败，请检查写权限（status/logs/getchu.db）与Python依赖是否已安装",
-            }
-        )
-        return
-
-    _print({"status": "success", "message": "下载任务已启动", "pid": p.pid})
-
-
-def cmd_download_stop(args):
-    paths = runtime_paths()
-    status = read_json(paths["download_status_path"], _download_status_default())
-    pid = status.get("pid")
-    if not pid:
-        _print({"status": "error", "message": "未找到运行中的下载任务"})
-        return
-    try:
-        if pid_is_running(int(pid)):
-            terminate_pid(int(pid), signal.SIGTERM)
-        status["running"] = False
-        status["stopped_reason"] = "stopped"
-        write_json_atomic(paths["download_status_path"], status)
-        _print({"status": "success", "message": "停止请求已发送", "pid": int(pid)})
-    except Exception as e:
-        _print({"status": "error", "message": str(e), "pid": int(pid)})
-
-
 def cmd_115_login_qrcode(args):
     try:
         from tool.p115_client import qr_login_step1
@@ -495,23 +282,6 @@ def cmd_115_submit(args):
         _print({"status": "error", "message": f"115模块加载失败: {e}"})
 
 
-def _check_all_status_default():
-    return {
-        "running": False,
-        "pid": None,
-        "year": None,
-        "month": None,
-        "total": 0,
-        "checked": 0,
-        "found_downloaded": 0,
-        "errors": [],
-        "current": None,
-        "started_at": None,
-        "updated_at": None,
-        "stopped_reason": None,
-    }
-
-
 def _check_magnet_exists_child(link, q, strict_infohash=False, offline_tasks=None,
                                allowed_save_paths=None):
     try:
@@ -584,71 +354,6 @@ def _check_magnet_exists_with_timeout(link, timeout_s=60, strict_infohash=False,
             ex.shutdown(wait=False)
 
 
-
-def cmd_115_check_all_start(args):
-    paths = runtime_paths()
-    status = read_json(paths["check_all_status_path"], _check_all_status_default())
-    pid = status.get("pid")
-    if status.get("running") and pid and pid_is_running(int(pid)):
-        _print({"status": "error", "message": "校验任务已在运行中"})
-        return
-
-    if not os.path.isdir(paths["status_dir"]):
-        os.makedirs(paths["status_dir"], exist_ok=True)
-
-    worker_args = [
-        sys.executable,
-        os.path.join(_base_dir(), "cli.py"),
-        "115", "check_all", "worker", "--source", args.source,
-    ]
-    if args.year:
-        worker_args += ["--year", str(args.year)]
-    if args.month:
-        worker_args += ["--month", str(args.month)]
-
-    p = subprocess.Popen(
-        worker_args,
-        cwd=_base_dir(),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-
-    time.sleep(0.5)
-    if pid_is_running(p.pid):
-        _print({"status": "success", "message": "校验任务已启动", "pid": p.pid})
-    else:
-        _print({"status": "error", "message": "校验任务启动失败"})
-
-
-def cmd_115_check_all_status(args):
-    paths = runtime_paths()
-    status = read_json(paths["check_all_status_path"], _check_all_status_default())
-    pid = status.get("pid")
-    if status.get("running") and pid and not pid_is_running(int(pid)):
-        status["running"] = False
-        write_json_atomic(paths["check_all_status_path"], status)
-    _print(status)
-
-
-def cmd_115_check_all_stop(args):
-    paths = runtime_paths()
-    status = read_json(paths["check_all_status_path"], _check_all_status_default())
-    pid = status.get("pid")
-    if pid and pid_is_running(int(pid)):
-        try:
-            terminate_pid(int(pid))
-        except Exception as e:
-            _print({"status": "error", "message": f"停止失败: {e}"})
-            return
-    status["running"] = False
-    status["pid"] = None
-    status["stopped_reason"] = "manual_stop"
-    status["updated_at"] = now_ts()
-    write_json_atomic(paths["check_all_status_path"], status)
-    _print({"status": "success", "message": "已停止校验任务"})
-
-
 def cmd_update_game(args):
     import tool.core
     kwargs = {"date": args.date, "name": args.old_name}
@@ -676,342 +381,6 @@ def cmd_delete_game(args):
     import tool.core
     ok = tool.core.delete_game_record(args.date, args.name)
     _print({"success": ok, "message": "删除成功" if ok else "未找到匹配记录"})
-
-
-
-def cmd_115_check_all_worker(args):
-    import tool.core
-
-    paths = runtime_paths()
-    status_path = paths["check_all_status_path"]
-
-    status = {
-        "running": True,
-        "source": args.source,
-        "pid": os.getpid(),
-        "year": int(args.year) if getattr(args, "year", None) else None,
-        "month": int(args.month) if getattr(args, "month", None) else None,
-        "total": 0,
-        "checked": 0,
-        "found_downloaded": 0,
-        "current": None,
-        "errors": [],
-        "started_at": now_ts(),
-        "stopped_reason": None,
-        "updated_at": now_ts(),
-    }
-    write_json_atomic(status_path, status)
-
-    is_egs = args.source == "egs"
-    if is_egs:
-        from tool.egs_core import open_egs_db
-        conn = open_egs_db()
-    else:
-        conn = tool.core.open_db()
-        tool.core.ensure_getchu_schema(conn)
-    cursor = conn.cursor()
-    base_sql = "SELECT date, name, link FROM getchu_games WHERE link IS NOT NULL AND link != '' AND COALESCE(downloaded, 0) = 0"
-    if is_egs:
-        base_sql = base_sql.replace("SELECT date, name, link FROM getchu_games", "SELECT date, name, link, egs_id FROM egs_games")
-    sql_params = []
-    if args.year and args.month:
-        base_sql += " AND substr(date, 1, 4) = ? AND CAST(substr(date, 6) AS INTEGER) = ?"
-        sql_params = [str(args.year), int(args.month)]
-    elif args.year:
-        base_sql += " AND substr(date, 1, 4) = ?"
-        sql_params = [str(args.year)]
-    cursor.execute(base_sql, sql_params)
-    rows = cursor.fetchall()
-    conn.close()
-
-    status["total"] = len(rows)
-    write_json_atomic(status_path, status)
-
-    stop_event = threading.Event()
-
-    def _heartbeat():
-        while not stop_event.is_set():
-            try:
-                status["updated_at"] = now_ts()
-                write_json_atomic(status_path, status)
-            except Exception:
-                pass
-            stop_event.wait(3)
-
-    t = threading.Thread(target=_heartbeat, daemon=True)
-    t.start()
-
-    for row in rows:
-        date, name, link = tuple(row)[:3]
-        try:
-            status["current"] = {"date": date, "name": name}
-            status["checked"] += 1
-            status["updated_at"] = now_ts()
-            write_json_atomic(status_path, status)
-            allowed_paths = [f"/GAL/GAL-{str(date)[:4]}"]
-            result, err = _check_magnet_exists_with_timeout(
-                link, 60, strict_infohash=is_egs, allowed_save_paths=allowed_paths,
-            )
-            if err:
-                status["errors"].append(f"{date}/{name}: {err}")
-            elif isinstance(result, dict) and result.get("exists"):
-                if is_egs:
-                    conn = open_egs_db()
-                    try:
-                        conn.execute(
-                            """UPDATE egs_games
-                                  SET downloaded=1, submitted_115=1, download_failed=0,
-                                      infohash_hex=?, updated_at=?
-                                WHERE egs_id=? AND link=?""",
-                            (result.get("infohash_hex"), now_ts(), row[3], link),
-                        )
-                        conn.commit()
-                    finally:
-                        conn.close()
-                else:
-                    tool.core.set_downloaded_status(date, name, 1, result.get("infohash_hex"))
-                status["found_downloaded"] += 1
-        except Exception as e:
-            status["errors"].append(f"{date}/{name}: {e}")
-
-        status["updated_at"] = now_ts()
-        write_json_atomic(status_path, status)
-
-    stop_event.set()
-    status["running"] = False
-    status["current"] = None
-    write_json_atomic(status_path, status)
-
-    _print({
-        "success": True,
-        "total": status["total"],
-        "checked": status["checked"],
-        "found_downloaded": status["found_downloaded"],
-        "errors": status["errors"][:10],
-    })
-
-
-def _config_int(config, key, default):
-    v = config.get(key)
-    if v is None or v == "":
-        return default
-    try:
-        return int(v)
-    except Exception:
-        return default
-
-
-def _in_idle_window(config):
-    from datetime import datetime
-
-    tz_name = config.get("idle_timezone") or "Asia/Tokyo"
-    start_hour = _config_int(config, "idle_start_hour", 0)
-    end_hour = _config_int(config, "idle_end_hour", 9)
-    now = None
-    try:
-        from zoneinfo import ZoneInfo
-
-        now = datetime.now(ZoneInfo(tz_name))
-    except Exception:
-        now = datetime.now()
-        tz_name = "local"
-
-    ok = start_hour <= int(now.hour) < end_hour
-    return ok, now, tz_name, start_hour, end_hour
-
-
-def _is_running_status(status):
-    pid = status.get("pid")
-    if not status.get("running") or not pid:
-        return False
-    try:
-        return pid_is_running(int(pid))
-    except Exception:
-        return False
-
-
-def _check_year_downloaded(year):
-    import tool.core
-
-    conn = tool.core.open_db()
-    tool.core.ensure_getchu_schema(conn)
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT date, name, link FROM getchu_games WHERE substr(date, 1, 4) = ? AND link IS NOT NULL AND link != '' AND COALESCE(downloaded, 0) = 0",
-        (str(year),),
-    )
-    rows = cursor.fetchall()
-    conn.close()
-
-    total = len(rows)
-    checked = 0
-    found_downloaded = 0
-    errors = []
-    for date, name, link in rows:
-        checked += 1
-        try:
-            result, err = _check_magnet_exists_with_timeout(
-                link, 60, allowed_save_paths=[f"/GAL/GAL-{str(year)}"],
-            )
-            if err:
-                errors.append(f"{date}/{name}: {err}")
-                continue
-            if isinstance(result, dict) and result.get("exists"):
-                tool.core.set_downloaded_status(date, name, 1, result.get("infohash_hex"))
-                found_downloaded += 1
-        except Exception as e:
-            errors.append(f"{date}/{name}: {e}")
-    return {
-        "success": True,
-        "total": total,
-        "checked": checked,
-        "found_downloaded": found_downloaded,
-        "errors": errors[:10],
-    }
-
-
-def cmd_auto_idle_run(args):
-    from datetime import datetime
-
-    paths = runtime_paths()
-    config = paths["config"]
-
-    ok, now, tz_name, start_hour, end_hour = _in_idle_window(config)
-    if not ok and not getattr(args, "force", False):
-        _print(
-            {
-                "skipped": True,
-                "reason": "not_idle_time",
-                "timezone": tz_name,
-                "idle_start_hour": start_hour,
-                "idle_end_hour": end_hour,
-                "now": now.strftime("%Y-%m-%d %H:%M:%S"),
-            }
-        )
-        return
-
-    spider_status = read_json(paths["spider_status_path"], _spider_status_default())
-    download_status = read_json(paths["download_status_path"], _download_status_default())
-    check_all_status = read_json(paths["check_all_status_path"], _check_all_status_default())
-    if _is_running_status(spider_status) or _is_running_status(download_status) or _is_running_status(check_all_status):
-        _print({"skipped": True, "reason": "busy"})
-        return
-
-    idle_status_path = os.path.join(paths["status_dir"], "idle_run_status.json")
-    idle_status = read_json(idle_status_path, {"last_run_week": None, "last_run_at": None})
-    try:
-        iso = now.isocalendar()
-        week_key = f"{int(iso.year)}-W{int(iso.week):02d}"
-    except Exception:
-        week_key = None
-    if week_key and idle_status.get("last_run_week") == week_key and not getattr(args, "force", False):
-        _print(
-            {
-                "skipped": True,
-                "reason": "already_ran_this_week",
-                "timezone": tz_name,
-                "now": now.strftime("%Y-%m-%d %H:%M:%S"),
-                "week": week_key,
-                "last_run_at": idle_status.get("last_run_at"),
-            }
-        )
-        return
-
-    year = int(getattr(args, "year", None) or now.year)
-
-    # 重新获取当前时间用于月份范围计算，避免与闲时窗口的 now 混淆
-    try:
-        from zoneinfo import ZoneInfo
-        _now = datetime.now(ZoneInfo(tz_name))
-    except Exception:
-        _now = datetime.now()
-
-    default_end_month = _now.month - 1
-    current_month = int(getattr(args, "end_month", None) or default_end_month)
-    start_month = int(getattr(args, "start_month", None) or 1)
-    if start_month < 1:
-        start_month = 1
-    if current_month > 12:
-        current_month = 12
-    if current_month < 1:
-        _print(
-            {
-                "skipped": True,
-                "reason": "no_months_to_process",
-                "timezone": tz_name,
-                "now": now.strftime("%Y-%m-%d %H:%M:%S"),
-                "year": year,
-                "start_month": start_month,
-                "end_month": current_month,
-            }
-        )
-        return
-    if start_month > current_month:
-        start_month = current_month
-
-    getchu_ok = False
-    try:
-        getchu_ok = bool(tool.get_all_getchu_games(year, year, start_month, current_month))
-    except Exception:
-        getchu_ok = False
-
-    download_results = []
-    download_ok_all = True
-    for m in range(start_month, current_month + 1):
-        try:
-            ok2 = bool(tool.download_games_by_month(year, m))
-            download_ok_all = download_ok_all and ok2
-            download_results.append({"month": m, "success": ok2})
-        except Exception as e:
-            download_ok_all = False
-            download_results.append({"month": m, "success": False, "error": str(e)})
-
-    login = {"logged_in": False, "user": None, "reason": "not_checked"}
-    check_res = None
-    try:
-        from tool.p115_client import get_login_status
-
-        login = get_login_status()
-    except Exception as e:
-        login = {"logged_in": False, "user": None, "reason": str(e)}
-
-    if login.get("logged_in") is True:
-        try:
-            check_res = _check_year_downloaded(year)
-        except Exception as e:
-            check_res = {"success": False, "message": str(e)}
-
-    if week_key:
-        try:
-            os.makedirs(paths["status_dir"], exist_ok=True)
-            write_json_atomic(
-                idle_status_path,
-                {
-                    "last_run_week": week_key,
-                    "last_run_at": now.strftime("%Y-%m-%d %H:%M:%S"),
-                    "year": year,
-                    "start_month": start_month,
-                    "end_month": current_month,
-                    "p115_logged_in": bool(login.get("logged_in") is True),
-                },
-            )
-        except Exception:
-            pass
-
-    _print(
-        {
-            "success": True,
-            "timezone": tz_name,
-            "now": now.strftime("%Y-%m-%d %H:%M:%S"),
-            "year": year,
-            "start_month": start_month,
-            "end_month": current_month,
-            "getchu": {"success": getchu_ok},
-            "download_links": {"success": download_ok_all, "months": download_results},
-            "p115_login": login,
-            "p115_check": check_res,
-        }
-    )
 
 
 def cmd_egs_crawl(args):
@@ -1480,6 +849,12 @@ def cmd_egs_review_blacklist(args):
                 conn.close()
 
 
+def cmd_prune(args):
+    from tool.ops import prune
+    _print(prune(args.keep, args.days, args.db_keep, args.db_days,
+                 bool(args.execute), args.requested_by))
+
+
 def build_parser():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -1500,35 +875,6 @@ def build_parser():
     p_games.add_argument("--year", type=int)
     p_games.add_argument("--month", type=int)
     p_games.set_defaults(func=cmd_games)
-
-    p_spider = sub.add_parser("spider")
-    spider_sub = p_spider.add_subparsers(dest="action", required=True)
-
-    p_spider_status = spider_sub.add_parser("status")
-    p_spider_status.set_defaults(func=cmd_spider_status)
-
-    p_spider_start = spider_sub.add_parser("start")
-    p_spider_start.add_argument("--start-year", type=int, required=True)
-    p_spider_start.add_argument("--end-year", type=int, required=True)
-    p_spider_start.set_defaults(func=cmd_spider_start)
-
-    p_spider_stop = spider_sub.add_parser("stop")
-    p_spider_stop.set_defaults(func=cmd_spider_stop)
-
-    p_download = sub.add_parser("download")
-    download_sub = p_download.add_subparsers(dest="action", required=True)
-
-    p_download_status = download_sub.add_parser("status")
-    p_download_status.set_defaults(func=cmd_download_status)
-
-    p_download_start = download_sub.add_parser("start")
-    p_download_start.add_argument("--year", type=int, required=True)
-    p_download_start.add_argument("--month", type=int)
-    p_download_start.add_argument("--source", choices=["getchu", "egs"], default="getchu")
-    p_download_start.set_defaults(func=cmd_download_start)
-
-    p_download_stop = download_sub.add_parser("stop")
-    p_download_stop.set_defaults(func=cmd_download_stop)
 
     p_115 = sub.add_parser("115")
     _115_sub = p_115.add_subparsers(dest="action", required=True)
@@ -1565,27 +911,6 @@ def build_parser():
     p_115_submit.add_argument("--dir", type=str, default="")
     p_115_submit.add_argument("--db", type=str)
     p_115_submit.set_defaults(func=cmd_115_submit)
-
-    p_115_check_all = _115_sub.add_parser("check_all")
-    check_all_sub = p_115_check_all.add_subparsers(dest="check_all_action", required=True)
-
-    p_115_check_all_start = check_all_sub.add_parser("start")
-    p_115_check_all_start.add_argument("--year", type=int)
-    p_115_check_all_start.add_argument("--month", type=int)
-    p_115_check_all_start.add_argument("--source", choices=["getchu", "egs"], default="getchu")
-    p_115_check_all_start.set_defaults(func=cmd_115_check_all_start)
-
-    p_115_check_all_status = check_all_sub.add_parser("status")
-    p_115_check_all_status.set_defaults(func=cmd_115_check_all_status)
-
-    p_115_check_all_stop = check_all_sub.add_parser("stop")
-    p_115_check_all_stop.set_defaults(func=cmd_115_check_all_stop)
-
-    p_115_check_all_worker = check_all_sub.add_parser("worker")
-    p_115_check_all_worker.add_argument("--year", type=int)
-    p_115_check_all_worker.add_argument("--month", type=int)
-    p_115_check_all_worker.add_argument("--source", choices=["getchu", "egs"], default="getchu")
-    p_115_check_all_worker.set_defaults(func=cmd_115_check_all_worker)
 
     p_update = sub.add_parser("update_game")
     p_update.add_argument("--date", type=str, required=True)
@@ -1763,15 +1088,16 @@ def build_parser():
     p_blacklist_remove.add_argument("--db", type=str)
     p_blacklist_remove.set_defaults(func=cmd_egs_review_blacklist)
 
-    p_auto = sub.add_parser("auto")
-    auto_sub = p_auto.add_subparsers(dest="action", required=True)
-
-    p_idle = auto_sub.add_parser("idle_run")
-    p_idle.add_argument("--force", action="store_true")
-    p_idle.add_argument("--year", type=int)
-    p_idle.add_argument("--start-month", type=int, dest="start_month")
-    p_idle.add_argument("--end-month", type=int, dest="end_month")
-    p_idle.set_defaults(func=cmd_auto_idle_run)
+    p_prune = sub.add_parser("prune", help="清理任务记录与 db 快照（默认只预览）")
+    p_prune.add_argument("--keep", type=int, default=50, help="任务记录保留最新 N 个")
+    p_prune.add_argument("--days", type=int, default=14, help="任务记录保留最近 N 天")
+    p_prune.add_argument("--db-keep", type=int, default=3, dest="db_keep",
+                         help="db 快照保留最新 N 个")
+    p_prune.add_argument("--db-days", type=int, default=7, dest="db_days",
+                         help="db 快照保留最近 N 天")
+    p_prune.add_argument("--requested-by", default="cli", dest="requested_by")
+    p_prune.add_argument("--execute", action="store_true", help="真正删除（默认预览）")
+    p_prune.set_defaults(func=cmd_prune)
 
     return parser
 

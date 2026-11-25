@@ -124,11 +124,6 @@ main{max-width:1240px;margin:0 auto;padding:24px}
 .btn.big{height:40px;padding:0 18px}
 .btn.sm{height:30px;padding:0 var(--sp-3);font-size:var(--fs-xs)}
 .btn[disabled]{opacity:.45;cursor:not-allowed}
-.gate{margin-top:14px;display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:var(--r-md);
-  background:var(--warn-soft);border:1px solid color-mix(in srgb,var(--warn) 25%,transparent);font-size:var(--fs-sm)}
-.gate b{color:var(--warn)}
-.gate.info{background:var(--info-soft);border-color:color-mix(in srgb,var(--info) 25%,transparent)}
-.gate.info b{color:var(--info)}
 .hint{font-size:var(--fs-sm);color:var(--muted)}
 
 /* 进度：大数字 + 指标 */
@@ -324,5 +319,4 @@ details.fold .fold-b{padding:0 18px 18px}
   .btn.big{height:48px;flex-direction:row;flex-wrap:wrap;justify-content:center;
     align-content:center;column-gap:6px;font-size:15px}
   .btn.big small{font-size:11px}
-  .gate + .hint{margin-top:6px}
 }

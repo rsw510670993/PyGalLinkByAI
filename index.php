@@ -49,7 +49,6 @@ for ($m = 1; $m <= 12; $m++) $monthOpts .= "<option value=\"{$m}\">{$m}月</opti
             </div>
           </div>
         </div>
-        <div class="gate" id="gate" hidden></div>
         <div class="hint" id="control-msg" role="status"></div>
       </div>
     </section>

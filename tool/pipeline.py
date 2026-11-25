@@ -213,26 +213,13 @@ def pending_review_count(start_year: int, end_year: int, month: int = 0) -> int:
 
 def start(action, start_year, end_year, month=0, execute=False):
     validate(action, start_year, end_year, month)
-    if action in ('check', 'submit'):
-        pending = pending_review_count(start_year, end_year, month)
-        if pending:
-            kind = '提交' if action == 'submit' else '校对'
-            return {
-                'status': 'error',
-                'message': f'当前范围还有 {pending} 条低分磁链待 DSH 审核，请先完成审核再{kind}115',
-                'pending_review_count': pending,
-                'blocked': True,
-            }
+    # 审核状态是待办队列，不再作为提交/校对的前置门禁（2026-11-25 无人流程改造）：
+    # pending 只影响行级过滤，由 execute_job 的 rows 条件挡住，不会锁死整批。
+    pending = pending_review_count(start_year, end_year, month) if action in ('check', 'submit') else 0
     try:
         with locked():
             if status().get('running'):
                 return {'status': 'error', 'message': '已有任务运行，请等待完成或停止'}
-            # Existing entry points share the database: avoid starting over their workers.
-            rp = runtime_paths()
-            for key in ('spider_status_path', 'download_status_path', 'check_all_status_path'):
-                old = read_json(rp[key], {})
-                if old.get('running') and old.get('pid') and pid_is_running(int(old['pid'])):
-                    return {'status': 'error', 'message': '旧入口任务仍在运行，请先等待其结束'}
             job_id = uuid.uuid4().hex
             state = dict(running=True, job_id=job_id, action=action, label=LABELS[action],
                          start_year=start_year, end_year=end_year, month=month, execute=execute,
@@ -256,7 +243,11 @@ def start(action, start_year, end_year, month=0, execute=False):
                                           cwd=repo_root(), stdout=output, stderr=output, start_new_session=True)
             state['pid'] = worker.pid
             write_json_atomic(str(paths()[0]), state)
-            return {'status': 'success', 'message': '任务已启动', 'job_id': job_id}
+            message = '任务已启动'
+            if pending:
+                message += f'；另有 {pending} 条低分待审，不阻塞其他记录'
+            return {'status': 'success', 'message': message, 'job_id': job_id,
+                    'pending_review_count': pending}
     except BlockingIOError:
         return {'status': 'error', 'message': '已有任务运行，请等待完成或停止'}
 
@@ -395,13 +386,10 @@ def execute_job(state, save, should_stop):
                    SELECT 1 FROM egs_review_company_blacklist b
                     WHERE b.company IN (egs_games.company, egs_games.egs_company)
                )
-               AND NOT EXISTS (
-                   SELECT 1 FROM egs_nyaa_search_log l
+               AND COALESCE((
+                   SELECT l.review_status FROM egs_nyaa_search_log l
                     WHERE l.egs_id = egs_games.egs_id
-                      AND COALESCE(l.result_count, 0) > 0
-                      AND l.selected_infohash IS NULL
-                      AND COALESCE(l.review_status, 'pending') = 'pending'
-               )
+               ), 'none') NOT IN ('pending', 'rejected')
         """
         if action in ('check', 'submit'):
             sql += ' AND downloaded = 0'

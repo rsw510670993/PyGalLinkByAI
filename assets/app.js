@@ -48,11 +48,6 @@
     return data;
   }
 
-  function fmtSeconds(s) {
-    const m = Math.floor(s / 60), r = s % 60;
-    return `${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}`;
-  }
-
   async function loadTop() {
     try {
       const ov = await api('overview');
@@ -86,7 +81,6 @@
     let ov = null;
     let task = null;
     let prevRunning = false;
-    let submitAt = Number(localStorage.getItem('pygal.submitDoneAt') || 0);
     let busy = false;
 
     const ACTION_LABEL = {
@@ -116,14 +110,12 @@
 
       // ② DSH 审核
       let s2 = 'wait', b2 = '待跑', d2 = '无待审';
-      if (pendingReview > 0) { s2 = 'block'; b2 = '阻断'; d2 = `<b>${pendingReview}</b> 条低分磁链待确认`; }
+      if (pendingReview > 0) { s2 = 'wait'; b2 = `${pendingReview} 条待办`; d2 = '低分磁链待 DSH 复核，不阻塞其他记录提交'; }
       else { s2 = 'done'; b2 = '清空'; d2 = '无待审记录'; }
 
       // ③ 提交并校对
-      const left = submitAt ? Math.max(0, 600 - Math.floor((Date.now() - submitAt) / 1000)) : 0;
-      let s3 = 'wait', b3 = '待跑', d3 = ov ? `${ov.pending_submit} 条待提交 · 提交后等 10 分钟` : '';
+      let s3 = 'wait', b3 = '待跑', d3 = ov ? `${ov.pending_submit} 条待提交 · 校对由 driver/CLI 触发` : '';
       if (running && ['submit', 'check'].includes(action)) { s3 = 'run'; b3 = '运行中'; d3 = task.current || '准备中'; }
-      else if (submitAt && left > 0) { s3 = 'run'; b3 = '等待校对'; d3 = `已提交，${fmtSeconds(left)} 后自动校对`; }
       else if (task && ['submit', 'check'].includes(action) && !running && task.outcome !== 'error') { s3 = 'done'; b3 = '完成'; d3 = task.message || ''; }
 
       // ④ 最终核查
@@ -145,19 +137,6 @@
       }).join('');
 
       $('pipeline-updated').textContent = task && task.updated_at ? `${task.updated_at} 更新` : '';
-    }
-
-    function renderGate(pending) {
-      const gate = $('gate');
-      const n = Number(pending || 0);
-      if (n > 0) {
-        gate.hidden = false;
-        gate.innerHTML = `<span>⚠</span><div><b>${n} 条低分磁链</b>待 DSH 审核`
-          + `<div class="hint" style="margin-top:2px">点「提交并校对」时按所选范围检查</div></div>`;
-      } else {
-        gate.hidden = true;
-        gate.innerHTML = '';
-      }
     }
 
     function renderTaskResults(results) {
@@ -187,12 +166,11 @@
     function renderTask() {
       const running = !!(task && task.running);
       $('btn-sync').disabled = busy || running || !ov;
-      const left = submitAt ? Math.max(0, 600 - Math.floor((Date.now() - submitAt) / 1000)) : 0;
-      $('btn-submit').disabled = busy || running || !ov || left > 0;
+      $('btn-submit').disabled = busy || running || !ov;
       $('btn-stop').hidden = !running;
       $('btn-stop').disabled = false;
 
-      $('submit-sub').textContent = left > 0 ? `等待 ${fmtSeconds(left)}` : (ov ? `${ov.pending_submit} 条` : '');
+      $('submit-sub').textContent = ov ? `${ov.pending_submit} 条` : '';
 
       const state = $('task-state');
       if (running) { state.className = 'pill p-info'; state.textContent = '运行中'; }
@@ -223,7 +201,6 @@
         $('task-results').innerHTML = '';
       }
       renderSteps();
-      renderGate(ov ? ov.pending_review : 0);
     }
 
     async function poll() {
@@ -232,11 +209,9 @@
         const wasRunning = prevRunning;
         task = t;
         prevRunning = !!t.running;
-        // 提交刚完成：记录时间点，10 分钟后自动校对
-        if (wasRunning && !t.running && t.action === 'submit' && t.outcome !== 'error' && !submitAt) {
-          submitAt = Date.now();
-          localStorage.setItem('pygal.submitDoneAt', String(submitAt));
-          $('control-msg').textContent = '提交完成，10 分钟后自动开始校对。';
+        // 提交刚完成：校对由 driver/CLI 在 10 分钟后触发，页面只提示不代跑
+        if (wasRunning && !t.running && t.action === 'submit' && t.outcome !== 'error') {
+          $('control-msg').textContent = '提交完成；校对由提交 driver 或 CLI 在 10 分钟后触发。';
         }
         renderTask();
       } catch (e) {
@@ -256,40 +231,14 @@
       $('btn-sync').disabled = true;
       $('btn-submit').disabled = true;
       try {
-        if (action === 'submit') {
-          const pf = await api(`pipeline_preflight&pipeline_action=submit&start_year=${sc.start_year}&end_year=${sc.end_year}&month=${sc.month}`);
-          if (Number(pf.count || 0) > 0) {
-            renderGate(pf.count);
-            $('control-msg').textContent = `当前范围还有 ${pf.count} 条低分磁链待 DSH 审核，提交已锁定。`;
-            return;
-          }
-        }
         const res = await api('pipeline_start', { action, start_year: sc.start_year, end_year: sc.end_year, month: sc.month, execute: false });
         $('control-msg').textContent = res.message || '已启动';
-        if (action === 'submit') {
-          submitAt = 0;
-          localStorage.removeItem('pygal.submitDoneAt');
-        }
         await poll();
       } catch (e) {
         $('control-msg').textContent = e.message;
-        if (e.payload && e.payload.pending_review_count) renderGate(e.payload.pending_review_count);
       } finally {
         busy = false;
         renderTask();
-      }
-    }
-
-    async function triggerCheck() {
-      const sc = scope();
-      try {
-        await api('pipeline_start', { action: 'check', start_year: sc.start_year, end_year: sc.end_year, month: sc.month, execute: false });
-        submitAt = 0;
-        localStorage.removeItem('pygal.submitDoneAt');
-        $('control-msg').textContent = '10 分钟已到，开始校对 115 下载结果。';
-        await poll();
-      } catch (e) {
-        $('control-msg').textContent = `自动校对未启动：${e.message}`;
       }
     }
 
@@ -349,13 +298,6 @@
     poll();
     setInterval(poll, 3000);
     setInterval(() => {
-      if (submitAt) {
-        const left = Math.max(0, 600 - Math.floor((Date.now() - submitAt) / 1000));
-        if (left > 0) renderTask();
-        else triggerCheck();
-      }
-    }, 1000);
-    setInterval(() => {
       loadTop().then((data) => { ov = data; renderTask(); }).catch(() => {});
     }, 30000);
   }
@@ -398,6 +340,10 @@
         const [stage, label, cls] = stageOf(r);
         const sub = [r.company, r.date].filter(Boolean).map(esc).join(' · ');
         const note = r.comment ? `<div class="note">${esc(r.comment)}</div>` : '';
+        const review = r.review_status === 'pending'
+          ? '<span class="pill p-warn">待审</span>' : '';
+        const score = (r.best_score !== null && r.best_score !== undefined && r.best_score !== '')
+          ? `<span class="pill p-mute">${Math.round(Number(r.best_score))} 分</span>` : '';
         const coverUrl = r.getchu_id
           ? `${basePath}/thumbnails/web/${esc(String(r.getchu_id))}.webp`
           : (r.dlsite_id ? `${basePath}/thumbnails/web/dlsite/${esc(String(r.dlsite_id))}.webp` : '');
@@ -406,7 +352,7 @@
           + cover(r)
           + `<div class="meta"><div class="t">${esc(r.name)}</div>`
           + `<div class="s">${sub}</div>`
-          + `<div class="badges"><span class="pill ${cls}">${label}</span></div>${note}</div></div>`;
+          + `<div class="badges"><span class="pill ${cls}">${label}</span>${review}${score}</div>${note}</div></div>`;
       }).join('') : '<div class="empty">没有符合条件的记录</div>';
 
       const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
