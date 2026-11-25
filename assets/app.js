@@ -83,11 +83,6 @@
     let prevRunning = false;
     let busy = false;
 
-    const ACTION_LABEL = {
-      sync: '同步', crawl: '获取清单', magnet: '获取磁链', submit: '提交115',
-      check: '校对115', organize: '整理115',
-    };
-
     function scope() {
       return {
         start_year: Number($('start-year').value) || 0,
@@ -96,47 +91,18 @@
       };
     }
 
-    function renderSteps() {
-      const running = !!(task && task.running);
-      const action = (task && task.action) || '';
-      const pendingReview = ov ? Number(ov.pending_review || 0) : 0;
-      const issues = ov ? Number(ov.issues || 0) : 0;
-
-      // ① 同步
-      let s1 = 'wait', b1 = '待跑', d1 = '清单 + 磁链两阶段';
-      if (running && ['sync', 'crawl', 'magnet'].includes(action)) { s1 = 'run'; b1 = '运行中'; d1 = task.current || '准备中'; }
-      else if (task && ['sync', 'crawl', 'magnet'].includes(action) && !running && task.outcome !== 'error') { s1 = 'done'; b1 = '完成'; d1 = task.message || '已跑完'; }
-      else if (task && task.outcome === 'error' && ['sync', 'crawl', 'magnet'].includes(action)) { s1 = 'block'; b1 = '失败'; d1 = task.message || ''; }
-
-      // ② DSH 审核
-      let s2 = 'wait', b2 = '待跑', d2 = '无待审';
-      if (pendingReview > 0) { s2 = 'wait'; b2 = `${pendingReview} 条待办`; d2 = '低分磁链待 DSH 复核，不阻塞其他记录提交'; }
-      else { s2 = 'done'; b2 = '清空'; d2 = '无待审记录'; }
-
-      // ③ 提交并校对
-      let s3 = 'wait', b3 = '待跑', d3 = ov ? `${ov.pending_submit} 条待提交 · 校对由 driver/CLI 触发` : '';
-      if (running && ['submit', 'check'].includes(action)) { s3 = 'run'; b3 = '运行中'; d3 = task.current || '准备中'; }
-      else if (task && ['submit', 'check'].includes(action) && !running && task.outcome !== 'error') { s3 = 'done'; b3 = '完成'; d3 = task.message || ''; }
-
-      // ④ 最终核查
-      let s4 = 'wait', b4 = '待跑', d4 = '整理 issue / 旧库残留';
-      if (issues > 0) { s4 = 'block'; b4 = '有积压'; d4 = `<b>${issues}</b> 条整理 issue 待 DSH 处理`; }
-      else { s4 = 'done'; b4 = '清空'; d4 = '无整理积压'; }
-
-      $('steps').innerHTML = [
-        [s1, '1', '同步', b1, d1],
-        [s2, '2', 'DSH 审核', b2, d2],
-        [s3, '3', '提交并校对', b3, d3],
-        [s4, '4', '最终核查', b4, d4],
-      ].map(([st, n, t, badge, desc]) => {
-        const badgeCls = { done: 'b-ok', run: 'b-run', block: 'b-warn', wait: 'b-wait' }[st] || 'b-wait';
-        const num = st === 'done' ? '✓' : n;
-        return `<div class="step ${st}"><div class="step-top"><span class="step-n">${num}</span></div>`
-          + `<div class="step-t">${t} <span class="step-badge ${badgeCls}">${badge}</span></div>`
-          + `<div class="step-d">${desc}</div></div>`;
-      }).join('');
-
-      $('pipeline-updated').textContent = task && task.updated_at ? `${task.updated_at} 更新` : '';
+    function renderTodo() {
+      if (!ov) return;
+      const setNum = (id, value) => {
+        const el = $(id);
+        if (el) el.textContent = Number(value || 0).toLocaleString('zh-CN');
+      };
+      setNum('t-review', ov.pending_review);
+      setNum('t-submit', ov.pending_submit);
+      setNum('t-cover', ov.cover_missing_downloaded);
+      setNum('t-issues', ov.issues);
+      const stamp = $('todo-updated');
+      if (stamp) stamp.textContent = task && task.updated_at ? `${task.updated_at} 更新` : '';
     }
 
     function renderTaskResults(results) {
@@ -200,7 +166,7 @@
         $('k-current').textContent = '—';
         $('task-results').innerHTML = '';
       }
-      renderSteps();
+      renderTodo();
     }
 
     async function poll() {
@@ -317,20 +283,42 @@
       return ['none', '无资源', 'p-mute'];
     }
 
+    /* 封面地址链：getchu → dlsite → dmm → 官网，按序回退（与后端 has_cover 同口径） */
+    function coverChain(r) {
+      const list = [];
+      if (r.getchu_id) {
+        const gid = esc(String(r.getchu_id));
+        list.push(`${basePath}/thumbnails/web/${gid}.webp`, `${basePath}/thumbnails/${gid}.jpg`);
+      }
+      if (r.dlsite_id) {
+        const did = esc(String(r.dlsite_id));
+        list.push(`${basePath}/thumbnails/web/dlsite/${did}.webp`, `${basePath}/thumbnails/dlsite/${did}.jpg`);
+      }
+      if (r.dmm) list.push(`${basePath}/thumbnails/web/dmm/${esc(String(r.dmm))}.webp`);
+      if (r.egs_id) list.push(`${basePath}/thumbnails/web/official/${esc(String(r.egs_id))}.webp`);
+      return list;
+    }
+
     function cover(r) {
-      const gid = r.getchu_id ? String(r.getchu_id) : '';
-      const did = r.dlsite_id ? String(r.dlsite_id) : '';
-      if (!gid && !did) return '<div class="cov ph">无封面</div>';
-      const primary = gid
-        ? `${basePath}/thumbnails/web/${esc(gid)}.webp`
-        : `${basePath}/thumbnails/web/dlsite/${esc(did)}.webp`;
-      const fb = gid
-        ? `${basePath}/thumbnails/${esc(gid)}.jpg`
-        : `${basePath}/thumbnails/dlsite/${esc(did)}.jpg`;
-      const onerr = fb
-        ? `onerror="if(this.dataset.fb){this.src=this.dataset.fb;delete this.dataset.fb}else{this.parentNode.classList.add('ph');this.parentNode.textContent='无封面'}"`
-        : `onerror="this.parentNode.classList.add('ph');this.parentNode.textContent='无封面'"`;
-      return `<div class="cov"><img loading="lazy" alt="" src="${primary}"${fb ? ` data-fb="${esc(fb)}"` : ''} ${onerr}></div>`;
+      const list = coverChain(r);
+      if (!list.length) return '<div class="cov ph">无封面</div>';
+      return `<div class="cov"><img loading="lazy" alt="" src="${list[0]}"`
+        + ` data-chain="${esc(JSON.stringify(list.slice(1)))}" onerror="gshelf.nextCover(this)"></div>`;
+    }
+
+    /* 图片加载失败时按链回退，全部失败才显示占位 */
+    function nextCover(img) {
+      let chain = [];
+      try { chain = JSON.parse(img.dataset.chain || '[]'); } catch (e) { chain = []; }
+      if (chain.length) {
+        img.src = chain.shift();
+        img.dataset.chain = JSON.stringify(chain);
+        return;
+      }
+      const box = img.parentNode;
+      if (!box) return;
+      box.classList.add('ph');
+      box.textContent = '无封面';
     }
 
     function render(data) {
@@ -344,10 +332,8 @@
           ? '<span class="pill p-warn">待审</span>' : '';
         const score = (r.best_score !== null && r.best_score !== undefined && r.best_score !== '')
           ? `<span class="pill p-mute">${Math.round(Number(r.best_score))} 分</span>` : '';
-        const coverUrl = r.getchu_id
-          ? `${basePath}/thumbnails/web/${esc(String(r.getchu_id))}.webp`
-          : (r.dlsite_id ? `${basePath}/thumbnails/web/dlsite/${esc(String(r.dlsite_id))}.webp` : '');
-        const open = coverUrl ? ` data-cover="${esc(coverUrl)}"` : '';
+        const chain = coverChain(r);
+        const open = chain.length ? ` data-cover="${esc(chain[0])}"` : '';
         return `<div class="game" data-stage="${stage}"${open}>`
           + cover(r)
           + `<div class="meta"><div class="t">${esc(r.name)}</div>`
@@ -363,7 +349,8 @@
 
       $('cards').querySelectorAll('[data-cover]').forEach((el) => {
         el.addEventListener('click', (ev) => {
-          const url = el.getAttribute('data-cover');
+          const img = el.querySelector('.cov img');
+          const url = (img && img.getAttribute('src')) || el.getAttribute('data-cover');
           if (!url) return;
           ev.preventDefault();
           $('lb-img').src = url;
@@ -425,5 +412,5 @@
     loadTop().catch(() => {});
   }
 
-  window.gshelf = { initDashboard, initData, api };
+  window.gshelf = { initDashboard, initData, api, nextCover };
 })();
