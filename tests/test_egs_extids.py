@@ -138,5 +138,33 @@ class MatchRelaxTests(unittest.TestCase):
         self.assertIsNone(match)
 
 
+class CoverShapeTests(unittest.TestCase):
+    """2026-11-26 放宽：横图与方图是正常封面，只拒过小和超扁横幅。"""
+
+    @staticmethod
+    def _png(width, height):
+        import io
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.new("RGB", (width, height), (200, 200, 200)).save(buf, "PNG")
+        return buf.getvalue()
+
+    def test_accepts_landscape_4_3(self):
+        ok, info = egs_thumb.image_looks_like_package(self._png(384, 288))
+        self.assertTrue(ok, info)
+
+    def test_accepts_square(self):
+        ok, _ = egs_thumb.image_looks_like_package(self._png(300, 300))
+        self.assertTrue(ok)
+
+    def test_rejects_too_small(self):
+        ok, _ = egs_thumb.image_looks_like_package(self._png(120, 90))
+        self.assertFalse(ok)
+
+    def test_rejects_banner(self):
+        ok, _ = egs_thumb.image_looks_like_package(self._png(1200, 200))
+        self.assertFalse(ok)
+
+
 if __name__ == "__main__":
     unittest.main()

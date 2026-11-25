@@ -671,7 +671,8 @@ def cmd_egs_overview(args):
 
 
 def cmd_egs_thumbs(args):
-    from tool.egs_thumb import coverage, dlsite_coverage, run_dlsite, run_dmm, run_thumbs
+    from tool.egs_thumb import (coverage, dlsite_coverage, run_dlsite, run_dmm,
+                                run_official, run_thumbs)
     source = getattr(args, "source", "getchu") or "getchu"
     if getattr(args, "optimize", False):
         from tool.thumb_optimize import run_optimize
@@ -690,6 +691,9 @@ def cmd_egs_thumbs(args):
         stats["coverage"] = dlsite_coverage()
     elif source == "dmm":
         stats = run_dmm(limit=args.limit, interval=interval or 1.0)
+        stats["coverage"] = coverage()
+    elif source == "official":
+        stats = run_official(limit=args.limit, interval=interval or 1.0)
         stats["coverage"] = coverage()
     else:
         stats = run_thumbs(year=args.year, month=args.month, limit=args.limit,
@@ -1026,7 +1030,8 @@ def build_parser():
     p_egs_thumbs.add_argument("--year", type=int)
     p_egs_thumbs.add_argument("--month", type=int)
     p_egs_thumbs.add_argument("--limit", type=int, default=0)
-    p_egs_thumbs.add_argument("--source", choices=["getchu", "dlsite", "dmm"], default="getchu")
+    p_egs_thumbs.add_argument("--source", choices=["getchu", "dlsite", "dmm", "official"],
+                              default="getchu")
     p_egs_thumbs.add_argument("--optimize", action="store_true",
                               help="把已下载的原图转成 280/96 两档 webp")
     p_egs_thumbs.add_argument("--force", action="store_true",

@@ -659,8 +659,14 @@ def page_is_about(html: str, name: str, company: str) -> bool:
 
 
 def image_looks_like_package(data: bytes, min_width: int = 200,
-                             min_height: int = 200) -> tuple[bool, str]:
-    """包图基本是竖版；横版大图多半是横幅/logo，判为不合格。"""
+                             min_height: int = 200,
+                             max_ratio: float = 3.0) -> tuple[bool, str]:
+    """判断一张图能否当封面用。
+
+    2026-11-26 放宽：原先用 `height < width*0.95` 硬拒所有横图，但同人游戏
+    大量是 4:3 横版封面（DLsite 源抽样 36/40 是 384x288），方形也是正常形态。
+    现在只拒绝过小的图和比例超过 max_ratio 的纯横幅／长条图。
+    """
     try:
         from PIL import Image
         import io
@@ -670,8 +676,9 @@ def image_looks_like_package(data: bytes, min_width: int = 200,
         return False, f'无法解析图片: {exc}'
     if width < min_width or height < min_height:
         return False, f'尺寸过小 {width}x{height}'
-    if height < width * 0.95:
-        return False, f'非竖版 {width}x{height}'
+    long_side, short_side = max(width, height), min(width, height)
+    if short_side and long_side / short_side > max_ratio:
+        return False, f'比例过扁 {width}x{height}'
     return True, f'{width}x{height}'
 
 # ---------------- DMM 编号直连（无 getchu/dlsite 但 EGS 带 dmm 编号） ----------------
@@ -761,6 +768,55 @@ def download_dmm(dmm, session: requests.Session, timeout: int = 30,
         pass
     tmp.replace(target)
     return True, f'{len(data)} bytes', len(data), url
+
+
+def pending_official(conn, limit: int = 0) -> list:
+    """已下载、仍无封面、且记录带官网地址的记录。"""
+    rows = conn.execute(
+        "SELECT egs_id, " + egs_extids.external_id_columns() + ", date, name, official_url "
+        "FROM egs_games WHERE COALESCE(official_url,'') != '' AND downloaded = 1 "
+        "ORDER BY date, egs_id"
+    ).fetchall()
+    missing = [r for r in rows if not has_cover(r)]
+    return missing[:limit] if limit else missing
+
+
+def run_official(limit: int = 0, interval: float = 1.0, should_stop=None,
+                 logger=None) -> dict:
+    """从作品官网抓 og:image 兜底补封面（横向包图现在也接受）。"""
+    log = logger or (lambda msg: None)
+    conn = open_egs_db()
+    try:
+        ensure_egs_schema(conn)
+        rows = pending_official(conn, limit)
+    finally:
+        conn.close()
+
+    session = requests.Session()
+    session.headers.update({'User-Agent': UA})
+    stats = {'status': 'success', 'mode': 'official', 'total': len(rows), 'ok': 0,
+             'failed': 0, 'failed_ids': [], 'last_error': '',
+             'started_at': now_ts(), 'finished_at': None}
+    log(f'待抓 {len(rows)} 个官网封面')
+    for i, row in enumerate(rows):
+        if should_stop and should_stop():
+            stats['status'] = 'stopped'
+            break
+        ok, message, _size = download_official(
+            row['egs_id'], row['official_url'], session)
+        if ok:
+            stats['ok'] += 1
+            log(f'[{i + 1}/{len(rows)}] {row["egs_id"]} ✓ {message} {row["name"]}')
+        else:
+            stats['failed'] += 1
+            stats['failed_ids'].append(row['egs_id'])
+            stats['last_error'] = message
+            log(f'[{i + 1}/{len(rows)}] {row["egs_id"]} ✗ {message} {row["name"]}')
+        if interval and i + 1 < len(rows):
+            time.sleep(interval)
+    stats['finished_at'] = now_ts()
+    _save_state(stats)
+    return stats
 
 
 def run_dmm(limit: int = 0, interval: float = 1.0, should_stop=None,
