@@ -7,7 +7,7 @@ import sqlite3
 import time
 from urllib.parse import unquote
 
-from .egs_core import ensure_egs_schema, open_egs_db as open_db, sync_folder_artifact
+from .egs_core import ensure_egs_schema, normalize_folder_status, open_egs_db as open_db, sync_folder_artifact
 from .runtime import read_config, repo_root, share_sqlite_wal_files
 from .p115_client import (
     get_item_info,
@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS egs_115_folders (
     date_code TEXT,
     company TEXT,
     status TEXT,
+    source TEXT,
     updated_at INTEGER,
     PRIMARY KEY (date, name)
 )
@@ -63,6 +64,9 @@ def ensure_folder_schema(conn):
     ensure_egs_schema(conn)
     conn.execute(FOLDER_SCHEMA_SQL)
     conn.execute(REJECTION_SCHEMA_SQL)
+    folder_cols = {r[1] for r in conn.execute("PRAGMA table_info(egs_115_folders)")}
+    if "source" not in folder_cols:
+        conn.execute("ALTER TABLE egs_115_folders ADD COLUMN source TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_egs_115_folders_cid ON egs_115_folders(cid)")
     conn.commit()
 
@@ -85,16 +89,17 @@ def save_folder_record(conn, date, name, **kw):
     # None 表示"本次不更新该列"，只覆盖显式传入的非 None 值；否则会把已有的
     # cid/pid 等定位信息抹掉，令后续整理退化为"找不到目录/未下载"。
     rec.update({k: v for k, v in kw.items() if v is not None})
+    status, source = normalize_folder_status(rec.get("status"), rec.get("source"))
     conn.execute(
         """
         INSERT OR REPLACE INTO egs_115_folders
         (date, name, cid, pid, pick_code, folder_name, folder_path, target_name,
-         date_code, company, status, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         date_code, company, status, source, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (date, name, rec.get("cid"), rec.get("pid"), rec.get("pick_code"),
          rec.get("folder_name"), rec.get("folder_path"), rec.get("target_name"),
-         rec.get("date_code"), rec.get("company"), rec.get("status"), int(time.time())),
+         rec.get("date_code"), rec.get("company"), status, source, int(time.time())),
     )
     # 双写新表（egs_artifacts/egs_artifact_links）：有 hash 按 hash、无 hash 按 cid。
     sync_folder_artifact(

@@ -256,6 +256,44 @@ def _link_relation(duplicate_of_egs_id, duplicate_reason) -> str:
     return "primary"
 
 
+# 字段枚举（定义见 docs/FIELD_DEFINITIONS.md；新增取值先改文档与这里）
+REVIEW_STATUS_VALUES = ('none', 'pending', 'approved', 'rejected')
+ARTIFACT_KIND_VALUES = ('torrent', 'folder', 'both')
+ARTIFACT_RELATION_VALUES = ('primary', 'member', 'dlc')
+ARTIFACT_SOURCE_VALUES = ('auto', 'manual')
+FOLDER_STATUS_VALUES = ('ok', 'renamed', 'moved', 'renamed_moved', 'needs_manual')
+FOLDER_SOURCE_VALUES = ('auto', 'orphan_match', 'collection_match', 'magnet_match',
+                        'manual_move', 'adopt')
+_FOLDER_STATUS_MAP = {
+    'renamed': ('renamed', 'auto'),
+    'already_ok': ('ok', 'auto'),
+    'renamed_moved': ('renamed_moved', 'auto'),
+    'moved': ('moved', 'auto'),
+    'ready': ('ok', 'auto'),
+    'downloaded_unorganized': ('needs_manual', 'auto'),
+    'manual_orphan_match': ('renamed', 'orphan_match'),
+    'manual_collection_match': ('renamed', 'collection_match'),
+    'manual_magnet_match': ('renamed', 'magnet_match'),
+    'manually_moved_from_gal_old': ('moved', 'manual_move'),
+    'found_set_downloaded': ('ok', 'adopt'),
+}
+
+
+def normalize_folder_status(status, source=None):
+    """旧 status 归一为 (新 status, 来源 source)；已是新值或未知历史值则原样保留。"""
+    st = str(status or '').strip()
+    src = str(source or '').strip() if str(source or '').strip() in FOLDER_SOURCE_VALUES else 'auto'
+    if not st:
+        return ('ok', src)
+    if st in FOLDER_STATUS_VALUES:
+        return (st, src)
+    mapped = _FOLDER_STATUS_MAP.get(st)
+    if mapped:
+        return mapped
+    # adopted_exact_torrent_name / wrapped_file 等历史值先保留，后续再逐步收敛
+    return (st, src)
+
+
 _ARTIFACT_SCHEMA_SQL = (
     """CREATE TABLE IF NOT EXISTS egs_artifacts (
   artifact_id INTEGER PRIMARY KEY,
@@ -450,12 +488,12 @@ def sync_infohash_artifacts(conn, groups) -> None:
                 egs_id = int(member["egs_id"])
                 relation = "primary" if not owner_state.get(egs_id) else "member"
                 upsert_artifact_link(conn, egs_id, artifact_id, relation,
-                                     source="auto", note="refresh")
+                                     source="auto", note="refresh:duplicates")
 
     _artifact_dual_write(conn, "magnet:refresh", _apply)
 
 
-def sync_magnet_artifact(conn, egs_id, note="magnet") -> None:
+def sync_magnet_artifact(conn, egs_id, note="magnet:selected") -> None:
     """选链/换链之后：按 egs 当前 hash 同步 link，并清理不再使用的自动旧链。"""
 
     def _apply():
