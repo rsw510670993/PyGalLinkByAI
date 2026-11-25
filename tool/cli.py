@@ -8,6 +8,7 @@ import multiprocessing as mp
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
 import tool
+from tool import egs_extids
 from tool.runtime import runtime_paths
 
 
@@ -518,10 +519,11 @@ def cmd_egs_games(args):
                WHERE b.company IN (egs_games.company, egs_games.egs_company)
           ) AS review_blacklisted
         """
+        ext_cols = egs_extids.external_id_columns()
         rows = cur.execute(
             f"""
             SELECT egs_id, date, name, company, release_ts, egs_date, actual_release_ts, brand_kind,
-                   getchu_id, dlsite_id, link, nyaa_name, comment, downloaded, submitted_115, submitted_pick_code,
+                   {ext_cols}, link, nyaa_name, comment, downloaded, submitted_115, submitted_pick_code,
                    submitted_at, checked_at,
                    download_failed, download_failed_at,
                    COALESCE(magnet_duplicate,0) AS magnet_duplicate, duplicate_of_egs_id,
@@ -566,6 +568,62 @@ def cmd_egs_artifact_audit(args):
         sys.exit(1)
 
 
+def cmd_egs_external_ids(args):
+    """外部 ID 映射表：backfill / audit / get / resolve（backfill 默认 dry-run）。"""
+    from tool.egs_core import ensure_egs_schema, open_egs_db
+    from tool.egs_extids import (audit, backfill_from_columns, get_external_ids,
+                                 resolve_egs_id)
+    conn = open_egs_db(args.db)
+    try:
+        ensure_egs_schema(conn)
+        action = getattr(args, "action", "audit")
+        if action == "backfill":
+            result = backfill_from_columns(
+                conn, limit=getattr(args, "limit", 0),
+                dry_run=not getattr(args, "execute", False))
+            _print({"status": "success", **result})
+        elif action == "get":
+            if not getattr(args, "egs_id", None):
+                _print({"status": "error", "message": "缺少 --egs-id"})
+                sys.exit(2)
+            _print({"status": "success", "egs_id": args.egs_id,
+                    "ids": get_external_ids(conn, args.egs_id)})
+        elif action == "resolve":
+            source = getattr(args, "source", "") or ""
+            external_id = getattr(args, "external_id", "") or ""
+            if not source or not external_id:
+                _print({"status": "error", "message": "缺少 --source 或 --external-id"})
+                sys.exit(2)
+            _print({"status": "success", "source": source, "external_id": external_id,
+                    "egs_id": resolve_egs_id(conn, source, external_id)})
+        else:
+            _print({"status": "success", **audit(conn)})
+    finally:
+        conn.close()
+
+
+def cmd_egs_namesearch(args):
+    """补外部 ID：dir=从种子/115 目录名提取 DLsite 编号；getchu=按名搜索（默认 dry-run）。"""
+    from tool.egs_core import ensure_egs_schema, open_egs_db
+    from tool.egs_thumb import run_namesearch_getchu, scan_dlsite_ids_from_dirs
+    conn = open_egs_db(args.db)
+    try:
+        ensure_egs_schema(conn)
+        dry_run = not getattr(args, "execute", False)
+        if getattr(args, "source", "dir") == "dir":
+            result = scan_dlsite_ids_from_dirs(
+                conn, dry_run=dry_run, limit=getattr(args, "limit", 0))
+        else:
+            result = run_namesearch_getchu(
+                conn, year=getattr(args, "year", None),
+                month=getattr(args, "month", None),
+                limit=getattr(args, "limit", 0), dry_run=dry_run,
+                interval=getattr(args, "interval", 1.5) or 1.5)
+        _print(result)
+    finally:
+        conn.close()
+
+
 def cmd_egs_overview(args):
     import sqlite3 as _sqlite3
     from tool.egs_core import open_egs_db, ensure_egs_schema
@@ -592,6 +650,11 @@ def cmd_egs_overview(args):
     finally:
         conn.close()
     pending = pending_review_summary(1980, 3000, 0)
+    try:
+        from tool.egs_thumb import missing_downloaded_count
+        cover_missing = missing_downloaded_count()
+    except Exception:  # noqa: BLE001 - 封面统计失败不影响总控其他数字
+        cover_missing = -1
     _print({
         "status": "success",
         "total": int(row["total"] or 0),
@@ -603,11 +666,12 @@ def cmd_egs_overview(args):
         "pending_review": int(pending["count"] or 0),
         "pending_years": pending["years"],
         "issues": int(issues or 0),
+        "cover_missing_downloaded": cover_missing,
     })
 
 
 def cmd_egs_thumbs(args):
-    from tool.egs_thumb import coverage, dlsite_coverage, run_dlsite, run_thumbs
+    from tool.egs_thumb import coverage, dlsite_coverage, run_dlsite, run_dmm, run_thumbs
     source = getattr(args, "source", "getchu") or "getchu"
     if getattr(args, "optimize", False):
         from tool.thumb_optimize import run_optimize
@@ -624,6 +688,9 @@ def cmd_egs_thumbs(args):
         stats = run_dlsite(year=args.year, month=args.month, limit=args.limit,
                            interval=interval)
         stats["coverage"] = dlsite_coverage()
+    elif source == "dmm":
+        stats = run_dmm(limit=args.limit, interval=interval or 1.0)
+        stats["coverage"] = coverage()
     else:
         stats = run_thumbs(year=args.year, month=args.month, limit=args.limit,
                            interval=interval)
@@ -959,7 +1026,7 @@ def build_parser():
     p_egs_thumbs.add_argument("--year", type=int)
     p_egs_thumbs.add_argument("--month", type=int)
     p_egs_thumbs.add_argument("--limit", type=int, default=0)
-    p_egs_thumbs.add_argument("--source", choices=["getchu", "dlsite"], default="getchu")
+    p_egs_thumbs.add_argument("--source", choices=["getchu", "dlsite", "dmm"], default="getchu")
     p_egs_thumbs.add_argument("--optimize", action="store_true",
                               help="把已下载的原图转成 280/96 两档 webp")
     p_egs_thumbs.add_argument("--force", action="store_true",
@@ -985,6 +1052,32 @@ def build_parser():
         "--strict", action="store_true",
         help="存在四类残留时以退出码 1 结束，供巡检脚本使用")
     p_egs_artifact_audit.set_defaults(func=cmd_egs_artifact_audit)
+
+    p_egs_extids = egs_sub.add_parser(
+        "external-ids", help="外部 ID 映射表：回填/对账/查询（backfill 默认 dry-run）")
+    p_egs_extids.add_argument("--action", type=str,
+                              choices=["backfill", "audit", "get", "resolve"],
+                              default="audit")
+    p_egs_extids.add_argument("--limit", type=int, default=0)
+    p_egs_extids.add_argument("--execute", action="store_true",
+                              help="backfill 时真正写入（默认只统计）")
+    p_egs_extids.add_argument("--egs-id", type=int, dest="egs_id")
+    p_egs_extids.add_argument("--source", type=str, default="")
+    p_egs_extids.add_argument("--external-id", type=str, dest="external_id", default="")
+    p_egs_extids.add_argument("--db", type=str)
+    p_egs_extids.set_defaults(func=cmd_egs_external_ids)
+
+    p_egs_namesearch = egs_sub.add_parser(
+        "namesearch", help="补外部 ID：dir（目录名提取编号）/ getchu（按名搜索），默认 dry-run")
+    p_egs_namesearch.add_argument("--source", type=str, choices=["dir", "getchu"],
+                                  default="dir")
+    p_egs_namesearch.add_argument("--year", type=int)
+    p_egs_namesearch.add_argument("--month", type=int)
+    p_egs_namesearch.add_argument("--limit", type=int, default=0)
+    p_egs_namesearch.add_argument("--interval", type=float, default=1.5)
+    p_egs_namesearch.add_argument("--execute", action="store_true")
+    p_egs_namesearch.add_argument("--db", type=str)
+    p_egs_namesearch.set_defaults(func=cmd_egs_namesearch)
 
     p_egs_games = egs_sub.add_parser("games")
     p_egs_games.add_argument("--page", type=int, default=1)

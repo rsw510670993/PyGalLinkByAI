@@ -78,6 +78,23 @@
 - 代码常量见 `tool/egs_core.py` 的 `*_VALUES` 常量；新增枚举先改本文件与常量。
 - `egs_artifact_links.source='manual'` 的行，自动双写不会覆盖其 `relation`/`note`。
 
+## egs_external_ids（2026-11-26）
+
+站内记录 ↔ 各来源编号。一条记录可挂多个来源、多个候选；`egs_games` 的 `getchu_id` / `dlsite_id` / `dmm` 仍是事实来源并保持双写，读路径用 `COALESCE(映射表 confirmed, 旧列)` 取首选值。
+
+| 字段 | 取值 | 含义 |
+|---|---|---|
+| `source` | `getchu` / `dlsite` / `dmm` | 编号来源。不存 `egs` 自映射行——`egs_id` 列本身就是站内坐标 |
+| `status` | `confirmed` / `candidate` / `rejected` | 已核实可用 / 按名搜索出的待确认候选 / 已排除 |
+| `origin` | `egs_crawl` / `getchu_search` / `dlsite_search` / `dmm_probe` / `dir_scan` / `manual` | 这一行怎么来的；`dir_scan` = 从 115 目录名或种子名里提取到的编号 |
+| `confidence` | 0–1 或 NULL | 匹配分数，只有搜索来源才有 |
+
+写入与读取约定：
+
+- `external_id_columns()` 生成读列表达式（映射表 confirmed 优先、旧列兜底），列表页与封面脚本共用同一口径。
+- `attach_external_id()` 写映射行并按需回写主表空列，**只填空、不覆盖**已有值。
+- `sync_row()` 由 EGS 抓取 upsert 调用，只补写不删除，人工判断（candidate/rejected）不会被抓取覆盖。
+
 ## 巡检
 
 - 残留 link 只读检查：`python tool/cli.py egs artifact_audit`（加 `--strict` 时四类残留非零则退出码 1，供定时任务使用）。

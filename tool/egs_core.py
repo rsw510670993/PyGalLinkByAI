@@ -18,6 +18,7 @@ from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
 
+from . import egs_extids
 from .runtime import repo_root, share_sqlite_wal_files
 
 EGS_SQL_URL = "https://erogamescape.dyndns.org/~ap2/ero/toukei_kaiseki/sql_for_erogamer_form.php"
@@ -177,6 +178,7 @@ def ensure_egs_schema(conn: sqlite3.Connection) -> None:
         "AND magnet_duplicate=0 AND submission_excluded=0 AND downloaded=0"
     )
     ensure_artifact_schema(conn)
+    egs_extids.ensure_external_id_schema(conn)
     conn.commit()
 
 
@@ -945,6 +947,7 @@ def upsert_egs_rows(conn: sqlite3.Connection, rows: list[dict]) -> dict:
     inserted = 0
     updated = 0
     unchanged = 0
+    extid_synced = 0
     cursor = conn.cursor()
     for raw in rows:
         row = _normalize_row(raw, now)
@@ -955,6 +958,9 @@ def upsert_egs_rows(conn: sqlite3.Connection, rows: list[dict]) -> dict:
         if old is None:
             cursor.execute(sql, values)
             inserted += 1
+            extid_synced += egs_extids.sync_row(
+                conn, row["egs_id"], row.get("getchu_id"),
+                row.get("dlsite_id"), row.get("dmm"))
         else:
             old_map = dict(zip(compare_cols, old))
             if all(old_map.get(c) == row.get(c) for c in compare_cols):
@@ -962,8 +968,12 @@ def upsert_egs_rows(conn: sqlite3.Connection, rows: list[dict]) -> dict:
             else:
                 cursor.execute(sql, values)
                 updated += 1
+                extid_synced += egs_extids.sync_row(
+                    conn, row["egs_id"], row.get("getchu_id"),
+                    row.get("dlsite_id"), row.get("dmm"))
     conn.commit()
-    return {"inserted": inserted, "updated": updated, "unchanged": unchanged}
+    return {"inserted": inserted, "updated": updated, "unchanged": unchanged,
+            "extid_synced": extid_synced}
 
 
 def crawl_egs_range(start_year: int, end_year: int, month: int | None = None,
