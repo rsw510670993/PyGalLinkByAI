@@ -740,10 +740,10 @@ def cmd_egs_torrent_meta_backfill(args):
               FROM egs_games g
              WHERE COALESCE(g.link,'') != '' AND g.infohash_hex IS NOT NULL
                AND (? OR COALESCE(g.torrent_name,'') = '')
-               AND (? OR g.date LIKE ?)
+               AND (? = 0 OR g.date LIKE ?)
              ORDER BY g.egs_id
         """
-        rows = conn.execute(sql, (bool(args.force), bool(args.year), f"{args.year}-%" if args.year else None)).fetchall()
+        rows = conn.execute(sql, (bool(args.force), int(args.year or 0), f"{args.year}-%" if args.year else '')).fetchall()
         if args.limit:
             rows = rows[:args.limit]
         stats = {"total": len(rows), "ok": 0, "skip_no_view": 0, "fail": 0, "updated": []}
