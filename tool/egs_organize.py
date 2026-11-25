@@ -7,7 +7,7 @@ import sqlite3
 import time
 from urllib.parse import unquote
 
-from .egs_core import ensure_egs_schema, normalize_folder_status, open_egs_db as open_db, sync_folder_artifact
+from .egs_core import _artifact_tables_present, ensure_egs_schema, normalize_folder_status, open_egs_db as open_db, sync_folder_artifact
 from .runtime import read_config, repo_root, share_sqlite_wal_files
 from .p115_client import (
     get_item_info,
@@ -129,6 +129,33 @@ def find_downloaded_folder_by_infohash(conn, link, stored_infohash=None, getchu_
     wanted = _exact_infohash(link, stored_infohash)
     if not wanted:
         return None
+
+    # 2026-11-25 双表优先（读路径第 2 步）：按 infohash 找 artifact 的 115 目录，
+    # 命中即返回；未命中回退旧的 egs_115_folders join（搬月/历史数据仍可走旧路径）。
+    if _artifact_tables_present(conn):
+        art = conn.execute(
+            """SELECT folder_cid, folder_path, display_name FROM egs_artifacts
+                WHERE infohash_hex=? AND COALESCE(folder_cid,'')!=''
+                ORDER BY artifact_id LIMIT 1""",
+            (wanted,),
+        ).fetchone()
+        if art:
+            cid = str(art[0])
+            meta = conn.execute(
+                "SELECT pid, pick_code, folder_name, folder_path FROM egs_115_folders WHERE cid=? LIMIT 1",
+                (cid,),
+            ).fetchone()
+            return {
+                "source": "artifact",
+                "infohash_hex": wanted,
+                "source_date": None,
+                "source_name": None,
+                "cid": cid,
+                "pid": (meta[0] if meta else None),
+                "pick_code": (meta[1] if meta else None),
+                "name": ((meta[2] if meta else None) or art[2] or ""),
+                "folder_path": ((meta[3] if meta else None) or art[1]),
+            }
 
     rows = conn.execute(
         """SELECT g.date,g.name,g.link,g.infohash_hex,
