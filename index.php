@@ -40,7 +40,7 @@ for ($m = 1; $m <= 12; $m++) $monthOpts .= "<option value=\"{$m}\">{$m}月</opti
             <span class="ctl-label">动作</span>
             <div class="action-row">
               <button id="btn-sync" class="btn primary big" type="button">同步<small>清单 + 磁链</small></button>
-              <button id="btn-submit" class="btn big" type="button">提交并校对<small id="submit-sub"></small></button>
+              <button id="btn-thumb" class="btn big" type="button">抓封面<small id="thumb-sub"></small></button>
             </div>
           </div>
         </div>

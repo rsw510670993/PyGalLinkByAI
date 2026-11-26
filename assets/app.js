@@ -147,11 +147,11 @@
     function renderTask() {
       const running = !!(task && task.running);
       $('btn-sync').disabled = busy || running || !ov;
-      $('btn-submit').disabled = busy || running || !ov;
+      $('btn-thumb').disabled = busy || running || !ov;
       $('btn-stop').hidden = !running;
       $('btn-stop').disabled = false;
 
-      $('submit-sub').textContent = ov ? `${ov.pending_submit} 条` : '';
+      $('thumb-sub').textContent = ov ? `${ov.cover_missing_downloaded} 条` : '';
 
       const state = $('task-state');
       if (running) { state.className = 'pill p-info'; state.textContent = '运行中'; }
@@ -190,9 +190,9 @@
         const wasRunning = prevRunning;
         task = t;
         prevRunning = !!t.running;
-        // 提交刚完成：校对由 driver/CLI 在 10 分钟后触发，页面只提示不代跑
-        if (wasRunning && !t.running && t.action === 'submit' && t.outcome !== 'error') {
-          $('control-msg').textContent = '提交完成；校对由提交 driver 或 CLI 在 10 分钟后触发。';
+        // 封面抓取刚完成：未取到的多半是源站下架或 Getchu 无收录，页面只提示不代跑
+        if (wasRunning && !t.running && t.action === 'thumb' && t.outcome !== 'error') {
+          $('control-msg').textContent = '封面抓取完成；仍缺的多是源站已下架或无可用编号。';
         }
         renderTask();
       } catch (e) {
@@ -210,7 +210,7 @@
       if (sc.end_year < sc.start_year) { $('control-msg').textContent = '结束年份不能小于起始年份'; return; }
       busy = true;
       $('btn-sync').disabled = true;
-      $('btn-submit').disabled = true;
+      $('btn-thumb').disabled = true;
       try {
         const res = await api('pipeline_start', { action, start_year: sc.start_year, end_year: sc.end_year, month: sc.month, execute: false });
         $('control-msg').textContent = res.message || '已启动';
@@ -261,7 +261,7 @@
     }
 
     $('btn-sync').addEventListener('click', () => start('sync'));
-    $('btn-submit').addEventListener('click', () => start('submit'));
+    $('btn-thumb').addEventListener('click', () => start('thumb'));
     $('btn-stop').addEventListener('click', async () => {
       if (!task || !task.job_id) return;
       $('btn-stop').disabled = true;
@@ -407,8 +407,18 @@
       if (e.target.id === 'lightbox' || e.target.classList.contains('lb-close')) $('lightbox').classList.remove('on');
     });
 
-    loadYears();
-    load();
+    // 支持从总控年历带筛选条件跳进来（egs.php?year=2026&month=3&stage=downloaded）
+    const urlParams = new URLSearchParams(location.search);
+    const presetYear = urlParams.get('year') || '';
+    const presetMonth = urlParams.get('month') || '';
+    const presetStage = urlParams.get('stage') || '';
+    if (presetMonth) $('f-month').value = presetMonth;
+    if (presetStage) $('f-stage').value = presetStage;
+    // 年份下拉的选项由 loadYears 异步填充，必须等它渲染完再赋值
+    loadYears().then(() => {
+      if (presetYear) $('f-year').value = presetYear;
+      load();
+    }).catch(() => load());
     loadTop().catch(() => {});
   }
 
