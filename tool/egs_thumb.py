@@ -75,7 +75,10 @@ def has_cover(row) -> bool:
     if dmm and web_dmm_thumb_path(dmm).is_file():
         return True
     egs_id = _row_get(row, 'egs_id')
-    return egs_id is not None and web_official_thumb_path(egs_id).is_file()
+    if egs_id is None:
+        return False
+    return (web_official_thumb_path(egs_id).is_file()
+            or web_vndb_thumb_path(egs_id).is_file())
 
 
 def _row_get(row, key):
@@ -446,17 +449,7 @@ def dlsite_coverage() -> dict:
             'with_cover': have, 'missing': len(rows) - have}
 
 # ---------------- 按名搜索（两个 id 都没有的记录） ----------------
-# Getchu 是老 EUC-JP 站：搜索关键词必须用 euc-jp 编码传参，
-# 传 UTF-8 会被服务端当成 EUC-JP 解出乱码，返回 0 结果。
-GETCHU_SEARCH_URL = 'https://www.getchu.com/php/nsearch.phtml?search_keyword={kw}'
-GETCHU_SEARCH_PAGE = 'https://www.getchu.com/php/nsearch.phtml?search_keyword={kw}&search_page={page}'
-# 非游戏介质（音乐/DVD/周边/书籍）即使标题撞上也不要，避免配到原声集、画集。
-NON_GAME_MEDIA = {'CD', 'DVD', 'グッズ', '書籍', 'アニメ', '音楽', 'BOOK'}
-ITEM_ANCHOR_RE = re.compile(
-    r'soft\.phtml\?id=(\d+)"\s*class="blueb"\s*>(.*?)</A>', re.S | re.I)
-BRAND_RE = re.compile(r'ブランド名：\s*<A[^>]*>(.*?)</A>', re.S)
-DATE_RE = re.compile(r'発売日：\s*(\d{4}/\d{2}/\d{2})')
-MEDIA_RE = re.compile(r'<span class="orangeb">\[(.*?)\]</span>', re.S)
+# ---------------- 标题归一化与相似度（官网、VNDB 匹配共用） ----------------
 _TITLE_STRIP = '~〜～-—–―_!！?？.,、。:：;；\'"“”‘’()（）[]【】「」『』/／\\|・･★☆♪♡… 　'
 
 
@@ -465,14 +458,6 @@ def norm_text(value) -> str:
     text = unicodedata.normalize('NFKC', str(value or ''))
     text = text.lower()
     return ''.join(ch for ch in text if ch not in _TITLE_STRIP)
-
-
-def norm_brand(value) -> str:
-    """公司/品牌归一化：NFKC、小写、去空格与括号内注释。"""
-    text = unicodedata.normalize('NFKC', str(value or ''))
-    text = re.sub(r'[（(\[【].*?[)）\]】]', '', text)
-    text = text.lower().replace(' ', '').replace('　', '')
-    return ''.join(ch for ch in text if ch not in '・･.,、。')
 
 
 def _similar(a: str, b: str) -> float:
@@ -484,7 +469,6 @@ def _similar(a: str, b: str) -> float:
 TITLE_SPAN_MIN = 0.60      # 包含判定的长度比下限（原 0.70）
 TITLE_RATIO_MIN = 0.82     # 相似度下限（原 0.86）
 CONTAIN_SCORE = 0.92       # 包含命中给的分数
-EMPTY_BRAND_TITLE_MIN = 0.90  # 候选品牌为空时，标题需达到的分数
 
 
 def title_match(target: str, candidate: str) -> tuple[bool, float]:
@@ -504,114 +488,6 @@ def title_match(target: str, candidate: str) -> tuple[bool, float]:
         if span >= TITLE_SPAN_MIN:
             return True, max(ratio, CONTAIN_SCORE)
     return (ratio >= TITLE_RATIO_MIN), ratio
-
-
-def brand_match(target: str, candidate: str) -> tuple[bool, float]:
-    """公司/品牌匹配：包含或相似度≥0.8（品牌常有 株式会社/． 等噪声）。"""
-    a, b = norm_brand(target), norm_brand(candidate)
-    if not a or not b:
-        return False, 0.0
-    if a == b:
-        return True, 1.0
-    if a in b or b in a:
-        return True, 0.95
-    ratio = _similar(a, b)
-    return (ratio >= 0.8), ratio
-
-
-def brand_state(target: str, candidate: str) -> tuple[str, float]:
-    """品牌三态：match / empty（候选页面没写品牌）/ miss。
-
-    Getchu 的同人作品页经常没有「ブランド名」链接，空品牌不能当成不匹配。
-    """
-    a, b = norm_brand(target), norm_brand(candidate)
-    if not a or not b:
-        return 'empty', 0.0
-    ok, score = brand_match(target, candidate)
-    return ('match', score) if ok else ('miss', score)
-
-
-def parse_getchu_search(html: str) -> list[dict]:
-    """解析 Getchu 搜索结果页为条目列表。"""
-    items = []
-    for match in ITEM_ANCHOR_RE.finditer(html):
-        gid = match.group(1)
-        title = re.sub(r'<[^>]+>', '', match.group(2))
-        title = html_lib.unescape(title).strip()
-        window = html[match.end():match.end() + 2600]
-        brand_m = BRAND_RE.search(window)
-        date_m = DATE_RE.search(window)
-        media_m = MEDIA_RE.search(window)
-        items.append({
-            'getchu_id': gid,
-            'title': title,
-            'brand': html_lib.unescape(brand_m.group(1)).strip() if brand_m else '',
-            'release': date_m.group(1) if date_m else '',
-            'media': media_m.group(1).strip() if media_m else '',
-        })
-    return items
-
-
-def search_getchu(name: str, session: requests.Session, timeout: int = 30,
-                  pages: int = 1):
-    """按作品名搜索 Getchu，返回 (条目列表, 错误信息)。"""
-    kw = urllib.parse.quote(str(name).encode('euc-jp', 'ignore'))
-    results: list[dict] = []
-    for page in range(1, pages + 1):
-        url = (GETCHU_SEARCH_URL if page == 1
-               else GETCHU_SEARCH_PAGE.format(kw=kw, page=page)).format(kw=kw)
-        try:
-            resp = session.get(url, timeout=timeout)
-        except requests.RequestException as exc:
-            return results, f'网络错误: {exc}'
-        if resp.status_code != 200:
-            return results, f'HTTP {resp.status_code}'
-        html = resp.content.decode('euc-jp', errors='replace')
-        results.extend(parse_getchu_search(html))
-        if page > 1 and not parse_getchu_search(html):
-            break
-    return results, ''
-
-
-def pick_getchu_match(row, results: list[dict], min_score: float = EMPTY_BRAND_TITLE_MIN):
-    """从搜索结果里挑唯一可信的匹配：标题为主，品牌缺失不否决。
-
-    品牌为空（Getchu 同人页常见）时改用标题分数下限兜底；
-    并列最高分时优先品牌命中的候选，仍并列则放弃（避免歧义配错）。
-    返回 (match, evidence)；没有可靠匹配时 match 为 None。
-    """
-    target_name = _row_get(row, 'name') or _row_get(row, 'egs_name') or ''
-    target_brand = _row_get(row, 'company') or _row_get(row, 'egs_company') or ''
-    scored = []
-    for item in results:
-        if (item.get('media') or '').upper() in NON_GAME_MEDIA:
-            continue
-        t_ok, t_score = title_match(target_name, item['title'])
-        if not t_ok:
-            continue
-        state, b_score = brand_state(target_brand, item['brand'])
-        if state == 'miss':
-            continue
-        if state == 'empty' and t_score < min_score:
-            continue
-        item['title_score'] = round(t_score, 3)
-        item['brand_state'] = state
-        item['brand_score'] = round(b_score, 3)
-        scored.append(item)
-    if not scored:
-        return None, {'reason': '无标题（+品牌）匹配候选', 'candidates': len(results)}
-    scored.sort(key=lambda it: (-it['title_score'], -it['brand_score']))
-    best = scored[0]
-    # 同分且品牌状态相同才视为歧义；一条品牌命中、一条品牌缺失时取命中的
-    tied = [it for it in scored[1:]
-            if it['title_score'] == best['title_score']
-            and it['brand_state'] == best['brand_state']]
-    if tied:
-        return None, {'reason': '多个候选并列，放弃', 'candidates': len(results)}
-    reason = ('标题+品牌匹配' if best['brand_state'] == 'match'
-              else '标题匹配（候选无品牌）')
-    return best, {'reason': reason, 'candidates': len(results)}
-
 
 
 # ---------------- 作品官网 og:image（第三来源，兜底） ----------------
@@ -841,7 +717,7 @@ def run_official(limit: int = 0, interval: float = 1.0, should_stop=None,
 # ---------------- 统一补封面入口（供 pipeline thumb 动作调用） ----------------
 # 顺序即优先级：Getchu 包图最规整，DLsite CDN 覆盖同人作品，DMM 多为小图，
 # 官网 og:image 兜底。任一路成功即停止。
-THUMB_SOURCE_ORDER = ('getchu', 'dlsite', 'dmm', 'official')
+THUMB_SOURCE_ORDER = ('getchu', 'dlsite', 'dmm', 'official', 'vndb')
 
 
 def pending_cover_rows(conn, start_year: int | None = None,
@@ -907,15 +783,55 @@ def _try_source(source: str, row, session) -> tuple[bool, str]:
     return ok, message
 
 
-def fetch_cover_for_row(row, session) -> tuple[bool, str, str]:
-    """按 THUMB_SOURCE_ORDER 依次尝试，成功即转 webp。
+def _fetch_vndb(row, session, conn):
+    """C 档：VNDB 按名匹配取图，命中后写映射表便于回溯。"""
+    from .thumb_optimize import convert
 
+    candidates = vndb_search(row['name'], session)
+    match = pick_vndb_match(row['name'], candidates)
+    if match is None:
+        return False, '无达到阈值的候选'
+    ok, message, _size = download_vndb(row['egs_id'], match['image'], session)
+    if not ok:
+        return False, message
+    if conn is not None and match.get('vndb_id'):
+        try:
+            egs_extids.attach_external_id(
+                conn, row['egs_id'], 'vndb', match['vndb_id'],
+                origin='vndb_search', confidence=match['score'])
+        except Exception:  # noqa: BLE001 - 映射写入失败不影响图已落盘
+            pass
+    converted = ''
+    src = vndb_thumb_path(row['egs_id'])
+    if src.is_file():
+        try:
+            cok, cmsg = convert(src)
+            converted = f' · webp {"ok" if cok else cmsg}'
+        except Exception as exc:  # noqa: BLE001
+            converted = f' · webp 失败 {exc}'
+    return True, f'{message}（{match["vndb_id"]} {match["score"]:.2f}）{converted}'
+
+
+def fetch_cover_for_row(row, session, conn=None, sources=None):
+    """按置信度依次取封面，成功即转 webp。
+
+    顺序：getchu/dlsite/dmm（编号来自 EGS 或下载目录名，不会配错）
+    → official（EGS 给的官网地址）→ vndb（按名匹配，唯一有误配风险，排最后）。
+
+    sources 可指定只跑其中几个（CLI --only 调试用），不做跨档兜底。
     返回 (是否成功, 命中的来源, 说明)。
     """
     from .thumb_optimize import convert
 
+    order = tuple(sources) if sources else THUMB_SOURCE_ORDER
     last_error = '无可用来源'
-    for source in THUMB_SOURCE_ORDER:
+    for source in order:
+        if source == 'vndb':
+            ok, message = _fetch_vndb(row, session, conn)
+            if ok:
+                return True, 'vndb', message
+            last_error = f'vndb: {message}'
+            continue
         ok, message = _try_source(source, row, session)
         if not ok:
             last_error = f'{source}: {message}'
@@ -968,6 +884,90 @@ def run_dmm(limit: int = 0, interval: float = 1.0, should_stop=None,
     stats['finished_at'] = now_ts()
     _save_state(stats)
     return stats
+
+
+VNDB_API = 'https://api.vndb.org/kana/vn'
+VNDB_MATCH_MIN = 0.90   # 标题相似度下限：C 档按名匹配唯一有误配风险，宁可少补
+
+
+def vndb_dir() -> Path:
+    return thumb_dir() / 'vndb'
+
+
+def vndb_thumb_path(egs_id) -> Path:
+    return vndb_dir() / f'{egs_id}.jpg'
+
+
+def web_vndb_thumb_path(egs_id) -> Path:
+    return thumb_dir() / 'web' / 'vndb' / f'{egs_id}.webp'
+
+
+def vndb_search(name: str, session: requests.Session, timeout: int = 20,
+                results: int = 3) -> list[dict]:
+    """按作品名搜 VNDB，返回候选（含 id / 标题 / 封面地址）。"""
+    try:
+        resp = session.post(
+            VNDB_API,
+            json={'filters': ['search', '=', str(name)],
+                  'fields': 'id,title,alttitle,image.url',
+                  'results': int(results)},
+            timeout=timeout,
+        )
+    except requests.RequestException:
+        return []
+    if resp.status_code != 200:
+        return []
+    try:
+        return resp.json().get('results') or []
+    except ValueError:
+        return []
+
+
+def pick_vndb_match(name: str, candidates: list[dict],
+                    min_score: float = VNDB_MATCH_MIN):
+    """挑标题最相近的候选；低于 min_score 一律不采纳。
+
+    VNDB 的 title 多为罗马字/英文，alttitle 才是日文原名，两个都要比。
+    """
+    best = None
+    for item in candidates:
+        image = (item.get('image') or {}).get('url') or ''
+        if not image:
+            continue
+        for title in (item.get('title'), item.get('alttitle')):
+            if not title:
+                continue
+            score = _similar(norm_text(name), norm_text(title))
+            if best is None or score > best[0]:
+                best = (score, item.get('id'), title, image)
+    if best is None or best[0] < min_score:
+        return None
+    return {'score': round(best[0], 3), 'vndb_id': best[1],
+            'title': best[2], 'image': best[3]}
+
+
+def download_vndb(egs_id, image_url: str, session: requests.Session,
+                  timeout: int = 30) -> tuple[bool, str, int]:
+    """下载 VNDB 封面到 thumbnails/vndb/{egs_id}.jpg。"""
+    try:
+        img = session.get(image_url, timeout=timeout)
+    except requests.RequestException as exc:
+        return False, f'VNDB 图网络错误: {exc}', 0
+    if img.status_code != 200 or 'image' not in img.headers.get('Content-Type', ''):
+        return False, f'VNDB 图 HTTP {img.status_code}', 0
+    ok, info = image_looks_like_package(img.content, 120, 160)
+    if not ok:
+        return False, f'VNDB 图不合格: {info}', len(img.content)
+    target = vndb_thumb_path(egs_id)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(target.name + '.part')
+    tmp.write_bytes(img.content)
+    try:
+        os.chmod(tmp, 0o644)
+    except OSError:
+        pass
+    tmp.replace(target)
+    return True, f'{info} {len(img.content)} bytes', len(img.content)
 
 
 def download_official(egs_id, url, session: requests.Session,
@@ -1065,61 +1065,3 @@ def scan_dlsite_ids_from_dirs(conn, dry_run: bool = True, limit: int = 0) -> dic
             'items': items}
 
 
-def run_namesearch_getchu(conn, year: int | None = None, month: int | None = None,
-                          limit: int = 0, dry_run: bool = True,
-                          interval: float = 1.5, should_stop=None,
-                          logger=None) -> dict:
-    """对没有任何外部 ID 的记录按名搜索 Getchu，补 getchu_id。
-
-    只处理 getchu/dlsite/dmm 全空的记录：已经有 ID 的不该再按名猜。
-    """
-    log = logger or (lambda msg: None)
-    sql = ("SELECT egs_id, name, company, date FROM egs_games "
-           "WHERE COALESCE(getchu_id,'')='' AND COALESCE(dlsite_id,'')='' "
-           "AND COALESCE(dmm,'')=''")
-    params: list = []
-    if year:
-        if month:
-            sql += ' AND date = ?'
-            params.append(f'{int(year):04d}-{int(month):02d}')
-        else:
-            sql += ' AND date >= ? AND date < ?'
-            params.extend([f'{int(year):04d}-01', f'{int(year) + 1:04d}-01'])
-    sql += ' ORDER BY date, egs_id'
-    rows = conn.execute(sql, params).fetchall()
-    if limit:
-        rows = rows[:limit]
-
-    session = requests.Session()
-    session.headers.update({'User-Agent': UA, 'Referer': 'https://www.getchu.com/'})
-    stats = {'status': 'success', 'mode': 'getchu_search', 'dry_run': dry_run,
-             'year': year, 'month': month, 'total': len(rows),
-             'matched': 0, 'written': 0, 'items': []}
-    for i, row in enumerate(rows):
-        if should_stop and should_stop():
-            stats['status'] = 'stopped'
-            break
-        hits, err = search_getchu(row['name'], session)
-        match, evidence = pick_getchu_match(row, hits)
-        item = {'egs_id': row['egs_id'], 'name': row['name'], 'hits': len(hits),
-                'reason': evidence.get('reason'), 'error': err, 'match': None}
-        if match is not None:
-            stats['matched'] += 1
-            item['match'] = {'getchu_id': match['getchu_id'], 'title': match['title'],
-                             'score': match.get('title_score'),
-                             'brand_state': match.get('brand_state')}
-            if not dry_run:
-                res = egs_extids.attach_external_id(
-                    conn, row['egs_id'], 'getchu', match['getchu_id'],
-                    origin='getchu_search')
-                item['written'] = bool(res.get('changed') or res.get('legacy_written'))
-                if item['written']:
-                    stats['written'] += 1
-        stats['items'].append(item)
-        log(f'[{i + 1}/{len(rows)}] {row["egs_id"]} hits={len(hits)} '
-            f'{"✓" if match else "✗"} {row["name"]}')
-        if i + 1 < len(rows):
-            time.sleep(interval)
-    if not dry_run:
-        conn.commit()
-    return stats

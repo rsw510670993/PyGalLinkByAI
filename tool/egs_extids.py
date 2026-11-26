@@ -17,10 +17,10 @@ from __future__ import annotations
 import time
 
 # 来源常量：与 egs_games 旧列一一对应
-EXTERNAL_SOURCES = ("getchu", "dlsite", "dmm")
+EXTERNAL_SOURCES = ("getchu", "dlsite", "dmm", "vndb")
 EXTERNAL_STATUSES = ("confirmed", "candidate", "rejected")
 EXTERNAL_ORIGINS = ("egs_crawl", "getchu_search", "dlsite_search", "dmm_probe",
-                    "dir_scan", "manual")
+                    "dir_scan", "vndb_search", "manual")
 
 # (source, egs_games 旧列名)
 LEGACY_COLUMNS = (
@@ -237,8 +237,9 @@ def attach_external_id(conn, egs_id: int, source: str, external_id: str,
     changed = set_external_id(conn, egs_id, src, ext, status=status,
                               origin=origin, confidence=confidence)
     legacy_written = False
-    if write_legacy and status == "confirmed" and table_present(conn):
-        column = _LEGACY_COLUMN[src]
+    column = _LEGACY_COLUMN.get(src)
+    # vndb 这类没有对应旧列的来源只写映射表，不回写主表
+    if write_legacy and status == "confirmed" and column and table_present(conn):
         cursor = conn.execute(
             f"UPDATE egs_games SET {column}=?, updated_at=? "
             f"WHERE egs_id=? AND COALESCE({column},'')=''",

@@ -105,8 +105,8 @@ class DlsiteCdnTests(unittest.TestCase):
         self.assertEqual(egs_thumb.extract_dlsite_id("no id here"), "")
 
 
-class MatchRelaxTests(unittest.TestCase):
-    """40193 案例：作品名 + 特典后缀，同人页无品牌。"""
+class TitleMatchTests(unittest.TestCase):
+    """40193 案例：作品名 + 特典后缀，标题仍能匹配（官网与 VNDB 共用这套归一化）。"""
 
     TARGET = "紳士 ドライバー ～ブレーキなしの淫行～"
     CANDIDATE = "紳士 ドライバー〜ブレーキなしの淫行〜＋特典CG集付き"
@@ -116,70 +116,27 @@ class MatchRelaxTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertGreaterEqual(score, 0.90)
 
-    def test_brand_state_distinguishes_empty(self):
-        self.assertEqual(egs_thumb.brand_state("Nite", "")[0], "empty")
-        self.assertEqual(egs_thumb.brand_state("Nite", "Nite")[0], "match")
-        self.assertEqual(egs_thumb.brand_state("Nite", "OtherBrand")[0], "miss")
 
-    def test_pick_accepts_single_candidate_without_brand(self):
-        row = {"name": self.TARGET, "company": "WorkNite Games"}
-        item = {"getchu_id": "1380067", "title": self.CANDIDATE, "brand": "",
-                "media": "同人・アダルト"}
-        match, evidence = egs_thumb.pick_getchu_match(row, [item])
-        self.assertIsNotNone(match)
-        self.assertEqual(match["getchu_id"], "1380067")
-        self.assertIn("无品牌", evidence["reason"])
-
-    def test_pick_rejects_non_game_media(self):
-        row = {"name": self.TARGET, "company": "WorkNite Games"}
-        item = {"getchu_id": "1", "title": self.CANDIDATE, "brand": "",
-                "media": "CD"}
-        match, _ = egs_thumb.pick_getchu_match(row, [item])
-        self.assertIsNone(match)
-
-
-class CoverShapeTests(unittest.TestCase):
-    """2026-11-26 放宽：横图与方图是正常封面，只拒过小和超扁横幅。"""
+class VndbMatchTests(unittest.TestCase):
+    """C 档按名匹配：低于阈值一律不采纳，无图候选直接跳过。"""
 
     @staticmethod
-    def _png(width, height, flat=False):
-        import io
-        from PIL import Image, ImageDraw
-        im = Image.new("RGB", (width, height), (200, 200, 200))
-        if not flat:
-            draw = ImageDraw.Draw(im)
-            for i in range(0, width, 40):
-                draw.rectangle([i, 0, i + 20, height],
-                               fill=(30 + i % 200, 80, 120))
-        buf = io.BytesIO()
-        im.save(buf, "PNG")
-        return buf.getvalue()
+    def _cand(title, alt=None, image="https://t.vndb.org/cv/x.jpg"):
+        return {"id": "v1", "title": title, "alttitle": alt, "image": {"url": image}}
 
-    def test_accepts_landscape_4_3(self):
-        ok, info = egs_thumb.image_looks_like_package(self._png(384, 288))
-        self.assertTrue(ok, info)
+    def test_picks_high_similarity(self):
+        match = egs_thumb.pick_vndb_match("パコられ", [self._cand("Pako Rare", "パコられ")])
+        self.assertIsNotNone(match)
+        self.assertEqual(match["vndb_id"], "v1")
 
-    def test_accepts_square(self):
-        ok, _ = egs_thumb.image_looks_like_package(self._png(300, 300))
-        self.assertTrue(ok)
+    def test_rejects_low_similarity(self):
+        self.assertIsNone(
+            egs_thumb.pick_vndb_match("パコられ", [self._cand("Totally Different Game")]))
 
-    def test_rejects_too_small(self):
-        ok, _ = egs_thumb.image_looks_like_package(self._png(120, 90))
-        self.assertFalse(ok)
-
-    def test_rejects_banner(self):
-        ok, _ = egs_thumb.image_looks_like_package(self._png(1200, 200))
-        self.assertFalse(ok)
-
-    def test_rejects_flat_placeholder(self):
-        """官网 og:image 常返回整块背景色，尺寸比例合规但内容全黑。"""
-        ok, info = egs_thumb.image_looks_like_package(self._png(800, 800, flat=True))
-        self.assertFalse(ok)
-        self.assertIn("近纯色", info)
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_skips_candidate_without_image(self):
+        cand = self._cand("パコられ")
+        cand["image"] = {}
+        self.assertIsNone(egs_thumb.pick_vndb_match("パコられ", [cand]))
 
 
 class ThumbJobWiringTests(unittest.TestCase):
