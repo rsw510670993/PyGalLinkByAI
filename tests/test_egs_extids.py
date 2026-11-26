@@ -142,11 +142,17 @@ class CoverShapeTests(unittest.TestCase):
     """2026-11-26 放宽：横图与方图是正常封面，只拒过小和超扁横幅。"""
 
     @staticmethod
-    def _png(width, height):
+    def _png(width, height, flat=False):
         import io
-        from PIL import Image
+        from PIL import Image, ImageDraw
+        im = Image.new("RGB", (width, height), (200, 200, 200))
+        if not flat:
+            draw = ImageDraw.Draw(im)
+            for i in range(0, width, 40):
+                draw.rectangle([i, 0, i + 20, height],
+                               fill=(30 + i % 200, 80, 120))
         buf = io.BytesIO()
-        Image.new("RGB", (width, height), (200, 200, 200)).save(buf, "PNG")
+        im.save(buf, "PNG")
         return buf.getvalue()
 
     def test_accepts_landscape_4_3(self):
@@ -164,6 +170,12 @@ class CoverShapeTests(unittest.TestCase):
     def test_rejects_banner(self):
         ok, _ = egs_thumb.image_looks_like_package(self._png(1200, 200))
         self.assertFalse(ok)
+
+    def test_rejects_flat_placeholder(self):
+        """官网 og:image 常返回整块背景色，尺寸比例合规但内容全黑。"""
+        ok, info = egs_thumb.image_looks_like_package(self._png(800, 800, flat=True))
+        self.assertFalse(ok)
+        self.assertIn("近纯色", info)
 
 
 if __name__ == "__main__":
