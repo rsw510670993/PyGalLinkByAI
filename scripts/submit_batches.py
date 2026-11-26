@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""12-01 分批提交 driver（可续跑，非定时任务）。
+"""分批提交 driver（可续跑，非定时任务）。
 
-背景：submit/check 有两道独立审核 gate（pipeline.start 的 pending_review_count
-与 rows 查询里的 pending 过滤），跳过 preflight 会出现「启动了但 0 条提交」。
-本 driver 每批提交前强制 preflight，提交后轮询到结束，再进入下一批。
+2026-11-26：审核 gate 已移除（原 pending_review_count 与 preflight 两道门禁作废），
+driver 不再跑预检，直接分批提交、轮询到结束，再进入下一批。
 
 用法（写库，必须 www-data）：
   cd /var/www/html/gshelf
@@ -88,11 +87,6 @@ def pipeline_status() -> dict:
         return {}
 
 
-def preflight(start_year: int, end_year: int) -> dict:
-    return run_cli(['-m', 'tool.pipeline', 'preflight', '--action', 'submit',
-                    '--start-year', str(start_year), '--end-year', str(end_year), '--month', '0'])
-
-
 def _pid_alive(pid):
     try:
         os.kill(int(pid), 0)
@@ -125,20 +119,7 @@ def run_batch(no: int, start_year: int, end_year: int, label: str, state: dict, 
         log(f'[批次 {no}] {label} 已完成，跳过（--resume 时保持）')
         return True
 
-    pre = preflight(start_year, end_year)
-    if pre.get('status') != 'success' or 'count' not in pre:
-        message = pre.get('message') or 'preflight 未返回 status=success 与 count，视为预检失败'
-        log(f'[批次 {no}] {label} 预检失败：{message}')
-        rec.update({'outcome': 'preflight_error', 'message': message})
-        state['batches'][key] = rec
-        save_state(state)
-        return False
-    pending = int(pre.get('count') or 0)
-    if pending:
-        # 2026-11-25 起审核是待办队列、行级过滤，不再阻塞整批；这里只记录供观察。
-        log(f'[批次 {no}] {label} 另有 {pending} 条低分待审（行级过滤，不阻塞本批）')
-
-    log(f'[批次 {no}] {label} preflight 通过（待审 0），提交 {start_year}-{end_year}')
+    log(f'[批次 {no}] {label} 开始提交 {start_year}-{end_year}')
     if dry_run:
         log(f'[批次 {no}] dry-run：跳过实际提交')
         return True
@@ -229,7 +210,7 @@ def run_check(start_year: int, end_year: int, delay: int) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description='12-01 分批提交 driver（可续跑）')
-    ap.add_argument('--dry-run', action='store_true', help='只跑 preflight 并打印计划')
+    ap.add_argument('--dry-run', action='store_true', help='只打印计划，不实际提交')
     ap.add_argument('--resume', action='store_true', help='跳过已完成批次')
     ap.add_argument('--only', type=int, help='只跑指定批次号')
     ap.add_argument('--pause-seconds', type=int, default=0,

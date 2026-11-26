@@ -454,7 +454,7 @@ def cmd_egs_games(args):
         if args.brand_kind:
             conditions.append("brand_kind = ?")
             params.append(str(args.brand_kind).strip().upper())
-        if getattr(args, "review", "") == "pending":
+        if getattr(args, "review", "") in ("pending", "review"):
             conditions.append("""
                 (link IS NULL OR link = '')
                 AND NOT EXISTS (
@@ -468,7 +468,7 @@ def cmd_egs_games(args):
                 AND COALESCE((
                     SELECT l.review_status FROM egs_nyaa_search_log l
                      WHERE l.egs_id = egs_games.egs_id
-                ), 'pending') = 'pending'
+                ), 'review') = 'review'
             """)
         stage = getattr(args, "stage", "")
         if stage == "downloaded":
@@ -646,6 +646,58 @@ def cmd_egs_overview(args):
         "issues": int(issues or 0),
         "cover_missing_downloaded": cover_missing,
     })
+
+
+def cmd_egs_review_queue(args):
+    """列出三档分流里 review 档、且所属记录还没有磁链的候选。
+
+    这是「审核」降级为异常清单后的唯一人工入口：不再逐条签 gate，
+    只看这批需要人/AI 拍板的灰区候选。--limit 默认 50。
+    """
+    import json as _json
+
+    from tool.egs_core import ensure_egs_schema, open_egs_db
+    from tool.egs_magnet import ensure_egs_magnet_schema
+    conn = open_egs_db(args.db)
+    try:
+        ensure_egs_schema(conn)
+        ensure_egs_magnet_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT g.egs_id, g.date, g.name, g.company,
+                   c.id AS candidate_id, c.score, c.nyaa_title, c.nyaa_date,
+                   c.infohash_hex, c.score_detail
+              FROM egs_games g
+              JOIN egs_nyaa_candidates c ON c.egs_id = g.egs_id
+             WHERE c.tier = 'review'
+               AND COALESCE(c.selected, 0) = 0
+               AND (g.link IS NULL OR g.link = '')
+             ORDER BY g.date, g.egs_id, c.score DESC
+             LIMIT ?
+            """,
+            (int(args.limit or 50),),
+        ).fetchall()
+    finally:
+        conn.close()
+    items = []
+    for r in rows:
+        try:
+            detail = _json.loads(r["score_detail"] or "{}")
+        except ValueError:
+            detail = {}
+        items.append({
+            "egs_id": r["egs_id"],
+            "date": r["date"],
+            "name": r["name"],
+            "company": r["company"],
+            "candidate_id": r["candidate_id"],
+            "score": r["score"],
+            "nyaa_title": r["nyaa_title"],
+            "nyaa_date": r["nyaa_date"],
+            "infohash_hex": r["infohash_hex"],
+            "detail": detail,
+        })
+    _print({"status": "success", "count": len(items), "items": items})
 
 
 def cmd_egs_cover(args):
@@ -1065,6 +1117,11 @@ def build_parser():
     p_egs_overview.add_argument("--db", type=str)
     p_egs_overview.set_defaults(func=cmd_egs_overview)
 
+    p_egs_review_queue = egs_sub.add_parser("review_queue")
+    p_egs_review_queue.add_argument("--db", type=str)
+    p_egs_review_queue.add_argument("--limit", type=int, default=50)
+    p_egs_review_queue.set_defaults(func=cmd_egs_review_queue)
+
     p_egs_status = egs_sub.add_parser("status")
     p_egs_status.add_argument("--db", type=str, dest="db")
     p_egs_status.set_defaults(func=cmd_egs_status)
@@ -1099,7 +1156,8 @@ def build_parser():
     p_egs_games.add_argument("--month", type=int)
     p_egs_games.add_argument("--q", type=str, default="")
     p_egs_games.add_argument("--brand-kind", type=str, dest="brand_kind", default="")
-    p_egs_games.add_argument("--review", type=str, choices=["", "pending"], default="")
+    p_egs_games.add_argument("--review", type=str,
+                             choices=["", "pending", "review"], default="")
     p_egs_games.add_argument("--stage", type=str,
                              choices=["", "downloaded", "linked", "none", "failed"], default="")
     p_egs_games.add_argument("--db", type=str)

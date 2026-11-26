@@ -208,6 +208,13 @@ def ensure_egs_magnet_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # 三档分流标记（2026-11-26）：auto 可直接采用 / review 待复核 / reject 不采用。
+    try:
+        cand_cols = {r[1] for r in conn.execute("PRAGMA table_info(egs_nyaa_candidates)")}
+        if "tier" not in cand_cols:
+            conn.execute("ALTER TABLE egs_nyaa_candidates ADD COLUMN tier TEXT")
+    except sqlite3.OperationalError:
+        pass
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS egs_nyaa_search_log (
@@ -257,11 +264,15 @@ def ensure_egs_magnet_schema(conn: sqlite3.Connection) -> None:
         """
         UPDATE egs_nyaa_search_log
            SET review_status = CASE
-               WHEN COALESCE(result_count, 0) > 0 AND selected_infohash IS NULL THEN 'pending'
+               WHEN COALESCE(result_count, 0) > 0 AND selected_infohash IS NULL THEN 'review'
                ELSE 'none'
            END
          WHERE review_status IS NULL
         """
+    )
+    # 2026-11-26 语义归一：pending 改叫 review（只表示待复核，不再是提交门禁）。
+    conn.execute(
+        "UPDATE egs_nyaa_search_log SET review_status='review' WHERE review_status='pending'"
     )
     # 拒绝即遗弃：清掉历史遗留的候选数据，避免继续作为审核对象展示。
     conn.execute(
@@ -313,7 +324,7 @@ def ensure_egs_magnet_schema(conn: sqlite3.Connection) -> None:
             UPDATE egs_nyaa_search_log
                SET result_count=0, best_score=NULL, review_status='none',
                    reviewed_at=COALESCE(reviewed_at, tried_at)
-             WHERE review_status='pending'
+             WHERE review_status='review'
                AND NOT EXISTS (
                    SELECT 1 FROM egs_nyaa_candidates c
                     WHERE c.egs_id=egs_nyaa_search_log.egs_id
@@ -368,7 +379,7 @@ def ensure_egs_magnet_schema(conn: sqlite3.Connection) -> None:
             UPDATE egs_nyaa_search_log
                SET result_count=0, best_score=NULL, review_status='none',
                    reviewed_at=COALESCE(reviewed_at, tried_at)
-             WHERE review_status='pending'
+             WHERE review_status='review'
                AND NOT EXISTS (
                    SELECT 1 FROM egs_nyaa_candidates c
                     WHERE c.egs_id=egs_nyaa_search_log.egs_id
@@ -674,8 +685,8 @@ def _save_candidates(conn: sqlite3.Connection, egs_id: int, date: str, name: str
             INSERT INTO egs_nyaa_candidates
                 (egs_id, date, name, nyaa_title, nyaa_date, size, magnet,
                  infohash_hex, view_url, publisher, score, score_detail,
-                 fetched_at, selected)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 fetched_at, selected, tier)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(egs_id, infohash_hex) DO UPDATE SET
                 date=excluded.date,
                 name=excluded.name,
@@ -688,13 +699,15 @@ def _save_candidates(conn: sqlite3.Connection, egs_id: int, date: str, name: str
                 score=excluded.score,
                 score_detail=excluded.score_detail,
                 fetched_at=excluded.fetched_at,
-                selected=excluded.selected
+                selected=excluded.selected,
+                tier=excluded.tier
             """,
             (egs_id, date, name, c.get("nyaa_title"), c.get("nyaa_date"),
              c.get("size"), c.get("magnet"), c.get("infohash_hex"),
              c.get("view_url"), _publisher_of(c.get("nyaa_title")), c.get("score"),
              json.dumps(c.get("score_detail") or {}, ensure_ascii=False),
-             now_str, 1 if best_key and c.get("infohash_hex") == best_key else 0),
+             now_str, 1 if best_key and c.get("infohash_hex") == best_key else 0,
+             c.get("tier")),
         )
 
 
@@ -890,7 +903,7 @@ def process_game(conn: sqlite3.Connection, session: requests.Session, row,
             review_note=NULL
         """,
         (egs_id, date, name, len(cands), best_score if cands else None, tried_at,
-         'pending' if cands else 'none', tried_at),
+         'review' if cands else 'none', tried_at),
     )
     conn.commit()
     if old_failed:
@@ -1030,7 +1043,7 @@ def run_magnet(year: int, month: int | None = None, force: bool = False,
             """UPDATE egs_nyaa_search_log
                   SET review_status='rejected', reviewed_at=?,
                       review_note='超过30天无人审核，自动回落'
-                WHERE review_status='pending'
+                WHERE review_status='review'
                   AND COALESCE(tried_at,'') < datetime('now','-30 days')""",
             (time.strftime('%Y-%m-%d %H:%M:%S'),),
         )
@@ -1316,7 +1329,7 @@ def decide_review(egs_id: int, decision: str, candidate_id: int | None = None,
             conn.execute(
                 """
                 UPDATE egs_nyaa_search_log
-                   SET review_status='pending', reviewed_at=NULL, review_note=NULL
+                   SET review_status='review', reviewed_at=NULL, review_note=NULL
                  WHERE egs_id=?
                 """,
                 (egs_id,),

@@ -249,7 +249,7 @@ class MagnetSpeedTests(unittest.TestCase):
                 self.assertEqual(result['candidates'], 1)
                 self.assertEqual(conn.execute('SELECT count(*) FROM egs_nyaa_candidates').fetchone()[0], 1)
                 log = conn.execute('SELECT result_count,review_status FROM egs_nyaa_search_log').fetchone()
-                self.assertEqual((log['result_count'], log['review_status']), (1, 'pending'))
+                self.assertEqual((log['result_count'], log['review_status']), (1, 'review'))
             finally: conn.close()
 
     def test_schema_prunes_historical_zero_scores_except_short_names(self):
@@ -260,7 +260,7 @@ class MagnetSpeedTests(unittest.TestCase):
                 for egs_id, name in ((1, 'Ordinary Game'), (2, 'Re:BF')):
                     conn.execute("INSERT INTO egs_games(egs_id,model,egs_date,egs_name,egs_company,date,name,company,release_ts) VALUES (?,'PC','2026-01-01',?,'Studio','2026-01',?,'Studio','2026-01-01')", (egs_id, name, name))
                     conn.execute("INSERT INTO egs_nyaa_candidates(egs_id,name,nyaa_title,infohash_hex,score) VALUES (?,?,?,?,0)", (egs_id, name, 'Unrelated', str(egs_id) * 40))
-                    conn.execute("INSERT INTO egs_nyaa_search_log(egs_id,name,result_count,best_score,review_status) VALUES (?,?,1,0,'pending')", (egs_id, name))
+                    conn.execute("INSERT INTO egs_nyaa_search_log(egs_id,name,result_count,best_score,review_status) VALUES (?,?,1,0,'review')", (egs_id, name))
                 conn.commit()
 
                 magnet.ensure_egs_magnet_schema(conn)
@@ -270,7 +270,7 @@ class MagnetSpeedTests(unittest.TestCase):
                 ordinary = conn.execute('SELECT result_count,best_score,review_status FROM egs_nyaa_search_log WHERE egs_id=1').fetchone()
                 short = conn.execute('SELECT result_count,best_score,review_status FROM egs_nyaa_search_log WHERE egs_id=2').fetchone()
                 self.assertEqual((ordinary['result_count'], ordinary['best_score'], ordinary['review_status']), (0, None, 'none'))
-                self.assertEqual((short['result_count'], short['best_score'], short['review_status']), (1, 0.0, 'pending'))
+                self.assertEqual((short['result_count'], short['best_score'], short['review_status']), (1, 0.0, 'review'))
             finally: conn.close()
 
     def test_schema_prunes_unselected_english_but_preserves_selected(self):
@@ -281,7 +281,7 @@ class MagnetSpeedTests(unittest.TestCase):
                 conn.execute("INSERT INTO egs_games(egs_id,model,egs_date,egs_name,egs_company,date,name,company,release_ts) VALUES (1,'PC','2026-01-01','作品名','Studio','2026-01','作品名','Studio','2026-01-01')")
                 conn.execute("INSERT INTO egs_nyaa_candidates(egs_id,name,nyaa_title,infohash_hex,score,selected) VALUES (1,'作品名','Wrong [English]',?,30,0)", ('a' * 40,))
                 conn.execute("INSERT INTO egs_nyaa_candidates(egs_id,name,nyaa_title,infohash_hex,score,selected) VALUES (1,'作品名','Old selected [English]',?,30,1)", ('b' * 40,))
-                conn.execute("INSERT INTO egs_nyaa_search_log(egs_id,name,result_count,best_score,review_status) VALUES (1,'作品名',2,30,'pending')")
+                conn.execute("INSERT INTO egs_nyaa_search_log(egs_id,name,result_count,best_score,review_status) VALUES (1,'作品名',2,30,'review')")
                 conn.commit()
 
                 magnet.ensure_egs_magnet_schema(conn)
@@ -289,7 +289,7 @@ class MagnetSpeedTests(unittest.TestCase):
                 rows = conn.execute('SELECT infohash_hex FROM egs_nyaa_candidates ORDER BY infohash_hex').fetchall()
                 self.assertEqual([row['infohash_hex'] for row in rows], ['b' * 40])
                 log = conn.execute('SELECT result_count,best_score,review_status FROM egs_nyaa_search_log').fetchone()
-                self.assertEqual((log['result_count'], log['best_score'], log['review_status']), (1, 30.0, 'pending'))
+                self.assertEqual((log['result_count'], log['best_score'], log['review_status']), (1, 30.0, 'review'))
             finally: conn.close()
 
     def test_stop_interrupts_retry_wait(self):
