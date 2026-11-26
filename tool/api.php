@@ -61,7 +61,9 @@ function run_cli($args, $entry = 'cli.py') {
 
 // 2026-11-16 安全加固（P1–P3）：写接口统一守卫。
 const WRITE_ACTIONS = ['pipeline_start', 'pipeline_stop', 'agent_job_prune'];
-const PIPELINE_ACTIONS = ['crawl', 'magnet', 'check', 'submit', 'sync', 'organize'];
+// 网页只保留爬取类动作：清单/磁链/封面。提交与校对必须先在 DSH 会话里过审，
+// 不走网页（2026-11-26 收敛，原 submit/check/organize 已从白名单移除）。
+const PIPELINE_ACTIONS = ['crawl', 'magnet', 'sync', 'thumb'];
 
 function allowed_origins() {
     $origins = ['https://www.usagiviz.xyz'];

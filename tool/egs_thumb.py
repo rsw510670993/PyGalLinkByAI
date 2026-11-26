@@ -819,6 +819,100 @@ def run_official(limit: int = 0, interval: float = 1.0, should_stop=None,
     return stats
 
 
+# ---------------- 统一补封面入口（供 pipeline thumb 动作调用） ----------------
+# 顺序即优先级：Getchu 包图最规整，DLsite CDN 覆盖同人作品，DMM 多为小图，
+# 官网 og:image 兜底。任一路成功即停止。
+THUMB_SOURCE_ORDER = ('getchu', 'dlsite', 'dmm', 'official')
+
+
+def pending_cover_rows(conn, start_year: int | None = None,
+                       end_year: int | None = None, month: int | None = None,
+                       limit: int = 0) -> list:
+    """仍缺封面、且至少有一个可用来源的记录（按年份区间过滤）。"""
+    cols = egs_extids.external_id_columns()
+    sql = (f"SELECT egs_id, {cols}, date, name, official_url FROM egs_games WHERE 1=1")
+    params: list = []
+    if start_year:
+        sql += ' AND date >= ?'
+        params.append(f'{int(start_year):04d}-01')
+    if end_year:
+        sql += ' AND date < ?'
+        params.append(f'{int(end_year) + 1:04d}-01')
+    if month:
+        sql += ' AND substr(date, 6, 2) = ?'
+        params.append(f'{int(month):02d}')
+    sql += ' ORDER BY date, egs_id'
+    rows = conn.execute(sql, params).fetchall()
+    missing = [r for r in rows if not has_cover(r)]
+    return missing[:limit] if limit else missing
+
+
+def _original_path(source: str, row) -> Path | None:
+    """某个来源下载后的原图落点（转 webp 用）。"""
+    if source == 'getchu':
+        gid = str(row['getchu_id'] or '').strip()
+        return thumb_path(gid) if gid else None
+    if source == 'dlsite':
+        pid = str(row['dlsite_id'] or '').strip()
+        return dlsite_thumb_path(pid) if pid else None
+    if source == 'dmm':
+        dmm = str(row['dmm'] or '').strip()
+        return dmm_thumb_path(dmm) if dmm else None
+    egs_id = row['egs_id']
+    return official_thumb_path(egs_id) if egs_id else None
+
+
+def _try_source(source: str, row, session) -> tuple[bool, str]:
+    if source == 'getchu':
+        gid = str(row['getchu_id'] or '').strip()
+        if not gid:
+            return False, '无 getchu_id'
+        ok, message, _size = download_cover(gid, session)
+        return ok, message
+    if source == 'dlsite':
+        pid = str(row['dlsite_id'] or '').strip()
+        if not pid:
+            return False, '无 dlsite_id'
+        ok, message, _size = download_dlsite(pid, session)
+        return ok, message
+    if source == 'dmm':
+        dmm = str(row['dmm'] or '').strip()
+        if not dmm:
+            return False, '无 dmm 编号'
+        ok, message, _size, _url = download_dmm(dmm, session)
+        return ok, message
+    url = str(_row_get(row, 'official_url') or '').strip()
+    if not url:
+        return False, '无官网地址'
+    ok, message, _size = download_official(row['egs_id'], url, session)
+    return ok, message
+
+
+def fetch_cover_for_row(row, session) -> tuple[bool, str, str]:
+    """按 THUMB_SOURCE_ORDER 依次尝试，成功即转 webp。
+
+    返回 (是否成功, 命中的来源, 说明)。
+    """
+    from .thumb_optimize import convert
+
+    last_error = '无可用来源'
+    for source in THUMB_SOURCE_ORDER:
+        ok, message = _try_source(source, row, session)
+        if not ok:
+            last_error = f'{source}: {message}'
+            continue
+        src = _original_path(source, row)
+        converted = ''
+        if src is not None and src.is_file():
+            try:
+                cok, cmsg = convert(src)
+                converted = f' · webp {"ok" if cok else cmsg}'
+            except Exception as exc:  # noqa: BLE001 - 转换失败不应让整条任务报错
+                converted = f' · webp 失败 {exc}'
+        return True, source, f'{message}{converted}'
+    return False, '', last_error
+
+
 def run_dmm(limit: int = 0, interval: float = 1.0, should_stop=None,
             logger=None) -> dict:
     """按 DMM 编号批量补封面（竖版包图优先，横向商品图兜底）。"""

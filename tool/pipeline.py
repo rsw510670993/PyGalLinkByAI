@@ -14,8 +14,9 @@ from pathlib import Path
 
 from .runtime import daily_log_path, now_ts, pid_is_running, read_json, repo_root, runtime_paths, write_json_atomic
 
-ACTIONS = ('crawl', 'magnet', 'check', 'submit', 'sync', 'organize')
-LABELS = dict(zip(ACTIONS, ('获取游戏清单', '获取下载用磁链', '校对115', '提交115', '同步（清单+磁链）', '整理115')))
+ACTIONS = ('crawl', 'magnet', 'check', 'submit', 'sync', 'organize', 'thumb')
+LABELS = dict(zip(ACTIONS, ('获取游戏清单', '获取下载用磁链', '校对115', '提交115',
+                            '同步（清单+磁链）', '整理115', '抓取封面')))
 SUBMISSION_TIMEOUT_SECONDS = 72 * 60 * 60
 
 
@@ -353,6 +354,32 @@ def execute_job(state, save, should_stop):
                             report(name, 'failed', str(exc))
                         if phase == 'crawl':
                             time.sleep(1)
+            return
+
+        if action == 'thumb':
+            # 封面抓取不碰 115，也不需要磁链，按年份区间把缺封面的记录逐条补齐。
+            import requests
+            from .egs_thumb import fetch_cover_for_row, pending_cover_rows
+            rows = pending_cover_rows(conn, state['start_year'], state['end_year'],
+                                      state['month'] or None)
+            state['total'] = len(rows)
+            save()
+            session = requests.Session()
+            session.headers.update({
+                'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                               'AppleWebKit/537.36 (KHTML, like Gecko) '
+                               'Chrome/120.0 Safari/537.36'),
+                'Referer': 'https://www.getchu.com/',
+            })
+            for row in rows:
+                if should_stop():
+                    return
+                state['current'] = row['name']
+                save()
+                ok, source, message = fetch_cover_for_row(row, session)
+                report(row['name'], 'success' if ok else 'failed',
+                       f'{source} {message}' if ok else message)
+                time.sleep(0.8)
             return
 
         from .p115_client import get_login_status

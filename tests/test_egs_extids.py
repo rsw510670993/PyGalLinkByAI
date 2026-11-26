@@ -17,7 +17,7 @@ def make_conn():
         """CREATE TABLE egs_games (
             egs_id INTEGER PRIMARY KEY, name TEXT, company TEXT, egs_name TEXT,
             egs_company TEXT, date TEXT, getchu_id TEXT, dlsite_id TEXT, dmm TEXT,
-            downloaded INTEGER DEFAULT 0, updated_at TEXT
+            downloaded INTEGER DEFAULT 0, updated_at TEXT, official_url TEXT
         )"""
     )
     egs_extids.ensure_external_id_schema(conn)
@@ -168,3 +168,29 @@ class CoverShapeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ThumbJobWiringTests(unittest.TestCase):
+    """网页「抓封面」按钮对应的 pipeline thumb 动作与待补清单。"""
+
+    def test_pipeline_has_thumb_action(self):
+        from tool import pipeline
+        self.assertIn("thumb", pipeline.ACTIONS)
+        self.assertEqual(pipeline.LABELS["thumb"], "抓取封面")
+
+    def test_pending_cover_rows_only_missing(self):
+        conn = make_conn()
+        conn.execute(
+            "INSERT INTO egs_games (egs_id, name, company, date, dlsite_id, downloaded) "
+            "VALUES (11, 'X', 'C', '2026-01', 'RJ000011', 1)"
+        )
+        conn.execute(
+            "INSERT INTO egs_games (egs_id, name, company, date, dmm, downloaded) "
+            "VALUES (12, 'Y', 'C', '2026-02', 'd_999', 1)"
+        )
+        conn.commit()
+        rows = egs_thumb.pending_cover_rows(conn, 2026, 2026, 1)
+        self.assertEqual([r["egs_id"] for r in rows], [11])
+        rows_all = egs_thumb.pending_cover_rows(conn, 2026, 2026, None)
+        self.assertEqual(sorted(r["egs_id"] for r in rows_all), [11, 12])
+        conn.close()
