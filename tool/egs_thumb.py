@@ -658,6 +658,10 @@ def page_is_about(html: str, name: str, company: str) -> bool:
     return False
 
 
+FLAT_COLOR_RATIO = 0.95   # 单一颜色像素占比达到此值即判为占位图
+FLAT_DARK_MAX = 40        # 调色板内颜色数很少时，最亮通道均值低于此值判为暗色占位
+
+
 def image_looks_like_package(data: bytes, min_width: int = 200,
                              min_height: int = 200,
                              max_ratio: float = 3.0) -> tuple[bool, str]:
@@ -665,13 +669,21 @@ def image_looks_like_package(data: bytes, min_width: int = 200,
 
     2026-11-26 放宽：原先用 `height < width*0.95` 硬拒所有横图，但同人游戏
     大量是 4:3 横版封面（DLsite 源抽样 36/40 是 384x288），方形也是正常形态。
-    现在只拒绝过小的图和比例超过 max_ratio 的纯横幅／长条图。
+    现在只拒绝过小的图、比例超过 max_ratio 的纯横幅／长条图，以及近纯色占位图。
+
+    近纯色判定的由来：Google Sites 等官网的 og:image 常返回整块深色背景，
+    尺寸与比例都合规、肉眼却是一张全黑图（2026-11-26 的 40032
+    それいけ!!杉城園芸部：原图 800x800 只有 2 种颜色）。WebP 有损压缩会把
+    纯色图压出几十个近似色，所以除了「主色占比」还要判「颜色极少且整体极暗」。
     """
     try:
-        from PIL import Image
+        from PIL import Image, ImageStat
         import io
         with Image.open(io.BytesIO(data)) as im:
             width, height = im.size
+            rgb = im.convert('RGB')
+            colors = rgb.getcolors(maxcolors=256)
+            mean_max = max(ImageStat.Stat(rgb).mean) if colors is not None else 255.0
     except Exception as exc:  # noqa: BLE001 - 图片可能是任意损坏格式
         return False, f'无法解析图片: {exc}'
     if width < min_width or height < min_height:
@@ -679,6 +691,13 @@ def image_looks_like_package(data: bytes, min_width: int = 200,
     long_side, short_side = max(width, height), min(width, height)
     if short_side and long_side / short_side > max_ratio:
         return False, f'比例过扁 {width}x{height}'
+    # 颜色数超过 256 时 getcolors 返回 None，说明是有内容的正常图，不再做纯色判断
+    if colors is not None:
+        top_share = max(count for count, _color in colors) / (width * height)
+        if top_share >= FLAT_COLOR_RATIO:
+            return False, f'近纯色占位图（主色占 {top_share:.0%}）'
+        if mean_max < FLAT_DARK_MAX:
+            return False, f'暗色占位图（{len(colors)} 色，最亮通道均值 {mean_max:.0f}）'
     return True, f'{width}x{height}'
 
 # ---------------- DMM 编号直连（无 getchu/dlsite 但 EGS 带 dmm 编号） ----------------
