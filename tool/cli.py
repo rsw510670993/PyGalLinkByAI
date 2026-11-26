@@ -602,28 +602,6 @@ def cmd_egs_external_ids(args):
         conn.close()
 
 
-def cmd_egs_namesearch(args):
-    """补外部 ID：dir=从种子/115 目录名提取 DLsite 编号；getchu=按名搜索（默认 dry-run）。"""
-    from tool.egs_core import ensure_egs_schema, open_egs_db
-    from tool.egs_thumb import run_namesearch_getchu, scan_dlsite_ids_from_dirs
-    conn = open_egs_db(args.db)
-    try:
-        ensure_egs_schema(conn)
-        dry_run = not getattr(args, "execute", False)
-        if getattr(args, "source", "dir") == "dir":
-            result = scan_dlsite_ids_from_dirs(
-                conn, dry_run=dry_run, limit=getattr(args, "limit", 0))
-        else:
-            result = run_namesearch_getchu(
-                conn, year=getattr(args, "year", None),
-                month=getattr(args, "month", None),
-                limit=getattr(args, "limit", 0), dry_run=dry_run,
-                interval=getattr(args, "interval", 1.5) or 1.5)
-        _print(result)
-    finally:
-        conn.close()
-
-
 def cmd_egs_overview(args):
     import sqlite3 as _sqlite3
     from tool.egs_core import open_egs_db, ensure_egs_schema
@@ -670,36 +648,75 @@ def cmd_egs_overview(args):
     })
 
 
-def cmd_egs_thumbs(args):
-    from tool.egs_thumb import (coverage, dlsite_coverage, run_dlsite, run_dmm,
-                                run_official, run_thumbs)
-    source = getattr(args, "source", "getchu") or "getchu"
-    if getattr(args, "optimize", False):
-        from tool.thumb_optimize import run_optimize
-        stats = run_optimize(delete_originals=bool(getattr(args, "delete_originals", False)),
-                             limit=args.limit, force=bool(getattr(args, "force", False)))
-        _print(stats)
-        return
-    if getattr(args, "coverage", False):
-        data = dlsite_coverage() if source == "dlsite" else coverage()
-        _print({"status": "success", "source": source, **data})
-        return
-    interval = args.interval or (1.5 if source == "dlsite" else 1.0)
-    if source == "dlsite":
-        stats = run_dlsite(year=args.year, month=args.month, limit=args.limit,
-                           interval=interval)
-        stats["coverage"] = dlsite_coverage()
-    elif source == "dmm":
-        stats = run_dmm(limit=args.limit, interval=interval or 1.0)
-        stats["coverage"] = coverage()
-    elif source == "official":
-        stats = run_official(limit=args.limit, interval=interval or 1.0)
-        stats["coverage"] = coverage()
-    else:
-        stats = run_thumbs(year=args.year, month=args.month, limit=args.limit,
-                           interval=interval)
-        stats["coverage"] = coverage()
-    _print(stats)
+def cmd_egs_cover(args):
+    """补封面：默认自动按置信度取图（getchu/dlsite/dmm → official → vndb）。
+
+    默认 dry-run 只列清单；--execute 才真下载。--only 只跑单个来源（调试用）。
+    """
+    import time
+
+    import requests
+
+    from tool.egs_core import ensure_egs_schema, open_egs_db
+    from tool.egs_thumb import (coverage, fetch_cover_for_row, pending_cover_rows,
+                                scan_dlsite_ids_from_dirs)
+
+    conn = open_egs_db(args.db)
+    try:
+        ensure_egs_schema(conn)
+        if getattr(args, "coverage", False):
+            _print({"status": "success", **coverage()})
+            return
+        if getattr(args, "optimize", False):
+            from tool.thumb_optimize import run_optimize
+            _print(run_optimize(
+                delete_originals=bool(getattr(args, "delete_originals", False)),
+                limit=getattr(args, "limit", 0),
+                force=bool(getattr(args, "force", False))))
+            return
+
+        only = (getattr(args, "only", "") or "").strip().lower()
+        execute = bool(getattr(args, "execute", False))
+        year = getattr(args, "year", None)
+        result = {"status": "success", "dry_run": not execute,
+                  "mode": only or "auto"}
+        if not only:
+            # 第一步：从种子名/115 目录名补 DLsite 编号（零误配）
+            result["dir_scan"] = scan_dlsite_ids_from_dirs(
+                conn, dry_run=not execute, limit=getattr(args, "dir_limit", 0))
+        rows = pending_cover_rows(conn, year, year, getattr(args, "month", None),
+                                  limit=getattr(args, "limit", 0))
+        result["total"] = len(rows)
+        if not execute:
+            result["preview"] = [{"egs_id": r["egs_id"], "name": r["name"]} for r in rows[:10]]
+            _print(result)
+            return
+
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                           "AppleWebKit/537.36 (KHTML, like Gecko) "
+                           "Chrome/120.0 Safari/537.36"),
+            "Referer": "https://www.getchu.com/",
+        })
+        ok_count = failed = 0
+        reasons: dict = {}
+        for row in rows:
+            ok, _source, message = fetch_cover_for_row(
+                row, session, conn=conn, sources=[only] if only else None)
+            if ok:
+                ok_count += 1
+            else:
+                failed += 1
+                key = message.split("；")[-1][:40]
+                reasons[key] = reasons.get(key, 0) + 1
+            time.sleep(getattr(args, "interval", 1.0) or 0)
+        conn.commit()
+        result.update(ok=ok_count, failed=failed, failure_reasons=reasons)
+        result["coverage"] = coverage()
+        _print(result)
+    finally:
+        conn.close()
 
 
 def cmd_egs_magnet(args):
@@ -1026,21 +1043,23 @@ def build_parser():
                              help="把全年龄（erogame=false）也抓进清单，标 is_eroge=0，不进磁链队列")
     p_egs_crawl.set_defaults(func=cmd_egs_crawl)
 
-    p_egs_thumbs = egs_sub.add_parser("thumbs")
-    p_egs_thumbs.add_argument("--year", type=int)
-    p_egs_thumbs.add_argument("--month", type=int)
-    p_egs_thumbs.add_argument("--limit", type=int, default=0)
-    p_egs_thumbs.add_argument("--source", choices=["getchu", "dlsite", "dmm", "official"],
-                              default="getchu")
-    p_egs_thumbs.add_argument("--optimize", action="store_true",
-                              help="把已下载的原图转成 280/96 两档 webp")
-    p_egs_thumbs.add_argument("--force", action="store_true",
-                              help="optimize 时已存在的 webp 也重新生成")
-    p_egs_thumbs.add_argument("--delete-originals", action="store_true",
-                              help="转换成功后删除原图（可重新下载）")
-    p_egs_thumbs.add_argument("--interval", type=float, default=0.0)
-    p_egs_thumbs.add_argument("--coverage", action="store_true")
-    p_egs_thumbs.set_defaults(func=cmd_egs_thumbs)
+    p_egs_cover = egs_sub.add_parser(
+        "cover", help="补封面：自动按置信度取图（默认 dry-run，--execute 才下载）")
+    p_egs_cover.add_argument("--year", type=int)
+    p_egs_cover.add_argument("--month", type=int)
+    p_egs_cover.add_argument("--limit", type=int, default=0)
+    p_egs_cover.add_argument("--only", type=str,
+                             choices=["getchu", "dlsite", "dmm", "official", "vndb"],
+                             default="", help="只跑指定来源（调试用，不做跨档兜底）")
+    p_egs_cover.add_argument("--interval", type=float, default=1.0)
+    p_egs_cover.add_argument("--dir-limit", type=int, default=0, dest="dir_limit")
+    p_egs_cover.add_argument("--coverage", action="store_true")
+    p_egs_cover.add_argument("--optimize", action="store_true", help="只把已有原图转 webp")
+    p_egs_cover.add_argument("--delete-originals", action="store_true", dest="delete_originals")
+    p_egs_cover.add_argument("--force", action="store_true")
+    p_egs_cover.add_argument("--execute", action="store_true")
+    p_egs_cover.add_argument("--db", type=str)
+    p_egs_cover.set_defaults(func=cmd_egs_cover)
 
     p_egs_overview = egs_sub.add_parser("overview")
     p_egs_overview.add_argument("--db", type=str)
@@ -1072,17 +1091,6 @@ def build_parser():
     p_egs_extids.add_argument("--db", type=str)
     p_egs_extids.set_defaults(func=cmd_egs_external_ids)
 
-    p_egs_namesearch = egs_sub.add_parser(
-        "namesearch", help="补外部 ID：dir（目录名提取编号）/ getchu（按名搜索），默认 dry-run")
-    p_egs_namesearch.add_argument("--source", type=str, choices=["dir", "getchu"],
-                                  default="dir")
-    p_egs_namesearch.add_argument("--year", type=int)
-    p_egs_namesearch.add_argument("--month", type=int)
-    p_egs_namesearch.add_argument("--limit", type=int, default=0)
-    p_egs_namesearch.add_argument("--interval", type=float, default=1.5)
-    p_egs_namesearch.add_argument("--execute", action="store_true")
-    p_egs_namesearch.add_argument("--db", type=str)
-    p_egs_namesearch.set_defaults(func=cmd_egs_namesearch)
 
     p_egs_games = egs_sub.add_parser("games")
     p_egs_games.add_argument("--page", type=int, default=1)

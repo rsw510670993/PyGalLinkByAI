@@ -84,9 +84,9 @@
 
 | 字段 | 取值 | 含义 |
 |---|---|---|
-| `source` | `getchu` / `dlsite` / `dmm` | 编号来源。不存 `egs` 自映射行——`egs_id` 列本身就是站内坐标 |
+| `source` | `getchu` / `dlsite` / `dmm` / `vndb` | 编号来源。不存 `egs` 自映射行——`egs_id` 列本身就是站内坐标；`vndb` 没有对应旧列，只存映射 |
 | `status` | `confirmed` / `candidate` / `rejected` | 已核实可用 / 按名搜索出的待确认候选 / 已排除 |
-| `origin` | `egs_crawl` / `getchu_search` / `dlsite_search` / `dmm_probe` / `dir_scan` / `manual` | 这一行怎么来的；`dir_scan` = 从 115 目录名或种子名里提取到的编号 |
+| `origin` | `egs_crawl` / `getchu_search` / `dlsite_search` / `dmm_probe` / `dir_scan` / `vndb_search` / `manual` | 这一行怎么来的；`dir_scan` = 从 115 目录名或种子名里提取到的编号，`vndb_search` = 按名匹配 VNDB |
 | `confidence` | 0–1 或 NULL | 匹配分数，只有搜索来源才有 |
 
 写入与读取约定：

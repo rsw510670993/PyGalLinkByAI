@@ -376,7 +376,7 @@ def execute_job(state, save, should_stop):
                     return
                 state['current'] = row['name']
                 save()
-                ok, source, message = fetch_cover_for_row(row, session)
+                ok, source, message = fetch_cover_for_row(row, session, conn=conn)
                 report(row['name'], 'success' if ok else 'failed',
                        f'{source} {message}' if ok else message)
                 time.sleep(0.8)
