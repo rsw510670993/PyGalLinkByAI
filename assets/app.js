@@ -414,9 +414,13 @@
     const presetStage = urlParams.get('stage') || '';
     if (presetMonth) $('f-month').value = presetMonth;
     if (presetStage) $('f-stage').value = presetStage;
-    // 年份下拉的选项由 loadYears 异步填充，必须等它渲染完再赋值
+    // 年份下拉的选项由 loadYears 异步填充，必须等它渲染完再赋值。
+    // 没有显式 year 参数时默认落在今年：否则「全部」按 date 升序只会翻到 2005 年的老记录。
+    const defaultYear = presetYear || String(new Date().getFullYear());
     loadYears().then(() => {
-      if (presetYear) $('f-year').value = presetYear;
+      const yearSel = $('f-year');
+      // 该年没有数据时 option 不存在，赋值会被忽略，自然退回「全部」
+      if (defaultYear) yearSel.value = defaultYear;
       load();
     }).catch(() => load());
     loadTop().catch(() => {});
