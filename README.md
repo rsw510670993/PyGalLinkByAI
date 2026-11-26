@@ -16,7 +16,7 @@ EGS / Nyaa / 115 资源流水线的**机械执行内核** + **只读 Web 面板*
 ## 流水线（四段）
 
 1. **同步（sync）**：EGS 清单增量 + 磁链搜索。磁链阶段带分层重扫——无结果的记录按作品年龄 30 / 90 / 180 / 365 天重新搜索，兼顾同人社团多年后才发种的情况。
-2. **DSH 审核**：低分磁链由 AI agent 用 `egs review_detail / review_decide` 逐条确认；未清零时网页锁定提交按钮。
+2. **复核（异常清单）**：候选按三档分流落 `tier`——`auto` 证据齐备、`review` 进待复核队列、`reject` 明确不是同一作品。复核不再阻塞提交，用 `egs review_queue` 列出灰区候选，由 AI agent 在会话里拍板。
 3. **提交并校对**：提交未提交的磁链到 115，完成后等 10 分钟自动校对下载结果（`check` 只校对提交满 10 分钟的记录）。
 4. **最终核查**：整理 issue 与 `/GAL.old` 历史残留由 AI agent 处理，网页只显示积压数量。
 
@@ -31,7 +31,8 @@ python -m tool.cli egs magnet --year 2026 [--rescan] [--limit N]
 python -m tool.cli 115 submit --egs-id 12345 --magnet 'magnet:?xt=...' --dir /GAL/GAL-2026
 python -m tool.cli 115 check  --magnet 'magnet:?xt=...' --dir /GAL/GAL-2026
 
-# 审核（DSH 会话内使用）
+# 复核（DSH 会话内使用；无 gate，只列异常）
+python -m tool.cli egs review_queue --limit 50
 python -m tool.cli egs review_detail --egs-id 12345
 python -m tool.cli egs review_decide --egs-id 12345 --decision approve --candidate-id 7
 python -m tool.cli egs review_blacklist list

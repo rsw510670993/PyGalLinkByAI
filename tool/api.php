@@ -119,7 +119,7 @@ $action = isset($_GET['action']) ? $_GET['action'] : '';
 // status(persist=True) 会把 worker 自愈状态写盘，所以也纳入校验；
 // 2026-11-13：115_login_status 虽为只读，但匿名可访问会代服务器向 webapi.115.com
 // 发请求并回显 115 账号名（信息泄露 + 请求放大器），同样纳入登录校验；
-// 其余 GET（overview/years/calendar/egs_games/preflight）保持公开只读。
+// 其余 GET（overview/years/calendar/egs_games）保持公开只读。
 // P2：写接口方法守卫——非 POST 直接 405，不再回 200 + error 正文。
 if (in_array($action, WRITE_ACTIONS, true) && ($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
     reject_request(405, '请使用 POST 请求');

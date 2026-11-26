@@ -26,7 +26,13 @@
 
 | 字段 | 取值 | 含义 |
 |---|---|---|
-| `review_status` | `none` / `pending` / `approved` / `rejected` | 未审 / 待 DSH 审 / 已批准 / 已放弃。`pending` 会被行级过滤挡在提交外 |
+| `review_status` | `none` / `review` / `approved` / `rejected` | 搜过无结果或已自动选中 / 有候选待复核 / 人工采用 / 已放弃。**不再是提交通道门禁**（gate 已于 2026-11-26 移除），只表示这条记录的匹配处理状态 |
+
+## egs_nyaa_candidates
+
+| 字段 | 取值 | 含义 |
+|---|---|---|
+| `tier` | `auto` / `review` / `reject` | 三档分流（2026-11-26）：`auto` 证据齐备可直接采用（≥40 分，或 20–40 分且公司与发售日双命中）；`review` 进待复核队列，由 `egs review_queue` 列出；`reject` 明确指向别的作品（CG 集、分卷、尾号不同）或分数 <20，不占用复核队列 |
 
 ## egs_115_folders
 

@@ -20,6 +20,13 @@ from difflib import SequenceMatcher
 
 THRESHOLD = 40.0
 MAX_SCORE = 65.0
+# 三档分流（2026-11-26）：取代「单阈值 40 一律交人工」的旧 gate。
+# auto=可直接采用；review=进待复核队列（异常清单）；reject=不采用。
+TIER_AUTO = "auto"
+TIER_REVIEW = "review"
+TIER_REJECT = "reject"
+# 明确是别的作品的标记：命中即 reject，不占复核队列。
+_REJECT_FLAGS = ("non_game_content", "series_volume", "edition_mismatch")
 # 全名极短（如 HOME/LUNA）时，仅凭名字子串极易误配到其他作品，必须同时出现公司名
 SHORT_NAME_MAX = 4
 
@@ -322,6 +329,37 @@ def score_candidate(game, cand):
     return round(total, 1), detail
 
 
+def classify_candidate(cand):
+    """给已打分的候选分三档：auto / review / reject。
+
+    依据 2026-11-26 回测：人工判定几乎全集中在 20-40 分挡，该挡人工通过率约 80%，
+    因此把「公司名 + 发售日双证据齐备」的灰区候选升为 auto，其余灰区进 review；
+    明确指向别的作品（CG 集/分卷/尾号不同）的候选直接 reject，不再占用复核队列。
+    """
+    score = float(cand.get("score") or 0)
+    detail = cand.get("score_detail") or {}
+    if any(flag in detail for flag in _REJECT_FLAGS):
+        return TIER_REJECT
+    if score >= THRESHOLD:
+        return TIER_AUTO
+    if score < 20:
+        return TIER_REJECT
+    has_company = "company" in detail
+    has_date = "date" in detail or "date_code" in detail
+    if "short_name_requires_company" in detail:
+        return TIER_REVIEW
+    if has_company and has_date and score >= 25:
+        return TIER_AUTO
+    return TIER_REVIEW
+
+
+def annotate_tiers(candidates):
+    """就地给候选补 tier 字段（调用前需已设置 score / score_detail）。"""
+    for c in candidates:
+        c["tier"] = classify_candidate(c)
+    return candidates
+
+
 def select_best(game, candidates, threshold=THRESHOLD):
     """返回 (best, best_score, best_detail) 或 (None, max_score, None)。"""
     best = None
@@ -332,6 +370,7 @@ def select_best(game, candidates, threshold=THRESHOLD):
         s, d = score_candidate(game, c)
         c["score"] = s
         c["score_detail"] = d
+        c["tier"] = classify_candidate(c)
         max_score = max(max_score, s)
         if s > best_score:
             best, best_score, best_detail = c, s, d
