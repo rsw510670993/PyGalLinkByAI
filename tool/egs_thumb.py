@@ -24,7 +24,6 @@ from .runtime import now_ts, repo_root, write_json_atomic
 COVER_URL = 'https://www.getchu.com/brandnew/{gid}/c{gid}package.jpg'
 UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/120.0 Safari/537.36')
-STATE_NAME = 'thumbs_state.json'
 MIN_BYTES = 4096
 
 
@@ -102,23 +101,6 @@ def missing_kind(row) -> str:
     return 'no_id'
 
 
-def pending_rows(conn, year: int | None = None, month: int | None = None,
-                 limit: int = 0) -> list:
-    """有 getchu_id 且**尚无任何封面**的记录。"""
-    sql = ("SELECT egs_id, " + egs_extids.external_id_columns() + ", date, name "
-           "FROM egs_games " "WHERE getchu_id IS NOT NULL AND getchu_id != ''")
-    params: list = []
-    if year:
-        if month:
-            sql += ' AND date = ?'
-            params.append(f'{int(year):04d}-{int(month):02d}')
-        else:
-            sql += ' AND date >= ? AND date < ?'
-            params.extend([f'{int(year):04d}-01', f'{int(year) + 1:04d}-01'])
-    sql += ' ORDER BY date, egs_id'
-    rows = conn.execute(sql, params).fetchall()
-    missing = [r for r in rows if not has_cover(r)]
-    return missing[:limit] if limit else missing
 
 
 def download_cover(gid, session: requests.Session, timeout: int = 30):
@@ -146,63 +128,8 @@ def download_cover(gid, session: requests.Session, timeout: int = 30):
     return True, f'{len(resp.content)} bytes', len(resp.content)
 
 
-def run_thumbs(year: int | None = None, month: int | None = None, limit: int = 0,
-               interval: float = 1.0, should_stop=None, logger=None) -> dict:
-    log = logger or (lambda msg: None)
-    conn = open_egs_db()
-    try:
-        ensure_egs_schema(conn)
-        rows = pending_rows(conn, year, month, limit)
-    finally:
-        conn.close()
-
-    session = requests.Session()
-    session.headers.update({'User-Agent': UA, 'Referer': 'https://www.getchu.com/'})
-
-    stats = {
-        'status': 'success',
-        'mode': 'getchu_id',
-        'year': year,
-        'month': month,
-        'interval': interval,
-        'total': len(rows),
-        'ok': 0,
-        'failed': 0,
-        'failed_ids': [],
-        'started_at': now_ts(),
-        'finished_at': None,
-        'last_error': '',
-    }
-    log(f'待下载 {len(rows)} 张封面')
-    for i, row in enumerate(rows):
-        if should_stop and should_stop():
-            stats['status'] = 'stopped'
-            break
-        gid = str(row['getchu_id']).strip()
-        ok, message, _size = download_cover(gid, session)
-        if ok:
-            stats['ok'] += 1
-            log(f'[{i + 1}/{len(rows)}] {gid} ✓ {message} {row["name"]}')
-        else:
-            stats['failed'] += 1
-            stats['failed_ids'].append(gid)
-            stats['last_error'] = message
-            log(f'[{i + 1}/{len(rows)}] {gid} ✗ {message} {row["name"]}')
-        if interval and i + 1 < len(rows):
-            time.sleep(interval)
-
-    stats['finished_at'] = now_ts()
-    _save_state(stats)
-    return stats
 
 
-def _save_state(stats: dict) -> None:
-    try:
-        root = Path(repo_root()) / 'status'
-        root.mkdir(parents=True, exist_ok=True)
-        write_json_atomic(str(root / STATE_NAME), stats)
-    except OSError:
-        pass
 
 
 def coverage() -> dict:
@@ -254,16 +181,8 @@ def dlsite_site(pid: str):
     return DLSITE_SITE.get(prefix)
 
 
-def has_getchu_cover(row) -> bool:
-    """Getchu 源封面是否已有成品（以 webp 为准）。"""
-    gid = str(row['getchu_id'] or '').strip()
-    return bool(gid) and web_thumb_path(gid).is_file()
 
 
-def has_dlsite_cover(row) -> bool:
-    """DLsite 源封面是否已有成品（以 webp 为准）。"""
-    pid = str(row['dlsite_id'] or '').strip()
-    return bool(pid) and web_dlsite_thumb_path(pid).is_file()
 
 
 def missing_downloaded_count() -> int:
@@ -282,26 +201,6 @@ def missing_downloaded_count() -> int:
         conn.close()
 
 
-def pending_dlsite(conn, year: int | None = None, month: int | None = None,
-                   limit: int = 0) -> list:
-    """有 dlsite_id、且**尚无任何封面**的记录。"""
-    sql = ("SELECT egs_id, " + egs_extids.external_id_columns() + ", date, name "
-           "FROM egs_games " "WHERE dlsite_id IS NOT NULL AND dlsite_id != ''")
-    params: list = []
-    if year:
-        if month:
-            sql += ' AND date = ?'
-            params.append(f'{int(year):04d}-{int(month):02d}')
-        else:
-            sql += ' AND date >= ? AND date < ?'
-            params.extend([f'{int(year):04d}-01', f'{int(year) + 1:04d}-01'])
-    sql += ' ORDER BY date, egs_id'
-    rows = conn.execute(sql, params).fetchall()
-    missing = [
-        r for r in rows
-        if dlsite_site(r['dlsite_id']) and not has_cover(r)
-    ]
-    return missing[:limit] if limit else missing
 
 
 DLSITE_CDN = 'https://img.dlsite.jp/modpub/images2/work/{sub}/{folder}/{pid}_img_{kind}.jpg'
@@ -382,71 +281,8 @@ def download_dlsite(pid, session: requests.Session, timeout: int = 30):
     return True, f'{len(img.content)} bytes', len(img.content)
 
 
-def run_dlsite(year: int | None = None, month: int | None = None, limit: int = 0,
-               interval: float = 1.5, should_stop=None, logger=None) -> dict:
-    log = logger or (lambda msg: None)
-    conn = open_egs_db()
-    try:
-        ensure_egs_schema(conn)
-        rows = pending_dlsite(conn, year, month, limit)
-    finally:
-        conn.close()
-
-    session = requests.Session()
-    session.headers.update({'User-Agent': DLSITE_UA, 'Referer': 'https://www.dlsite.com/'})
-
-    stats = {
-        'status': 'success',
-        'mode': 'dlsite',
-        'year': year,
-        'month': month,
-        'interval': interval,
-        'total': len(rows),
-        'ok': 0,
-        'failed': 0,
-        'failed_ids': [],
-        'started_at': now_ts(),
-        'finished_at': None,
-        'last_error': '',
-    }
-    log(f'待下载 {len(rows)} 张 DLsite 封面')
-    for i, row in enumerate(rows):
-        if should_stop and should_stop():
-            stats['status'] = 'stopped'
-            break
-        pid = str(row['dlsite_id']).strip()
-        ok, message, _size = download_dlsite(pid, session)
-        if ok:
-            stats['ok'] += 1
-            log(f'[{i + 1}/{len(rows)}] {pid} ✓ {message} {row["name"]}')
-        else:
-            stats['failed'] += 1
-            stats['failed_ids'].append(pid)
-            stats['last_error'] = message
-            log(f'[{i + 1}/{len(rows)}] {pid} ✗ {message} {row["name"]}')
-        if interval and i + 1 < len(rows):
-            time.sleep(interval)
-
-    stats['finished_at'] = now_ts()
-    _save_state(stats)
-    return stats
 
 
-def dlsite_coverage() -> dict:
-    """DLsite 源覆盖率：有 dlsite_id 的记录里，封面（任一源）是否已就绪。"""
-    conn = open_egs_db()
-    try:
-        ensure_egs_schema(conn)
-        rows = conn.execute(
-            "SELECT " + egs_extids.external_id_columns() + " FROM egs_games "
-            "WHERE dlsite_id IS NOT NULL AND dlsite_id !=''"
-        ).fetchall()
-    finally:
-        conn.close()
-    have_dlsite = sum(1 for r in rows if has_dlsite_cover(r))
-    have = sum(1 for r in rows if has_cover(r))
-    return {'with_dlsite_id': len(rows), 'with_dlsite_cover': have_dlsite,
-            'with_cover': have, 'missing': len(rows) - have}
 
 # ---------------- 按名搜索（两个 id 都没有的记录） ----------------
 # ---------------- 标题归一化与相似度（官网、VNDB 匹配共用） ----------------
@@ -607,14 +443,6 @@ def has_dmm_cover(row) -> bool:
     return bool(dmm) and web_dmm_thumb_path(dmm).is_file()
 
 
-def pending_dmm(conn, limit: int = 0) -> list:
-    """没有 getchu/dlsite id、但有 dmm 编号且尚无封面的记录。"""
-    rows = conn.execute(
-        "SELECT egs_id, " + egs_extids.external_id_columns() + ", date, name "
-        "FROM egs_games WHERE dmm IS NOT NULL AND dmm != '' ORDER BY date, egs_id"
-    ).fetchall()
-    missing = [r for r in rows if missing_kind(r) == 'dmm' and not has_cover(r)]
-    return missing[:limit] if limit else missing
 
 
 def download_dmm(dmm, session: requests.Session, timeout: int = 30,
@@ -676,42 +504,6 @@ def pending_official(conn, limit: int = 0) -> list:
     return missing[:limit] if limit else missing
 
 
-def run_official(limit: int = 0, interval: float = 1.0, should_stop=None,
-                 logger=None) -> dict:
-    """从作品官网抓 og:image 兜底补封面（横向包图现在也接受）。"""
-    log = logger or (lambda msg: None)
-    conn = open_egs_db()
-    try:
-        ensure_egs_schema(conn)
-        rows = pending_official(conn, limit)
-    finally:
-        conn.close()
-
-    session = requests.Session()
-    session.headers.update({'User-Agent': UA})
-    stats = {'status': 'success', 'mode': 'official', 'total': len(rows), 'ok': 0,
-             'failed': 0, 'failed_ids': [], 'last_error': '',
-             'started_at': now_ts(), 'finished_at': None}
-    log(f'待抓 {len(rows)} 个官网封面')
-    for i, row in enumerate(rows):
-        if should_stop and should_stop():
-            stats['status'] = 'stopped'
-            break
-        ok, message, _size = download_official(
-            row['egs_id'], row['official_url'], session)
-        if ok:
-            stats['ok'] += 1
-            log(f'[{i + 1}/{len(rows)}] {row["egs_id"]} ✓ {message} {row["name"]}')
-        else:
-            stats['failed'] += 1
-            stats['failed_ids'].append(row['egs_id'])
-            stats['last_error'] = message
-            log(f'[{i + 1}/{len(rows)}] {row["egs_id"]} ✗ {message} {row["name"]}')
-        if interval and i + 1 < len(rows):
-            time.sleep(interval)
-    stats['finished_at'] = now_ts()
-    _save_state(stats)
-    return stats
 
 
 # ---------------- 统一补封面入口（供 pipeline thumb 动作调用） ----------------
@@ -848,42 +640,6 @@ def fetch_cover_for_row(row, session, conn=None, sources=None):
     return False, '', last_error
 
 
-def run_dmm(limit: int = 0, interval: float = 1.0, should_stop=None,
-            logger=None) -> dict:
-    """按 DMM 编号批量补封面（竖版包图优先，横向商品图兜底）。"""
-    log = logger or (lambda msg: None)
-    conn = open_egs_db()
-    try:
-        ensure_egs_schema(conn)
-        rows = pending_dmm(conn, limit)
-    finally:
-        conn.close()
-
-    session = requests.Session()
-    session.headers.update({'User-Agent': UA, 'Referer': 'https://www.dmm.co.jp/'})
-    stats = {'status': 'success', 'mode': 'dmm', 'total': len(rows), 'ok': 0,
-             'failed': 0, 'failed_ids': [], 'last_error': '',
-             'started_at': now_ts(), 'finished_at': None}
-    log(f'待下载 {len(rows)} 张 DMM 封面')
-    for i, row in enumerate(rows):
-        if should_stop and should_stop():
-            stats['status'] = 'stopped'
-            break
-        code = str(row['dmm']).strip()
-        ok, message, _size, _url = download_dmm(code, session)
-        if ok:
-            stats['ok'] += 1
-            log(f'[{i + 1}/{len(rows)}] {code} ✓ {message} {row["name"]}')
-        else:
-            stats['failed'] += 1
-            stats['failed_ids'].append(code)
-            stats['last_error'] = message
-            log(f'[{i + 1}/{len(rows)}] {code} ✗ {message} {row["name"]}')
-        if interval and i + 1 < len(rows):
-            time.sleep(interval)
-    stats['finished_at'] = now_ts()
-    _save_state(stats)
-    return stats
 
 
 VNDB_API = 'https://api.vndb.org/kana/vn'
