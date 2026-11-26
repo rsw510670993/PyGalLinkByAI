@@ -7,6 +7,21 @@
   const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   }[c]));
+  /* 封面图片加载失败时按 data-chain 逐级回退，全部失败才显示占位。
+     必须放在顶层：window.gshelf 要导出它，卡片内联 onerror 也依赖全局引用。 */
+  function nextCover(img) {
+    let chain = [];
+    try { chain = JSON.parse(img.dataset.chain || '[]'); } catch (e) { chain = []; }
+    if (chain.length) {
+      img.src = chain.shift();
+      img.dataset.chain = JSON.stringify(chain);
+      return;
+    }
+    const box = img.parentNode;
+    if (!box) return;
+    box.classList.add('ph');
+    box.textContent = '无封面';
+  }
   /* 结果状态码 → 中文标签（对应后端 egs_organize 的 detail.status） */
   const STATUS_LABEL = {
     already_ok: '已就位', renamed: '已整理', moved: '已整理', renamed_moved: '已整理',
@@ -304,21 +319,6 @@
       if (!list.length) return '<div class="cov ph">无封面</div>';
       return `<div class="cov"><img loading="lazy" alt="" src="${list[0]}"`
         + ` data-chain="${esc(JSON.stringify(list.slice(1)))}" onerror="gshelf.nextCover(this)"></div>`;
-    }
-
-    /* 图片加载失败时按链回退，全部失败才显示占位 */
-    function nextCover(img) {
-      let chain = [];
-      try { chain = JSON.parse(img.dataset.chain || '[]'); } catch (e) { chain = []; }
-      if (chain.length) {
-        img.src = chain.shift();
-        img.dataset.chain = JSON.stringify(chain);
-        return;
-      }
-      const box = img.parentNode;
-      if (!box) return;
-      box.classList.add('ph');
-      box.textContent = '无封面';
     }
 
     function render(data) {
