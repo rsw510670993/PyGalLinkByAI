@@ -193,7 +193,7 @@ def cooldown(args) -> None:
 
 
 def run_check(start_year: int, end_year: int, delay: int) -> None:
-    """批次后补一次 check：把「提交后 10 分钟校对」从浏览器搬进无人流程。"""
+    """批次后补一次 check：把「提交后 15 分钟校对」从浏览器搬进无人流程。"""
     if delay > 0:
         log(f'等待 {delay}s 后校对 {start_year}-{end_year}')
         time.sleep(delay)
@@ -219,8 +219,8 @@ def main() -> int:
                     help='每批结束后等 115 离线 waiting 任务数降到该值以内（最长 60 分钟，默认 0 不等）')
     ap.add_argument('--auto-check', action='store_true',
                     help='每批提交结束后等待 --check-delay 秒再跑一次 check（默认关闭）')
-    ap.add_argument('--check-delay', type=int, default=600,
-                    help='--auto-check 的等待秒数（默认 600，与「提交后 10 分钟校对」一致）')
+    ap.add_argument('--check-delay', type=int, default=900,
+                    help='--auto-check 的等待秒数（默认 900，与「提交后 15 分钟校对」一致）')
     args = ap.parse_args()
 
     if subprocess.run(['id', '-un'], capture_output=True, text=True).stdout.strip() != 'www-data':
