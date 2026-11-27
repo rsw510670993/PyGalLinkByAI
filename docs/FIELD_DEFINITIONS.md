@@ -32,7 +32,9 @@
 
 | 字段 | 取值 | 含义 |
 |---|---|---|
-| `tier` | `auto` / `review` / `reject` | 三档分流（2026-11-26）：`auto` 证据齐备可直接采用（≥40 分，或 20–40 分且公司与发售日双命中）；`review` 进待复核队列，由 `egs review_queue` 列出；`reject` 明确指向别的作品（CG 集、分卷、尾号不同）或分数 <20，不占用复核队列 |
+| `tier` | `auto` / `review` / `reject` | 三档分流（2026-11-26）：`auto` 证据齐备可直接采用（≥40 分，或 20–40 分且公司与发售日双命中）；`review` 进待复核队列，由 `egs review_queue` 列出；`reject` 明确指向别的作品（CG 集、分卷、尾号不同、**关系图兄弟作**）或分数 <20，不占用复核队列 |
+
+关系图护栏（2026-11-27）：`egs_match.sibling_conflict()` 用 `status/egs_relations.json` 的 EGS 关系邻居判断候选是否指向续作/FD/追加盘；命中时 `score_detail.sibling_conflict` 记录命中的兄弟作名，并把分数压回阈值以下、`tier` 置 `reject`。缓存由 `scripts/refresh_relations.py` 刷新，缺失时护栏静默跳过。
 
 ## egs_115_folders
 

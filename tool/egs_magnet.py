@@ -41,6 +41,7 @@ from tool.egs_match import (
     extract_infohash,
     is_abnormally_short_name,
     select_best,
+    sibling_conflict,
 )
 from tool.runtime import read_config
 
@@ -731,6 +732,34 @@ def _usable_candidates(cands: list[dict]) -> list[dict]:
     return usable
 
 
+_RELATIONS_CACHE = {"mtime": None, "data": {}}
+
+
+def relations_path():
+    from .runtime import runtime_paths
+    return runtime_paths()['status_dir'] + '/egs_relations.json'
+
+
+def relations_for(egs_id):
+    """取某作品的 EGS 关系邻居，懒加载 status/egs_relations.json。
+
+    文件由 scripts/refresh_relations.py 生成；不存在或损坏时返回空表（护栏静默跳过）。
+    """
+    path = relations_path()
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return []
+    if _RELATIONS_CACHE["mtime"] != mtime:
+        try:
+            with open(path, encoding='utf-8') as fh:
+                _RELATIONS_CACHE["data"] = json.load(fh)
+            _RELATIONS_CACHE["mtime"] = mtime
+        except (OSError, ValueError):
+            return []
+    return _RELATIONS_CACHE["data"].get(str(egs_id), [])
+
+
 def process_game(conn: sqlite3.Connection, session: requests.Session, row,
                  logger: logging.Logger, force: bool = False) -> tuple[str, dict | None]:
     """处理单条 EGS 游戏行。row 需含 egs_id,date,name,company,release_ts。"""
@@ -773,6 +802,21 @@ def process_game(conn: sqlite3.Connection, session: requests.Session, row,
             (egs_id, old_infohash),
         )
     best, best_score, best_detail = select_best(game, cands, THRESHOLD)
+    # 关系图护栏（2026-11-27）：候选指向 EGS 关系里的兄弟作时强制 reject，
+    # 防止「アイキス2 收到 アイキス3」这类序列作错配被自动采用。
+    siblings = relations_for(egs_id)
+    if siblings:
+        for c in cands:
+            conflicted, sibling_name = sibling_conflict(name, c.get("nyaa_title"), siblings)
+            if not conflicted:
+                continue
+            detail = dict(c.get("score_detail") or {})
+            detail["sibling_conflict"] = sibling_name
+            c["score_detail"] = detail
+            c["score"] = min(float(c.get("score") or 0), THRESHOLD - 1)
+            c["tier"] = "reject"
+        if best is not None and sibling_conflict(name, best.get("nyaa_title"), siblings)[0]:
+            best, best_score, best_detail = None, max((c.get("score") or 0) for c in cands), None
     best_key = best.get("infohash_hex") if best else None
     _save_candidates(conn, egs_id, date, name, cands, best_key)
     # select_best also annotates every candidate with its score. Do not keep
