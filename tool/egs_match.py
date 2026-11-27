@@ -217,6 +217,77 @@ _NON_GAME_PATTERN = re.compile(
 _SERIES_VOLUME_PATTERN = re.compile(
     r"(第[0-9一二三四五六七八九十]+[話话巻卷編编]|vol\.?\s*\d+)", re.IGNORECASE)
 
+# 关系图护栏（2026-11-27）：只有这几种关系表示「另一部作品」，
+# transplant/free 常与本体同内容，不参与判定。
+_SIBLING_KINDS = frozenset(
+    {"sequel", "fandisk", "remake", "bundling", "apend", "spinoff"}
+)
+# 版本/形态词：剥离后再比，避免「同作另一个版本」被当成兄弟作。
+_EDITION_NOISE = re.compile(
+    r"(パッケージ版|パッケージ|dl版|ダウンロード版|初回限定版|初回版|通常版|限定版|豪華版|"
+    r"完全版|コンプリート版|hd版|リメイク版|体験版|アペンド|append|ディスク|"
+    r"特典|同梱|soundtrack|サウンドトラック|\bost\b|patch|パッチ|修正|update|"
+    r"ver\.?\d[\d.]*|v\d[\d.]*)",
+    re.IGNORECASE,
+)
+# 集合包关键词：出现时说明候选是「本体 + 追加盘/特典」的打包，本体只是其中一部分。
+_COLLECTION_PATTERN = re.compile(
+    r"(コンプリート|アペンド|append|追加|セット|パック|\bpack\b|完全版)", re.IGNORECASE)
+
+
+def _strip_edition(text):
+    """去掉版本/形态词，只留核心标题。"""
+    return _EDITION_NOISE.sub("", text or "")
+
+
+def _route_key(text):
+    return _norm(_strip_edition(text))
+
+
+def _main_title(name):
+    """主标题：按 〜/～/~/- 拆出的第一段（getchu 名常为「主标题 -副标题-」）。"""
+    return _norm(re.split(r"[〜～~\-－]", name or "", 1)[0])
+
+
+def sibling_conflict(game_name, candidate_title, siblings):
+    """候选是否指向关系图里的兄弟作品（reject 护栏，2026-11-27）。
+
+    siblings: [(kind, name), ...]，由 EGS `connection_between_lists_of_games` 预先拉好。
+    返回 (是否冲突, 命中的兄弟名)。
+
+    规则（盲测驱动）：
+    1. 候选完整包含本体名 → 同作变体/整包，一律不判冲突；
+    2. 剥掉「パッケージ版/DL版/特典/パッチ」等版本词后再比；
+    3. 兄弟名是本体主标题的前缀或同主标题 → 同一系列主线，不判冲突
+       （防「天冥のコンキスタ」把「-魔族制圧編-」的特典误杀）；
+    4. 其余兄弟名（≥6 字符）出现在候选里 → 判冲突，交 reject。
+    """
+    body = _route_key(game_name)
+    key = _route_key(candidate_title)
+    if len(body) < 4 or not key:
+        return False, None
+    main = _main_title(game_name)
+    # 本体名或本体主标题出现在候选里 → 同作变体（如 Lilitales 与 Lilitales -append disc-）。
+    if body in key or (len(main) >= 4 and main in key):
+        return False, None
+    for kind, name in siblings or ():
+        if kind not in _SIBLING_KINDS:
+            continue
+        sibling = _route_key(name)
+        if len(sibling) < 6 or sibling not in key:
+            continue
+        same_line = bool(main) and (main.startswith(sibling) or sibling.startswith(main))
+        if same_line:
+            rest = main[len(sibling):] if main.startswith(sibling) else sibling[len(main):]
+            # 本体是兄弟的下一作（竜姫ぐーたらいふ2 vs 竜姫ぐーたらいふ）仍是不同作品，照拦。
+            numbered_next = bool(rest) and rest[0].isdigit()
+            if not numbered_next and not _COLLECTION_PATTERN.search(candidate_title):
+                continue
+        # 主标题相同但候选是「本体+追加盘」这类集合包时，本体只是其中一部分，仍判冲突。
+        return True, name
+    return False, None
+
+
 
 def _risk_flags(gnorm, nt, title, cand_date, game_date):
     """标题相似但很可能不是同一作品的候选：返回风险标记，命中即压回阈值以下。"""
