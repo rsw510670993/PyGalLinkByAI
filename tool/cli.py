@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import concurrent.futures as cf
 import multiprocessing as mp
 
@@ -242,7 +243,22 @@ def cmd_115_check(args):
         if not _in_gal_path(save_path):
             _print({"success": False, "status": "blocked", "message": "校验范围仅限 /GAL"})
             return
-        _print(check_magnet_exists(magnet, save_path, debug=bool(getattr(args, "debug", False))))
+        result = check_magnet_exists(magnet, save_path, debug=bool(getattr(args, "debug", False)))
+        egs_id = getattr(args, "egs_id", None)
+        if egs_id and result.get("exists"):
+            # 2026-11-27：给了 --egs-id 就同步落库，避免编排脚本重复校对。
+            from tool.egs_core import open_egs_db
+            conn = open_egs_db(getattr(args, "db", None))
+            try:
+                conn.execute(
+                    "UPDATE egs_games SET downloaded=1, submitted_115=1, download_failed=0,"
+                    " infohash_hex=?, checked_at=?, updated_at=? WHERE egs_id=? AND link=?",
+                    (result.get("infohash_hex"), time.strftime('%Y-%m-%d %H:%M:%S'),
+                     time.strftime('%Y-%m-%d %H:%M:%S'), int(egs_id), magnet))
+                conn.commit()
+            finally:
+                conn.close()
+        _print(result)
     except Exception as e:
         _print({"status": "error", "message": f"115模块加载失败: {e}"})
 
@@ -278,7 +294,21 @@ def cmd_115_submit(args):
                 "message": f"提交目录仅限 {expected_dir}",
             })
             return
-        _print(offline_submit(magnet, save_path))
+        result = offline_submit(magnet, save_path)
+        if result.get("success"):
+            # 2026-11-27：提交成功即落库，避免编排脚本下一轮重复提交烧配额。
+            from tool.runtime import now_ts
+            conn = open_egs_db(getattr(args, "db", None))
+            try:
+                conn.execute(
+                    "UPDATE egs_games SET submitted_115=1, submitted_pick_code=?,"
+                    " submitted_at=?, updated_at=? WHERE egs_id=? AND link=?",
+                    (result.get("pick_code"), time.strftime('%Y-%m-%d %H:%M:%S'),
+                     now_ts(), int(args.egs_id), magnet))
+                conn.commit()
+            finally:
+                conn.close()
+        _print(result)
     except Exception as e:
         _print({"status": "error", "message": f"115模块加载失败: {e}"})
 
@@ -1053,6 +1083,7 @@ def build_parser():
 
     p_115_check = _115_sub.add_parser("check")
     p_115_check.add_argument("--magnet", type=str, required=True)
+    p_115_check.add_argument("--egs-id", type=int, dest="egs_id")
     p_115_check.add_argument("--dir", type=str, default="")
     p_115_check.add_argument("--debug", action="store_true")
     p_115_check.set_defaults(func=cmd_115_check)
