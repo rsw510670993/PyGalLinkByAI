@@ -18,6 +18,8 @@ ACTIONS = ('crawl', 'magnet', 'check', 'submit', 'sync', 'organize', 'thumb')
 LABELS = dict(zip(ACTIONS, ('获取游戏清单', '获取下载用磁链', '校对115', '提交115',
                             '同步（清单+磁链）', '整理115', '抓取封面')))
 SUBMISSION_TIMEOUT_SECONDS = 72 * 60 * 60
+# 提交后等待 15 分钟再校对（2026-11-27 用户要求，原为 10 分钟）。
+CHECK_DELAY_SECONDS = 15 * 60
 
 
 def _parse_local_timestamp(value):
@@ -452,8 +454,8 @@ def execute_job(state, save, should_stop):
             try:
                 if action == 'check':
                     _submitted = _parse_local_timestamp(row['submitted_at'])
-                    if _submitted is not None and time.time() - _submitted < 600:
-                        report(name, 'skipped', '提交未满 10 分钟，等待 115 离线下载')
+                    if _submitted is not None and time.time() - _submitted < CHECK_DELAY_SECONDS:
+                        report(name, 'skipped', '提交未满 15 分钟，等待 115 离线下载')
                         continue
                     from .egs_organize import (
                         adopt_downloaded_folder_by_infohash,

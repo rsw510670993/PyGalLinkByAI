@@ -2,7 +2,7 @@
 """月度提交编排（P0 草案，先 dry-run 验证可行性）。
 
 流程：探明 115 剩余配额 → 选出可提交记录 → 按配额切片 → （execute 时）提交
-→ 等 10 分钟 → check → organize。
+→ 等 15 分钟 → check → organize。
 
 默认 dry-run，只打印计划；--execute 才真提交。配额是硬闸门：本轮提交数
 永远不超过「剩余配额」与「用户设定的每日上限」。
@@ -58,6 +58,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="月度提交编排（默认 dry-run）")
     ap.add_argument("--execute", action="store_true", help="真提交（默认只打印计划）")
     ap.add_argument("--cap", type=int, default=0, help="本次最多提交条数，0 表示由配额决定")
+    ap.add_argument("--wait", type=int, default=900,
+                    help="提交后等待多少秒再校对（默认 900 = 15 分钟）")
     args = ap.parse_args()
 
     quota = remaining_quota()
@@ -85,6 +87,7 @@ def main() -> int:
         return 0
 
     year_dirs: dict[str, int] = {}
+    submitted: list[tuple] = []
     for row in plan:
         year = str(row["date"])[:4]
         year_path = f"/GAL/GAL-{year}"
@@ -102,7 +105,29 @@ def main() -> int:
         )
         tail = (proc.stdout or proc.stderr or "").strip().splitlines()[-1:]
         print(f"{row['egs_id']} {row['name'][:24]} → {tail[0][:80] if tail else 'no output'}")
+        if '"success": true' in (proc.stdout or ""):
+            submitted.append((row, year_path))
         time.sleep(0.6)
+
+    if not submitted:
+        print("没有提交成功的条目，跳过校对。")
+        return 1
+
+    print(f"等待 {args.wait} 秒后校对 {len(submitted)} 条…")
+    time.sleep(args.wait)
+    ok = 0
+    for row, year_path in submitted:
+        proc = subprocess.run(
+            [sys.executable, "-m", "tool.cli", "115", "check",
+             "--magnet", row["link"], "--dir", year_path,
+             "--egs-id", str(row["egs_id"])],
+            cwd=str(ROOT), capture_output=True, text=True,
+        )
+        hit = '"exists": true' in (proc.stdout or "")
+        ok += hit
+        print(f"  校对 {row['egs_id']} → {'已下载' if hit else '未完成'}")
+        time.sleep(0.4)
+    print(f"校对完成：{ok}/{len(submitted)} 已确认下载")
     return 0
 
 
